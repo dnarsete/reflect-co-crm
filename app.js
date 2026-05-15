@@ -1,128 +1,33 @@
 /* =========================================================
-   The Reflect Co — Rep CRM (HTML prototype)
-   Single-file SPA. LocalStorage persistence.
+   The Reflect Co — Rep CRM
+   Supabase-backed SPA. Phase 2: real shared data + real auth.
    ========================================================= */
 
-const STORE_KEY = 'reflectco.crm.v1';
+const { createClient } = window.supabase;
+const sb = createClient(
+  window.REFLECT_CONFIG.SUPABASE_URL,
+  window.REFLECT_CONFIG.SUPABASE_KEY,
+  { auth: { persistSession: true, autoRefreshToken: true } }
+);
+
+/* ---------- small utils ---------- */
 const fmt$ = n => '$' + (Number(n||0)).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
 const todayISO = () => new Date().toISOString().slice(0,10);
 const startOfMonth = () => { const d=new Date(); return new Date(d.getFullYear(),d.getMonth(),1).toISOString().slice(0,10) };
-const uid = (prefix='') => prefix + Math.random().toString(36).slice(2,9);
+const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-let db;
-
-function load(){
-  try{
-    const raw = localStorage.getItem(STORE_KEY);
-    if(raw) return JSON.parse(raw);
-  }catch(e){}
-  return seed.defaults();
-}
-function save(){ localStorage.setItem(STORE_KEY, JSON.stringify(db)); }
-
-/* ============ SEED ============ */
-const seed = {
-  defaults(){
-    return {
-      session:null,
-      users:[
-        {id:'u-admin', name:'Admin', email:'admin@thereflectco.com', pass:'admin', role:'admin'},
-        {id:'u-rep1',  name:'Casey Rep', email:'rep@thereflectco.com', pass:'rep', role:'rep', repId:'R-001', commission:10, territory:['80210','80211','80203']}
-      ],
-      reps:[
-        {id:'R-001', name:'Casey Rep', email:'rep@thereflectco.com', commission:10, territory:['80210','80211','80203']}
-      ],
-      accountTypes:['Dermatologist','Medical Spa','Boutique','Hotel','Retail Store','Salon','Other'],
-      accounts:[],
-      orders:[],
-      promotions:[
-        {id:uid('P'), code:'WELCOME10', kind:'percent', value:10, perks:'10% off intro', minQty:0, active:true},
-        {id:uid('P'), code:'FREESHIP24', kind:'shipping', value:0, perks:'Free shipping on 24+ units', minQty:24, active:true},
-        {id:uid('P'), code:'BOGO48', kind:'bonus', value:0, perks:'Bonus product on 48+ units', minQty:48, active:true},
-        {id:uid('P'), code:'SEMINAR100', kind:'access', value:0, perks:'Seminar access at 100+ units', minQty:100, active:true}
-      ],
-      products:[
-        {sku:'RC-SERUM-01', name:'Reflect Serum 30ml', price:48, stock:120},
-        {sku:'RC-CREAM-02', name:'Reflect Cream 50ml', price:62, stock:18},
-        {sku:'RC-MASK-03',  name:'Reflect Hydrating Mask', price:24, stock:200},
-        {sku:'RC-KIT-04',   name:'Reflect Starter Kit',  price:140, stock:42}
-      ],
-      settings:{
-        shippingDefault:30,
-        taxRateDefault:0.0881, /* CO state + Denver County combined approx */
-        taxLabelDefault:'Colorado + Denver County',
-        highDiscountAlertPct:20,
-        reorderDueDays:45,
-        lowStockThreshold:25,
-        company:{
-          name:'The Reflect Co',
-          website:'thereflectco.com',
-          phone:'TBD',
-          address:'3642 S. Jason Street, Englewood, CO 80210'
-        }
-      },
-      counters:{account:0, order:1000}
-    };
-  },
-  reset(){
-    if(!confirm('Reset all demo data? This wipes accounts, orders, promotions.')) return;
-    db = seed.defaults();
-    seed.populate();
-    save();
-    ui.toast('Demo data reset');
-    boot();
-  },
-  populate(){
-    if(db.accounts.length) return;
-    const rep = db.reps[0].id;
-    const mk = (over)=>({
-      id: uid('A'),
-      accountNumber: 'ACC-' + String(++db.counters.account).padStart(4,'0'),
-      createdAt: new Date(Date.now() - Math.random()*1000*60*60*24*60).toISOString(),
-      repId: rep,
-      type:'Medical Spa',
-      businessName:'',
-      billingName:'',
-      businessAddress:'',
-      billingAddress:'',
-      email:'',
-      cell:'',
-      businessPhone:'',
-      salesTaxLicense:'',
-      salesTaxState:'',
-      optIn:true,
-      notes:[],
-      ...over
-    });
-    db.accounts.push(
-      mk({type:'Medical Spa', businessName:'Glow Aesthetics', billingName:'Jane Park', businessAddress:'120 5th Ave, Denver CO 80203', billingAddress:'120 5th Ave, Denver CO 80203', email:'jane@glow.co', cell:'303-555-0142', businessPhone:'303-555-0188'}),
-      mk({type:'Dermatologist', businessName:'Front Range Derm', billingName:'Dr. Liu', businessAddress:'88 Speer Blvd, Denver CO 80211', billingAddress:'88 Speer Blvd, Denver CO 80211', email:'office@frderm.com', cell:'720-555-0101', businessPhone:'720-555-0100', salesTaxLicense:'CO-887421', salesTaxState:'CO'}),
-      mk({type:'Boutique', businessName:'Pine & Petal', billingName:'M. Hayes', businessAddress:'14 Pearl St, Boulder CO 80302', billingAddress:'14 Pearl St, Boulder CO 80302', email:'hi@pinepetal.com', cell:'303-555-0177', businessPhone:'303-555-0123'}),
-      mk({type:'Hotel', businessName:'The Brown Palace', billingName:'A/P Dept', businessAddress:'321 17th St, Denver CO 80202', billingAddress:'321 17th St, Denver CO 80202', email:'ap@brownpalace.com', cell:'', businessPhone:'303-555-0900'})
-    );
-    /* a couple of orders */
-    db.orders.push({
-      id: uid('O'),
-      orderNumber:'ORD-' + (++db.counters.order),
-      accountId: db.accounts[0].id,
-      repId: rep,
-      placedAt: new Date(Date.now() - 1000*60*60*24*7).toISOString(),
-      items:[{sku:'RC-SERUM-01', name:'Reflect Serum 30ml', qty:6, price:48}],
-      shipping:30, tax: 6*48*0.0881, taxLabel:'Colorado + Denver County',
-      promoCode:'', promoEffect:'', discount:0,
-      payment:{method:'Visa', last4:'4242', authorized:true, esign:true},
-      status:'finalized',
-      tracking:'',
-      total: 6*48 + 30 + (6*48*0.0881)
-    });
-  }
+/* In-memory caches (populated on login, refreshed on demand) */
+const cache = {
+  me: null,            // profiles row for the current user
+  reps: [],            // all profiles (for admin dropdowns); reps see only themselves
+  accountTypes: [],
+  products: [],
+  promotions: [],
+  settings: {},
+  accountTypeList(){ return cache.accountTypes.map(t=>t.name); }
 };
 
-db = load();
-seed.populate();
-save();
-
-/* ============ UI helpers ============ */
+/* ---------- UI helpers ---------- */
 const ui = {
   modal(html){
     document.getElementById('modal').innerHTML = html;
@@ -132,48 +37,109 @@ const ui = {
   toast(msg){
     const t = document.getElementById('toast');
     t.textContent = msg; t.classList.remove('hide');
-    clearTimeout(ui._tt); ui._tt = setTimeout(()=>t.classList.add('hide'), 2200);
-  }
+    clearTimeout(ui._tt); ui._tt = setTimeout(()=>t.classList.add('hide'), 2400);
+  },
+  err(e){
+    const msg = (e && (e.message || e.error_description || JSON.stringify(e))) || 'Something went wrong';
+    console.error(e);
+    ui.toast('⚠ ' + msg);
+  },
+  busy(on){ document.body.style.cursor = on ? 'progress' : ''; }
 };
 
-/* ============ AUTH ============ */
+/* ---------- AUTH ---------- */
 const auth = {
-  login(){
+  async login(){
     const errEl = document.getElementById('auth-err');
     const email = (document.getElementById('auth-email').value||'').trim().toLowerCase();
-    const pass  = (document.getElementById('auth-pass').value||'').trim();
+    const pass  = (document.getElementById('auth-pass').value||'');
     if(!email || !pass){
       errEl.textContent = 'Enter email and password.'; errEl.classList.remove('hide'); return;
     }
-    /* self-heal: if the demo users aren't in localStorage (older save), restore them */
-    if(!db.users || !db.users.length){
-      db.users = seed.defaults().users; save();
-    }
-    const u = db.users.find(u=>u.email.toLowerCase()===email && u.pass===pass);
-    if(!u){
-      errEl.innerHTML = 'Invalid credentials. Try the <b>Use Rep demo</b> / <b>Use Admin demo</b> buttons below — or "Reset local data" if you reused this file before.';
-      errEl.classList.remove('hide'); return;
+    ui.busy(true);
+    const { error } = await sb.auth.signInWithPassword({ email, password: pass });
+    ui.busy(false);
+    if(error){
+      errEl.innerHTML = 'Sign-in failed: '+esc(error.message)+'.<br>If this is your first time, try <b>Create account</b> below.';
+      errEl.classList.remove('hide');
+      return;
     }
     errEl.classList.add('hide');
-    db.session = {userId:u.id, at:new Date().toISOString()};
-    save(); boot();
+    await boot();
   },
-  fill(email, pass){
-    document.getElementById('auth-email').value = email;
-    document.getElementById('auth-pass').value = pass;
-    auth.login();
+  async signup(){
+    const errEl = document.getElementById('auth-err');
+    const email = (document.getElementById('auth-email').value||'').trim().toLowerCase();
+    const pass  = (document.getElementById('auth-pass').value||'');
+    if(!email || pass.length < 6){
+      errEl.textContent = 'Email + a password of at least 6 characters required.'; errEl.classList.remove('hide'); return;
+    }
+    ui.busy(true);
+    const { error } = await sb.auth.signUp({ email, password: pass });
+    ui.busy(false);
+    if(error){
+      errEl.textContent = 'Sign-up failed: '+error.message;
+      errEl.classList.remove('hide');
+      return;
+    }
+    errEl.classList.remove('hide');
+    errEl.classList.remove('err');
+    errEl.classList.add('ok');
+    errEl.innerHTML = 'Account created. If email confirmation is on (Supabase default), check your inbox and click the link before signing in.';
   },
-  hardReset(){
-    localStorage.removeItem(STORE_KEY);
+  async logout(){
+    await sb.auth.signOut();
     location.reload();
   },
-  logout(){ db.session=null; save(); boot(); },
-  user(){ return db.session ? db.users.find(u=>u.id===db.session.userId) : null; },
-  isAdmin(){ const u=auth.user(); return u && u.role==='admin'; },
-  repIdForUser(){ const u=auth.user(); return u && u.repId ? u.repId : (db.reps[0]?.id || null); }
+  user(){ return cache.me; },
+  isAdmin(){ return !!cache.me && cache.me.role === 'admin'; },
+  repId(){ return cache.me ? cache.me.rep_id : null; }
 };
 
-/* ============ NAV ============ */
+/* ---------- DATA: profiles ---------- */
+const profiles = {
+  async loadMe(uid){
+    const { data, error } = await sb.from('profiles').select('*').eq('id', uid).single();
+    if(error) throw error;
+    cache.me = data;
+    return data;
+  },
+  async loadReps(){
+    const { data, error } = await sb.from('profiles').select('*').order('name');
+    if(error) throw error;
+    cache.reps = data || [];
+  }
+};
+
+/* ---------- DATA: reference (types, products, promos, settings) ---------- */
+const ref = {
+  async loadAll(){
+    const [t,p,pr,s] = await Promise.all([
+      sb.from('account_types').select('*').order('sort_order'),
+      sb.from('products').select('*').order('name'),
+      sb.from('promotions').select('*').order('code'),
+      sb.from('settings').select('*')
+    ]);
+    if(t.error) throw t.error;
+    if(p.error) throw p.error;
+    if(pr.error) throw pr.error;
+    if(s.error) throw s.error;
+    cache.accountTypes = t.data || [];
+    cache.products = p.data || [];
+    cache.promotions = pr.data || [];
+    cache.settings = {};
+    (s.data||[]).forEach(r => cache.settings[r.key] = r.value);
+  },
+  shipDefault(){ return Number(cache.settings.shipping_default ?? 30); },
+  taxRateDefault(){ return Number(cache.settings.tax_rate_default ?? 0.0881); },
+  taxLabelDefault(){ return String(cache.settings.tax_label_default ?? 'Colorado + Denver County'); },
+  highDiscPct(){ return Number(cache.settings.high_discount_alert_pct ?? 20); },
+  reorderDays(){ return Number(cache.settings.reorder_due_days ?? 45); },
+  lowStock(){ return Number(cache.settings.low_stock_threshold ?? 25); },
+  company(){ return cache.settings.company || {name:'The Reflect Co', website:'thereflectco.com', address:''} }
+};
+
+/* ---------- NAV ---------- */
 const nav = {
   go(view){
     document.querySelectorAll('.view').forEach(v=>v.classList.add('hide'));
@@ -189,106 +155,122 @@ const nav = {
   }
 };
 
-/* ============ DASHBOARD ============ */
+/* ---------- DASHBOARD ---------- */
 const dashboard = {
-  render(){
-    const u = auth.user();
-    document.getElementById('who').textContent = u.name + (u.role==='admin'?' · Admin':' · Rep');
-    document.getElementById('role-pill').textContent = u.role==='admin'?'Admin':'Rep';
+  async render(){
+    document.getElementById('who').textContent = (cache.me.name || cache.me.email) + (auth.isAdmin()?' · Admin':' · Rep');
+    document.getElementById('role-pill').textContent = auth.isAdmin()?'Admin':'Rep';
 
-    const myOrders = orders.scope(db.orders).filter(o=>o.placedAt>=startOfMonth());
-    const rev = myOrders.reduce((s,o)=>s+o.total,0);
-    const comm = orders.totalCommission(myOrders);
-    document.getElementById('kpi-accounts').textContent = accounts.scope(db.accounts).length;
-    document.getElementById('kpi-orders').textContent   = myOrders.length;
+    /* counts */
+    const [accCount, mtdOrders] = await Promise.all([
+      accounts.count(),
+      orders.listMTD()
+    ]);
+    const rev = (mtdOrders||[]).reduce((s,o)=>s+Number(o.total||0),0);
+    const comm = (mtdOrders||[]).reduce((s,o)=>{
+      const repPct = (cache.reps.find(r=>r.rep_id===o.rep_id)?.commission || 0)/100;
+      return s + (Number(o.total||0) - Number(o.shipping||0) - Number(o.tax||0)) * repPct;
+    }, 0);
+    document.getElementById('kpi-accounts').textContent = accCount;
+    document.getElementById('kpi-orders').textContent   = mtdOrders.length;
     document.getElementById('kpi-rev').textContent      = fmt$(rev);
     document.getElementById('kpi-comm').textContent     = fmt$(comm);
 
     /* alerts */
+    const alertsEl = document.getElementById('alerts');
     const alerts = [];
-    const lowStock = db.products.filter(p=>p.stock<=db.settings.lowStockThreshold);
+    const lowStock = cache.products.filter(p=>p.stock<=ref.lowStock());
     lowStock.forEach(p=>alerts.push({lvl:'warn', text:`Low stock — ${p.name} (${p.stock} left)`}));
 
-    const dueDays = db.settings.reorderDueDays;
-    accounts.scope(db.accounts).forEach(a=>{
-      const last = db.orders.filter(o=>o.accountId===a.id).sort((x,y)=>y.placedAt.localeCompare(x.placedAt))[0];
+    const myAccts = await accounts.list();
+    for(const a of myAccts.slice(0, 30)){
+      const last = await orders.lastForAccount(a.id);
       if(last){
-        const days = Math.floor((Date.now()-new Date(last.placedAt))/86400000);
-        if(days>=dueDays) alerts.push({lvl:'info', text:`${a.businessName||a.accountNumber} due for reorder (${days}d since last)`});
+        const days = Math.floor((Date.now()-new Date(last.placed_at))/86400000);
+        if(days>=ref.reorderDays()) alerts.push({lvl:'info', text:`${a.business_name||a.account_number} due for reorder (${days}d since last)`});
       } else {
-        const days = Math.floor((Date.now()-new Date(a.createdAt))/86400000);
-        if(days>14) alerts.push({lvl:'info', text:`${a.businessName||a.accountNumber} has no orders yet (${days}d old)`});
+        const days = Math.floor((Date.now()-new Date(a.created_at))/86400000);
+        if(days>14) alerts.push({lvl:'info', text:`${a.business_name||a.account_number} has no orders yet (${days}d old)`});
       }
-    });
-
-    const wrap = document.getElementById('alerts');
-    if(!alerts.length){ wrap.innerHTML = '<div class="muted">All clear.</div>'; return; }
-    wrap.innerHTML = alerts.slice(0,8).map(a=>`<div class="alert ${a.lvl==='warn'?'warn':''}">${a.text}</div>`).join('');
+    }
+    alertsEl.innerHTML = alerts.length ? alerts.slice(0,8).map(a=>`<div class="alert ${a.lvl==='warn'?'warn':''}">${esc(a.text)}</div>`).join('') : '<div class="muted">All clear.</div>';
   }
 };
 
-/* ============ ACCOUNTS ============ */
+/* ---------- ACCOUNTS ---------- */
 const accounts = {
-  scope(list){
-    if(auth.isAdmin()) return list;
-    const repId = auth.repIdForUser();
-    return list.filter(a=>a.repId===repId);
+  async count(){
+    const { count, error } = await sb.from('accounts').select('*', { count:'exact', head:true });
+    if(error){ ui.err(error); return 0; }
+    return count || 0;
   },
-  render(){
+  async list(){
+    const { data, error } = await sb.from('accounts').select('*').order('created_at',{ascending:false});
+    if(error){ ui.err(error); return []; }
+    return data || [];
+  },
+  async render(){
     /* type filter */
     const tf = document.getElementById('acc-type-filter');
     const cur = tf.value;
-    tf.innerHTML = '<option value="">All types</option>' + db.accountTypes.map(t=>`<option ${cur===t?'selected':''}>${t}</option>`).join('');
+    tf.innerHTML = '<option value="">All types</option>' + cache.accountTypeList().map(t=>`<option ${cur===t?'selected':''}>${t}</option>`).join('');
 
     const q = (document.getElementById('acc-search').value||'').toLowerCase();
     const type = tf.value;
-    const list = accounts.scope(db.accounts).filter(a=>{
-      const hay = [a.businessName,a.billingName,a.businessAddress,a.email,a.accountNumber].join(' ').toLowerCase();
+    const list = (await accounts.list()).filter(a=>{
+      const hay = [a.business_name,a.billing_name,a.business_address,a.email,a.account_number].join(' ').toLowerCase();
       return (!q || hay.includes(q)) && (!type || a.type===type);
-    }).sort((x,y)=>y.createdAt.localeCompare(x.createdAt));
+    });
 
     const wrap = document.getElementById('acc-list');
-    if(!list.length){ wrap.innerHTML='<div class="muted">No accounts yet. Tap “+ New”.</div>'; return; }
+    if(!list.length){ wrap.innerHTML='<div class="muted">No accounts yet. Tap "+ New".</div>'; return; }
     wrap.innerHTML = list.map(a=>`
       <div class="list-item">
         <div class="grow">
-          <div class="title">${a.businessName||'(unnamed)'} <span class="badge info">${a.type||'—'}</span></div>
-          <div class="meta">${a.accountNumber} · ${a.businessAddress||'no address'} · ${a.email||''}</div>
+          <div class="title">${esc(a.business_name||'(unnamed)')} <span class="badge info">${esc(a.type||'—')}</span></div>
+          <div class="meta">${esc(a.account_number)} · ${esc(a.business_address||'no address')} · ${esc(a.email||'')}</div>
         </div>
         <button class="icon-btn" onclick="accounts.open('${a.id}')">Open</button>
       </div>
     `).join('');
   },
-  openNew(){ accounts.open(null) },
-  open(id){
-    const a = id ? db.accounts.find(x=>x.id===id) : null;
+  async openNew(){ accounts.open(null) },
+  async open(id){
+    let a = null;
+    if(id){
+      const r = await sb.from('accounts').select('*').eq('id', id).single();
+      if(r.error){ ui.err(r.error); return; }
+      a = r.data;
+    }
     const isNew = !a;
     const acc = a || {
-      id: uid('A'), accountNumber:'', createdAt:new Date().toISOString(), repId: auth.repIdForUser(),
-      type:'Medical Spa', businessName:'', billingName:'', businessAddress:'', billingAddress:'',
-      email:'', cell:'', businessPhone:'', salesTaxLicense:'', salesTaxState:'', optIn:true, notes:[]
+      type:'Medical Spa', business_name:'', billing_name:'', business_address:'', billing_address:'',
+      email:'', cell:'', business_phone:'', sales_tax_license:'', sales_tax_state:'',
+      opt_in:true, notes:[], rep_id: auth.repId()
     };
-    const typeOpts = db.accountTypes.map(t=>`<option ${acc.type===t?'selected':''}>${t}</option>`).join('');
+    const typeOpts = cache.accountTypeList().map(t=>`<option ${acc.type===t?'selected':''}>${t}</option>`).join('');
+    const repOpts = cache.reps.length
+      ? cache.reps.map(r=>`<option value="${esc(r.rep_id||'')}" ${acc.rep_id===r.rep_id?'selected':''}>${esc(r.name||r.email)} (${esc(r.rep_id||'no rep id')})</option>`).join('')
+      : `<option>${esc(auth.repId()||'')}</option>`;
     ui.modal(`
-      <h3>${isNew?'New account':'Account · '+(acc.accountNumber||'')}</h3>
+      <h3>${isNew?'New account':'Account · '+esc(acc.account_number||'')}</h3>
       <div class="grid-2">
-        <div><label>Business name</label><input id="f-bn" value="${esc(acc.businessName)}"/></div>
+        <div><label>Business name</label><input id="f-bn" value="${esc(acc.business_name)}"/></div>
         <div><label>Account type</label><select id="f-type">${typeOpts}</select></div>
-        <div><label>Billing responsible person</label><input id="f-rn" value="${esc(acc.billingName)}"/></div>
+        <div><label>Billing responsible person</label><input id="f-rn" value="${esc(acc.billing_name)}"/></div>
         <div><label>Account email</label><input id="f-em" type="email" value="${esc(acc.email)}"/></div>
-        <div><label>Business address</label><input id="f-ba" value="${esc(acc.businessAddress)}"/></div>
-        <div><label>Billing address</label><input id="f-bla" value="${esc(acc.billingAddress)}"/></div>
+        <div><label>Business address</label><input id="f-ba" value="${esc(acc.business_address)}"/></div>
+        <div><label>Billing address</label><input id="f-bla" value="${esc(acc.billing_address)}"/></div>
         <div><label>Cell (responsible)</label><input id="f-cell" value="${esc(acc.cell)}"/></div>
-        <div><label>Business phone</label><input id="f-bp" value="${esc(acc.businessPhone)}"/></div>
-        <div><label>Sales tax license #</label><input id="f-stl" value="${esc(acc.salesTaxLicense)}"/></div>
-        <div><label>License state</label><input id="f-sts" value="${esc(acc.salesTaxState)}" placeholder="CO"/></div>
+        <div><label>Business phone</label><input id="f-bp" value="${esc(acc.business_phone)}"/></div>
+        <div><label>Sales tax license #</label><input id="f-stl" value="${esc(acc.sales_tax_license)}"/></div>
+        <div><label>License state</label><input id="f-sts" value="${esc(acc.sales_tax_state)}" placeholder="CO"/></div>
         <div><label>Opt-in to comms</label>
-          <select id="f-opt"><option value="true" ${acc.optIn?'selected':''}>Opted in</option><option value="false" ${!acc.optIn?'selected':''}>Opted out</option></select>
+          <select id="f-opt"><option value="true" ${acc.opt_in?'selected':''}>Opted in</option><option value="false" ${!acc.opt_in?'selected':''}>Opted out</option></select>
         </div>
-        <div><label>Assigned rep</label>
-          <select id="f-rep">${db.reps.map(r=>`<option value="${r.id}" ${acc.repId===r.id?'selected':''}>${r.name} (${r.id})</option>`).join('')}</select>
-        </div>
+        <div><label>Assigned rep</label><select id="f-rep" ${auth.isAdmin()?'':'disabled'}>${repOpts}</select></div>
       </div>
+      ${!isNew ? `
       <div class="card" style="margin-top:10px">
         <h2>Call / visit log</h2>
         <div id="acc-notes"></div>
@@ -296,110 +278,127 @@ const accounts = {
           <input id="note-text" placeholder="Add a note (call, visit, geo check-in…)" />
           <button class="icon-btn" onclick="accounts.addNote('${acc.id}')">Add</button>
         </div>
-        <p class="muted" style="margin-bottom:0;font-size:12px">License upload, geolocation, and voice-to-text are placeholders (real device APIs / Shopify Files API in production).</p>
-      </div>
+      </div>` : ''}
       <div class="row" style="gap:8px;margin-top:12px">
-        <button class="icon-btn primary" onclick="accounts.save('${acc.id}', ${isNew})">Save</button>
+        <button class="icon-btn primary" onclick="accounts.save('${acc.id||''}', ${isNew})">Save</button>
         ${!isNew?`<button class="icon-btn danger" onclick="accounts.remove('${acc.id}')">Delete</button>`:''}
         <button class="icon-btn ghost" onclick="ui.closeModal()">Close</button>
       </div>
     `);
-    /* render notes */
     if(!isNew){
       const nw = document.getElementById('acc-notes');
-      const real = db.accounts.find(x=>x.id===acc.id);
-      nw.innerHTML = (real.notes||[]).slice().reverse().map(n=>`<div class="list-item"><div class="grow"><div>${esc(n.text)}</div><div class="meta">${n.at}</div></div></div>`).join('') || '<div class="muted">No notes yet.</div>';
+      const real = (acc.notes||[]).slice().reverse();
+      nw.innerHTML = real.length ? real.map(n=>`<div class="list-item"><div class="grow"><div>${esc(n.text)}</div><div class="meta">${esc(n.at)}</div></div></div>`).join('') : '<div class="muted">No notes yet.</div>';
     }
   },
-  save(id, isNew){
-    const get = i=>document.getElementById(i).value;
-    let acc = db.accounts.find(x=>x.id===id);
-    if(!acc){
-      acc = {id, accountNumber:'', createdAt:new Date().toISOString(), notes:[]};
-      db.accounts.push(acc);
+  async save(id, isNew){
+    const get = i => document.getElementById(i).value;
+    const payload = {
+      business_name:get('f-bn'), type:get('f-type'), billing_name:get('f-rn'),
+      email:get('f-em'), business_address:get('f-ba'), billing_address:get('f-bla'),
+      cell:get('f-cell'), business_phone:get('f-bp'),
+      sales_tax_license:get('f-stl'), sales_tax_state:get('f-sts'),
+      opt_in:get('f-opt')==='true', rep_id: get('f-rep') || auth.repId()
+    };
+    let q;
+    if(isNew){
+      payload.created_by = (await sb.auth.getUser()).data.user.id;
+      q = await sb.from('accounts').insert(payload).select().single();
+    } else {
+      q = await sb.from('accounts').update(payload).eq('id', id).select().single();
     }
-    if(!acc.accountNumber){
-      acc.accountNumber = 'ACC-' + String(++db.counters.account).padStart(4,'0');
-    }
-    Object.assign(acc, {
-      businessName:get('f-bn'), type:get('f-type'), billingName:get('f-rn'),
-      email:get('f-em'), businessAddress:get('f-ba'), billingAddress:get('f-bla'),
-      cell:get('f-cell'), businessPhone:get('f-bp'),
-      salesTaxLicense:get('f-stl'), salesTaxState:get('f-sts'),
-      optIn:get('f-opt')==='true', repId:get('f-rep')
-    });
-    save(); ui.closeModal(); ui.toast(isNew?'Account created':'Saved'); accounts.render(); dashboard.render();
+    if(q.error){ ui.err(q.error); return; }
+    ui.closeModal(); ui.toast(isNew?'Account created':'Saved'); accounts.render(); dashboard.render();
   },
-  addNote(id){
-    const acc = db.accounts.find(x=>x.id===id); if(!acc) return;
-    const text = document.getElementById('note-text').value.trim();
-    if(!text) return;
-    acc.notes = acc.notes || [];
-    acc.notes.push({text, at:new Date().toLocaleString()});
-    save(); accounts.open(id);
+  async addNote(id){
+    const r = await sb.from('accounts').select('notes').eq('id', id).single();
+    if(r.error){ ui.err(r.error); return; }
+    const text = document.getElementById('note-text').value.trim(); if(!text) return;
+    const notes = Array.isArray(r.data.notes) ? r.data.notes : [];
+    notes.push({text, at:new Date().toLocaleString()});
+    const u = await sb.from('accounts').update({ notes }).eq('id', id);
+    if(u.error){ ui.err(u.error); return; }
+    accounts.open(id);
   },
-  remove(id){
+  async remove(id){
     if(!confirm('Delete this account? Orders will keep their reference.')) return;
-    db.accounts = db.accounts.filter(a=>a.id!==id);
-    save(); ui.closeModal(); ui.toast('Deleted'); accounts.render();
+    const r = await sb.from('accounts').delete().eq('id', id);
+    if(r.error){ ui.err(r.error); return; }
+    ui.closeModal(); ui.toast('Deleted'); accounts.render();
   }
 };
 
-/* ============ ORDERS ============ */
+/* ---------- ORDERS ---------- */
 const orders = {
-  scope(list){
-    if(auth.isAdmin()) return list;
-    const repId = auth.repIdForUser();
-    return list.filter(o=>o.repId===repId);
+  async listMTD(){
+    const from = startOfMonth();
+    const { data, error } = await sb.from('orders').select('*').eq('status','finalized').gte('placed_at', from);
+    if(error){ ui.err(error); return []; }
+    return data || [];
   },
-  totalCommission(list){
-    const repPct = (id)=> (db.reps.find(r=>r.id===id)?.commission || 0)/100;
-    return list.reduce((s,o)=> s + (o.total - o.shipping - o.tax) * repPct(o.repId), 0);
+  async lastForAccount(accountId){
+    const { data, error } = await sb.from('orders').select('*').eq('account_id', accountId).order('placed_at',{ascending:false}).limit(1);
+    if(error){ return null; }
+    return (data && data[0]) || null;
   },
-  render(){
+  async listAll(){
+    const { data, error } = await sb.from('orders').select('*').order('placed_at',{ascending:false});
+    if(error){ ui.err(error); return []; }
+    return data || [];
+  },
+  async render(){
     const q = (document.getElementById('ord-search').value||'').toLowerCase();
-    const list = orders.scope(db.orders).filter(o=>{
-      const acc = db.accounts.find(a=>a.id===o.accountId);
-      const hay = [o.orderNumber, acc?.businessName, acc?.accountNumber, o.repId].join(' ').toLowerCase();
+    const accts = await accounts.list();
+    const acctMap = {}; accts.forEach(a=>acctMap[a.id]=a);
+    const list = (await orders.listAll()).filter(o=>{
+      const a = acctMap[o.account_id];
+      const hay = [o.order_number||'', a?.business_name, a?.account_number, o.rep_id].join(' ').toLowerCase();
       return !q || hay.includes(q);
-    }).sort((x,y)=>y.placedAt.localeCompare(x.placedAt));
-
+    });
     const wrap = document.getElementById('ord-list');
     if(!list.length){ wrap.innerHTML='<div class="muted">No orders yet.</div>'; return; }
     wrap.innerHTML = list.map(o=>{
-      const acc = db.accounts.find(a=>a.id===o.accountId);
+      const a = acctMap[o.account_id];
       const status = o.status==='finalized' ? 'ok' : (o.status==='draft' ? 'warn':'info');
       return `<div class="list-item">
         <div class="grow">
-          <div class="title">${o.orderNumber} <span class="badge ${status}">${o.status}</span></div>
-          <div class="meta">${acc?.businessName||'—'} · ${new Date(o.placedAt).toLocaleDateString()} · ${fmt$(o.total)}</div>
+          <div class="title">${esc(o.order_number||'(draft)')} <span class="badge ${status}">${esc(o.status)}</span></div>
+          <div class="meta">${esc(a?.business_name||'—')} · ${new Date(o.placed_at).toLocaleDateString()} · ${fmt$(o.total)}</div>
         </div>
         <button class="icon-btn" onclick="orders.open('${o.id}')">Open</button>
       </div>`;
     }).join('');
   },
-  openNew(){ orders.open(null) },
-  open(id){
-    const o = id ? db.orders.find(x=>x.id===id) : null;
+  _draft:null,
+  _taxRate:0, _taxLabel:'',
+  async openNew(){ orders.open(null) },
+  async open(id){
+    let o = null;
+    if(id){
+      const r = await sb.from('orders').select('*').eq('id', id).single();
+      if(r.error){ ui.err(r.error); return; }
+      o = r.data;
+    }
     const isNew = !o;
-    const ord = o || {
-      id:uid('O'), orderNumber:'', accountId:'', repId:auth.repIdForUser(),
-      placedAt:new Date().toISOString(), items:[], shipping:db.settings.shippingDefault,
-      tax:0, taxLabel:db.settings.taxLabelDefault, promoCode:'', promoEffect:'',
-      discount:0, payment:{method:'Visa', last4:'', authorized:false, esign:false},
-      status:'draft', tracking:'', total:0
+    orders._draft = o || {
+      account_id:'', rep_id:auth.repId(),
+      items:[], shipping:ref.shipDefault(), tax:0, tax_label:ref.taxLabelDefault(),
+      promo_code:'', promo_effect:'', discount:0,
+      payment:{method:'Visa', last4:'', esign:false},
+      status:'draft', total:0
     };
-
-    const accOpts = accounts.scope(db.accounts).map(a=>`<option value="${a.id}" ${ord.accountId===a.id?'selected':''}>${a.accountNumber} — ${a.businessName||'(unnamed)'}</option>`).join('');
-    const prodOpts = db.products.map(p=>`<option value="${p.sku}" data-price="${p.price}" data-name="${esc(p.name)}">${p.sku} · ${p.name} · ${fmt$(p.price)} (stock ${p.stock})</option>`).join('');
+    const accs = await accounts.list();
+    const accOpts = accs.map(a=>`<option value="${a.id}" ${orders._draft.account_id===a.id?'selected':''}>${esc(a.account_number)} — ${esc(a.business_name||'(unnamed)')}</option>`).join('');
+    const repOpts = cache.reps.length
+      ? cache.reps.map(r=>`<option value="${esc(r.rep_id||'')}" ${orders._draft.rep_id===r.rep_id?'selected':''}>${esc(r.name||r.email)} (${esc(r.rep_id||'no id')})</option>`).join('')
+      : `<option>${esc(auth.repId()||'')}</option>`;
+    const prodOpts = cache.products.map(p=>`<option value="${p.sku}" data-price="${p.price}" data-name="${esc(p.name)}">${p.sku} · ${esc(p.name)} · ${fmt$(p.price)} (stock ${p.stock})</option>`).join('');
 
     ui.modal(`
-      <h3>${isNew?'New order':'Order · '+ord.orderNumber}</h3>
+      <h3>${isNew?'New order':'Order · '+esc(orders._draft.order_number||'(draft)')}</h3>
       <div class="grid-2">
-        <div><label>Account</label><select id="o-acc" onchange="orders.refresh()">${accOpts}</select></div>
-        <div><label>Rep</label>
-          <select id="o-rep">${db.reps.map(r=>`<option value="${r.id}" ${ord.repId===r.id?'selected':''}>${r.name} (${r.id})</option>`).join('')}</select>
-        </div>
+        <div><label>Account</label><select id="o-acc" onchange="orders.refresh()">${accOpts || '<option value="">— no accounts —</option>'}</select></div>
+        <div><label>Rep</label><select id="o-rep" ${auth.isAdmin()?'':'disabled'}>${repOpts}</select></div>
       </div>
 
       <div class="card" style="margin-top:10px">
@@ -417,13 +416,13 @@ const orders = {
         <div class="grid-3">
           <div><label>Promo code</label>
             <div class="row" style="gap:6px">
-              <input id="o-promo" value="${esc(ord.promoCode||'')}" placeholder="e.g. WELCOME10"/>
+              <input id="o-promo" value="${esc(orders._draft.promo_code||'')}" placeholder="e.g. WELCOME10"/>
               <button class="icon-btn" onclick="orders.applyPromo()">Apply</button>
             </div>
-            <div class="muted" id="o-promo-msg" style="font-size:12px;margin-top:4px">${esc(ord.promoEffect||'No code applied')}</div>
+            <div class="muted" id="o-promo-msg" style="font-size:12px;margin-top:4px">${esc(orders._draft.promo_effect||'No code applied')}</div>
           </div>
-          <div><label>Shipping ($)</label><input id="o-ship" type="number" step="0.01" value="${ord.shipping}"/></div>
-          <div><label>Tax (auto)</label><input id="o-tax" readonly value="${ord.tax.toFixed(2)}"/></div>
+          <div><label>Shipping ($)</label><input id="o-ship" type="number" step="0.01" value="${orders._draft.shipping}" onchange="orders.recompute()"/></div>
+          <div><label>Tax (auto)</label><input id="o-tax" readonly value="${Number(orders._draft.tax||0).toFixed(2)}"/></div>
         </div>
         <div class="muted" id="o-tax-note" style="font-size:12px;margin-top:6px"></div>
       </div>
@@ -433,49 +432,44 @@ const orders = {
         <div class="grid-3">
           <div><label>Method</label>
             <select id="o-pay-method">
-              ${['Visa','Mastercard','Amex','Apple Pay','Venmo','PayPal','ACH'].map(m=>`<option ${ord.payment?.method===m?'selected':''}>${m}</option>`).join('')}
+              ${['Visa','Mastercard','Amex','Apple Pay','Venmo','PayPal','ACH'].map(m=>`<option ${orders._draft.payment?.method===m?'selected':''}>${m}</option>`).join('')}
             </select>
           </div>
-          <div><label>Card last 4 (if card)</label><input id="o-pay-l4" value="${esc(ord.payment?.last4||'')}" maxlength="4"/></div>
+          <div><label>Card last 4 (if card)</label><input id="o-pay-l4" value="${esc(orders._draft.payment?.last4||'')}" maxlength="4"/></div>
           <div><label>New card e-signature</label>
-            <select id="o-pay-esign"><option value="false" ${!ord.payment?.esign?'selected':''}>Not signed</option><option value="true" ${ord.payment?.esign?'selected':''}>E-signed on file</option></select>
+            <select id="o-pay-esign"><option value="false" ${!orders._draft.payment?.esign?'selected':''}>Not signed</option><option value="true" ${orders._draft.payment?.esign?'selected':''}>E-signed on file</option></select>
           </div>
         </div>
         <p class="muted" style="font-size:12px;margin:8px 0 0">All sales final. No payment terms. Returns only for shipping damage (case-by-case). Card data is never stored in the CRM — production uses Shopify Payments / tokenized vault.</p>
       </div>
 
       <div class="card">
-        <div class="row wrap">
-          <div class="grow">
-            <div><b>Subtotal</b> <span id="o-sub">$0.00</span></div>
-            <div><b>Discount</b> <span id="o-disc">$0.00</span></div>
-            <div><b>Shipping</b> <span id="o-shipv">$0.00</span></div>
-            <div><b>Tax</b> <span id="o-taxv">$0.00</span> <span class="muted" id="o-taxlbl"></span></div>
-            <div style="font-size:18px;margin-top:6px"><b>Total</b> <span id="o-total">$0.00</span></div>
-          </div>
+        <div class="grow">
+          <div><b>Subtotal</b> <span id="o-sub">$0.00</span></div>
+          <div><b>Discount</b> <span id="o-disc">$0.00</span></div>
+          <div><b>Shipping</b> <span id="o-shipv">$0.00</span></div>
+          <div><b>Tax</b> <span id="o-taxv">$0.00</span> <span class="muted" id="o-taxlbl"></span></div>
+          <div style="font-size:18px;margin-top:6px"><b>Total</b> <span id="o-total">$0.00</span></div>
         </div>
       </div>
 
       <div class="row" style="gap:8px;margin-top:6px">
-        <button class="icon-btn" onclick="orders.saveDraft('${ord.id}', ${isNew})">Save draft</button>
-        <button class="icon-btn primary" onclick="orders.finalize('${ord.id}', ${isNew})">Finalize & invoice</button>
-        ${!isNew?`<button class="icon-btn danger" onclick="orders.remove('${ord.id}')">Delete</button>`:''}
+        <button class="icon-btn" onclick="orders.saveDraft('${orders._draft.id||''}', ${isNew})">Save draft</button>
+        <button class="icon-btn primary" onclick="orders.finalize('${orders._draft.id||''}', ${isNew})">Finalize & invoice</button>
+        ${!isNew?`<button class="icon-btn danger" onclick="orders.remove('${orders._draft.id}')">Delete</button>`:''}
         <button class="icon-btn ghost" onclick="ui.closeModal()">Close</button>
       </div>
     `);
-
-    orders._draft = JSON.parse(JSON.stringify(ord));
     orders.renderItems();
     orders.refresh();
   },
-  _draft:null,
-  refresh(){
-    /* tax label by account */
-    const acc = db.accounts.find(a=>a.id===document.getElementById('o-acc').value);
-    let rate = db.settings.taxRateDefault, label = db.settings.taxLabelDefault;
+  async refresh(){
+    const accId = document.getElementById('o-acc').value;
+    const acc = (await accounts.list()).find(a=>a.id===accId);
+    let rate = ref.taxRateDefault(), label = ref.taxLabelDefault();
     let note = `Default: ${label} (${(rate*100).toFixed(2)}%).`;
-    if(acc && acc.salesTaxLicense){
-      rate = 0; label = `Tax-exempt (license ${acc.salesTaxLicense}, ${acc.salesTaxState||'state'})`;
+    if(acc && acc.sales_tax_license){
+      rate = 0; label = `Tax-exempt (license ${acc.sales_tax_license}, ${acc.sales_tax_state||'state'})`;
       note = `Account has a sales tax license — tax not collected.`;
     }
     orders._taxRate = rate; orders._taxLabel = label;
@@ -484,12 +478,13 @@ const orders = {
   },
   renderItems(){
     const wrap = document.getElementById('o-items');
-    if(!orders._draft.items.length){ wrap.innerHTML='<div class="muted">No items yet.</div>'; return; }
+    const items = orders._draft.items || [];
+    if(!items.length){ wrap.innerHTML='<div class="muted">No items yet.</div>'; return; }
     wrap.innerHTML = `<div class="table-wrap"><table>
       <tr><th>SKU</th><th>Item</th><th>Qty</th><th>Price</th><th>Line</th><th></th></tr>
-      ${orders._draft.items.map((it,i)=>`
+      ${items.map((it,i)=>`
         <tr>
-          <td class="nowrap">${it.sku}</td>
+          <td class="nowrap">${esc(it.sku)}</td>
           <td>${esc(it.name)}</td>
           <td><input type="number" min="1" value="${it.qty}" style="width:80px" onchange="orders.setQty(${i}, this.value)"/></td>
           <td>${fmt$(it.price)}</td>
@@ -502,7 +497,7 @@ const orders = {
     const sel = document.getElementById('o-sku');
     const opt = sel.selectedOptions[0]; if(!opt) return;
     const qty = Math.max(1, parseInt(document.getElementById('o-qty').value||'1',10));
-    orders._draft.items.push({sku:opt.value, name:opt.dataset.name, price:parseFloat(opt.dataset.price), qty});
+    (orders._draft.items ||= []).push({sku:opt.value, name:opt.dataset.name, price:parseFloat(opt.dataset.price), qty});
     orders.renderItems(); orders.recompute();
   },
   setQty(i,v){ orders._draft.items[i].qty = Math.max(1, parseInt(v||'1',10)); orders.renderItems(); orders.recompute(); },
@@ -510,43 +505,40 @@ const orders = {
   applyPromo(){
     const code = (document.getElementById('o-promo').value||'').trim().toUpperCase();
     document.getElementById('o-promo').value = code;
-    const p = db.promotions.find(x=>x.code===code && x.active);
-    const qty = orders._draft.items.reduce((s,i)=>s+i.qty,0);
+    const p = cache.promotions.find(x=>x.code===code && x.active);
+    const items = orders._draft.items || [];
+    const qty = items.reduce((s,i)=>s+i.qty,0);
     if(!p){
-      orders._draft.promoCode=''; orders._draft.promoEffect=''; orders._draft.discount=0;
+      orders._draft.promo_code=''; orders._draft.promo_effect=''; orders._draft.discount=0;
       document.getElementById('o-promo-msg').textContent = code ? 'Code not found / inactive' : 'No code applied';
       orders.recompute(); return;
     }
-    if(p.minQty && qty < p.minQty){
-      orders._draft.promoCode=''; orders._draft.promoEffect=''; orders._draft.discount=0;
-      document.getElementById('o-promo-msg').textContent = `Requires ${p.minQty}+ units (current ${qty}).`;
+    if(p.min_qty && qty < p.min_qty){
+      orders._draft.promo_code=''; orders._draft.promo_effect=''; orders._draft.discount=0;
+      document.getElementById('o-promo-msg').textContent = `Requires ${p.min_qty}+ units (current ${qty}).`;
       orders.recompute(); return;
     }
-    orders._draft.promoCode = p.code;
-    if(p.kind==='percent'){
-      orders._draft.promoEffect = `${p.value}% off subtotal`;
-    } else if(p.kind==='shipping'){
-      orders._draft.promoEffect = 'Free shipping';
-    } else if(p.kind==='bonus'){
-      orders._draft.promoEffect = 'Bonus product included with shipment';
-    } else if(p.kind==='access'){
-      orders._draft.promoEffect = p.perks || 'Access perk';
-    }
-    document.getElementById('o-promo-msg').textContent = orders._draft.promoEffect;
+    orders._draft.promo_code = p.code;
+    if(p.kind==='percent') orders._draft.promo_effect = `${p.value}% off subtotal`;
+    else if(p.kind==='shipping') orders._draft.promo_effect = 'Free shipping';
+    else if(p.kind==='bonus') orders._draft.promo_effect = 'Bonus product included with shipment';
+    else if(p.kind==='access') orders._draft.promo_effect = p.perks || 'Access perk';
+    document.getElementById('o-promo-msg').textContent = orders._draft.promo_effect;
     orders.recompute();
   },
   recompute(){
     const d = orders._draft; if(!d) return;
-    const sub = d.items.reduce((s,i)=>s+i.qty*i.price,0);
-    const p = db.promotions.find(x=>x.code===d.promoCode);
-    let disc = 0, ship = parseFloat(document.getElementById('o-ship').value||db.settings.shippingDefault);
-    if(p?.kind==='percent') disc = sub * (p.value/100);
+    const items = d.items || [];
+    const sub = items.reduce((s,i)=>s+i.qty*i.price,0);
+    const p = cache.promotions.find(x=>x.code===d.promo_code);
+    let disc = 0, ship = parseFloat(document.getElementById('o-ship').value||ref.shipDefault());
+    if(p?.kind==='percent') disc = sub * (Number(p.value)/100);
     if(p?.kind==='shipping') ship = 0;
     const taxable = Math.max(0, sub - disc);
     const tax = taxable * (orders._taxRate||0);
     const total = taxable + ship + tax;
     d.discount = disc; d.shipping = ship; d.tax = tax;
-    d.taxLabel = orders._taxLabel; d.total = total;
+    d.tax_label = orders._taxLabel; d.total = total;
     document.getElementById('o-sub').textContent = fmt$(sub);
     document.getElementById('o-disc').textContent = fmt$(disc);
     document.getElementById('o-shipv').textContent = fmt$(ship);
@@ -555,10 +547,10 @@ const orders = {
     document.getElementById('o-total').textContent = fmt$(total);
     document.getElementById('o-tax').value = tax.toFixed(2);
   },
-  collect(id){
+  collect(){
     const d = orders._draft;
-    d.accountId = document.getElementById('o-acc').value;
-    d.repId = document.getElementById('o-rep').value;
+    d.account_id = document.getElementById('o-acc').value || null;
+    d.rep_id = document.getElementById('o-rep').value || auth.repId();
     d.shipping = parseFloat(document.getElementById('o-ship').value||0);
     d.payment = {
       method: document.getElementById('o-pay-method').value,
@@ -568,75 +560,91 @@ const orders = {
     };
     return d;
   },
-  saveDraft(id, isNew){
-    const d = orders.collect(id);
-    d.status='draft';
-    if(isNew){ db.orders.push(d); }
-    else { const i = db.orders.findIndex(x=>x.id===id); db.orders[i]=d; }
-    save(); ui.closeModal(); ui.toast('Draft saved'); orders.render();
+  buildPayload(d){
+    return {
+      account_id: d.account_id, rep_id: d.rep_id, items: d.items||[],
+      shipping: Number(d.shipping||0), tax: Number(d.tax||0), tax_label: d.tax_label,
+      promo_code: d.promo_code, promo_effect: d.promo_effect, discount: Number(d.discount||0),
+      payment: d.payment, status: d.status, total: Number(d.total||0)
+    };
   },
-  finalize(id, isNew){
-    const d = orders.collect(id);
-    if(!d.accountId){ ui.toast('Pick an account first'); return; }
-    if(!d.items.length){ ui.toast('Add at least one item'); return; }
-    const cardMethods = ['Visa','Mastercard','Amex'];
-    if(cardMethods.includes(d.payment.method) && !d.payment.esign){
-      ui.toast('New card requires e-signature'); return;
+  async saveDraft(id, isNew){
+    const d = orders.collect(); d.status='draft';
+    const payload = orders.buildPayload(d);
+    let q;
+    if(isNew){
+      payload.created_by = (await sb.auth.getUser()).data.user.id;
+      q = await sb.from('orders').insert(payload).select().single();
+    } else {
+      q = await sb.from('orders').update(payload).eq('id', id).select().single();
     }
+    if(q.error){ ui.err(q.error); return; }
+    ui.closeModal(); ui.toast('Draft saved'); orders.render();
+  },
+  async finalize(id, isNew){
+    const d = orders.collect();
+    if(!d.account_id){ ui.toast('Pick an account first'); return; }
+    if(!(d.items||[]).length){ ui.toast('Add at least one item'); return; }
+    const cardMethods = ['Visa','Mastercard','Amex'];
+    if(cardMethods.includes(d.payment.method) && !d.payment.esign){ ui.toast('New card requires e-signature'); return; }
 
-    /* high-discount alert flag */
     const sub = d.items.reduce((s,i)=>s+i.qty*i.price,0);
-    const discPct = sub>0 ? (d.discount/sub*100) : 0;
-    const adminFlag = discPct >= db.settings.highDiscountAlertPct ? `High discount (${discPct.toFixed(1)}%) — admin will be notified.\n` : '';
-
+    const discPct = sub>0 ? (Number(d.discount)/sub*100) : 0;
+    const adminFlag = discPct >= ref.highDiscPct() ? `High discount (${discPct.toFixed(1)}%) — admin will be notified.\n` : '';
     if(!confirm(adminFlag+'Finalize this order? This generates an order #, invoice, and charges payment.')) return;
 
     d.status='finalized';
-    d.placedAt = new Date().toISOString();
-    if(!d.orderNumber) d.orderNumber = 'ORD-' + (++db.counters.order);
     d.payment.authorized = true;
-    d.tracking = 'PENDING';
-
-    if(isNew){ db.orders.push(d); }
-    else { const i = db.orders.findIndex(x=>x.id===id); db.orders[i]=d; }
-    save(); ui.closeModal();
-    invoice.show(d);
+    const payload = orders.buildPayload(d);
+    let q;
+    if(isNew){
+      payload.created_by = (await sb.auth.getUser()).data.user.id;
+      q = await sb.from('orders').insert(payload).select().single();
+    } else {
+      q = await sb.from('orders').update(payload).eq('id', id).select().single();
+    }
+    if(q.error){ ui.err(q.error); return; }
+    ui.closeModal();
+    invoice.show(q.data);
     dashboard.render(); orders.render();
   },
-  remove(id){
+  async remove(id){
     if(!confirm('Delete this order?')) return;
-    db.orders = db.orders.filter(o=>o.id!==id);
-    save(); ui.closeModal(); ui.toast('Deleted'); orders.render();
+    const r = await sb.from('orders').delete().eq('id', id);
+    if(r.error){ ui.err(r.error); return; }
+    ui.closeModal(); ui.toast('Deleted'); orders.render();
   }
 };
 
-/* ============ INVOICE ============ */
+/* ---------- INVOICE ---------- */
 const invoice = {
-  show(o){
-    const acc = db.accounts.find(a=>a.id===o.accountId);
-    const rep = db.reps.find(r=>r.id===o.repId);
-    const sub = o.items.reduce((s,i)=>s+i.qty*i.price,0);
+  async show(o){
+    const accR = await sb.from('accounts').select('*').eq('id', o.account_id).single();
+    const acc = accR.data || {};
+    const rep = cache.reps.find(r=>r.rep_id===o.rep_id);
+    const items = o.items || [];
+    const sub = items.reduce((s,i)=>s+i.qty*i.price,0);
+    const co = ref.company();
     ui.modal(`
-      <h3>Invoice · ${o.orderNumber}</h3>
-      <div class="muted" style="margin-bottom:8px">${new Date(o.placedAt).toLocaleString()} · Rep ${rep?.name||o.repId}</div>
+      <h3>Invoice · ${esc(o.order_number||'(draft)')}</h3>
+      <div class="muted" style="margin-bottom:8px">${new Date(o.placed_at).toLocaleString()} · Rep ${esc(rep?.name||o.rep_id||'')}</div>
       <div class="grid-2">
-        <div><b>Bill to</b><br>${esc(acc?.billingName||'')}<br>${esc(acc?.businessName||'')}<br>${esc(acc?.billingAddress||'')}<br>${esc(acc?.email||'')}</div>
-        <div><b>From</b><br>${db.settings.company.name}<br>${db.settings.company.address}<br>${db.settings.company.website}</div>
+        <div><b>Bill to</b><br>${esc(acc.billing_name||'')}<br>${esc(acc.business_name||'')}<br>${esc(acc.billing_address||'')}<br>${esc(acc.email||'')}</div>
+        <div><b>From</b><br>${esc(co.name||'')}<br>${esc(co.address||'')}<br>${esc(co.website||'')}</div>
       </div>
       <div class="table-wrap" style="margin-top:10px">
-        <table>
-          <tr><th>SKU</th><th>Item</th><th>Qty</th><th>Price</th><th>Line</th></tr>
-          ${o.items.map(i=>`<tr><td>${i.sku}</td><td>${esc(i.name)}</td><td>${i.qty}</td><td>${fmt$(i.price)}</td><td>${fmt$(i.qty*i.price)}</td></tr>`).join('')}
+        <table><tr><th>SKU</th><th>Item</th><th>Qty</th><th>Price</th><th>Line</th></tr>
+          ${items.map(i=>`<tr><td>${esc(i.sku)}</td><td>${esc(i.name)}</td><td>${i.qty}</td><td>${fmt$(i.price)}</td><td>${fmt$(i.qty*i.price)}</td></tr>`).join('')}
         </table>
       </div>
       <div style="margin-top:10px">
         <div>Subtotal: ${fmt$(sub)}</div>
-        ${o.discount?`<div>Discount (${o.promoCode}): -${fmt$(o.discount)}</div>`:''}
+        ${o.discount?`<div>Discount (${esc(o.promo_code)}): -${fmt$(o.discount)}</div>`:''}
         <div>Shipping: ${fmt$(o.shipping)}</div>
-        <div>Tax (${esc(o.taxLabel)}): ${fmt$(o.tax)}</div>
+        <div>Tax (${esc(o.tax_label||'')}): ${fmt$(o.tax)}</div>
         <div style="font-size:18px;margin-top:4px"><b>Total: ${fmt$(o.total)}</b></div>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:8px">Payment: ${esc(o.payment.method)} ${o.payment.last4?'····'+esc(o.payment.last4):''} · E-sign: ${o.payment.esign?'on file':'n/a'}<br>Tracking will be emailed to ${esc(acc?.email||'the account')} when shipped.</div>
+      <div class="muted" style="font-size:12px;margin-top:8px">Payment: ${esc(o.payment?.method||'')} ${o.payment?.last4?'····'+esc(o.payment.last4):''} · E-sign: ${o.payment?.esign?'on file':'n/a'}<br>Tracking will be emailed to ${esc(acc.email||'the account')} when shipped.</div>
       <div class="row" style="gap:8px;margin-top:10px">
         <button class="icon-btn primary" onclick="window.print()">Print / Save PDF</button>
         <button class="icon-btn" onclick="ui.closeModal()">Done</button>
@@ -645,16 +653,22 @@ const invoice = {
   }
 };
 
-/* ============ PROMOTIONS ============ */
+/* ---------- PROMOTIONS (admin) ---------- */
 const promos = {
-  render(){
+  async refresh(){
+    const { data, error } = await sb.from('promotions').select('*').order('code');
+    if(error){ ui.err(error); return; }
+    cache.promotions = data || [];
+  },
+  async render(){
+    await promos.refresh();
     const wrap = document.getElementById('promo-list');
-    if(!db.promotions.length){ wrap.innerHTML='<div class="muted">No promotions.</div>'; return; }
-    wrap.innerHTML = db.promotions.map(p=>`
+    if(!cache.promotions.length){ wrap.innerHTML='<div class="muted">No promotions.</div>'; return; }
+    wrap.innerHTML = cache.promotions.map(p=>`
       <div class="list-item">
         <div class="grow">
-          <div class="title">${p.code} <span class="badge ${p.active?'ok':'err'}">${p.active?'active':'off'}</span> <span class="badge info">${p.kind}</span></div>
-          <div class="meta">${esc(p.perks||'')} · min ${p.minQty||0} units${p.kind==='percent'?` · ${p.value}% off`:''}</div>
+          <div class="title">${esc(p.code)} <span class="badge ${p.active?'ok':'err'}">${p.active?'active':'off'}</span> <span class="badge info">${esc(p.kind)}</span></div>
+          <div class="meta">${esc(p.perks||'')} · min ${p.min_qty||0} units${p.kind==='percent'?` · ${p.value}% off`:''}</div>
         </div>
         <button class="icon-btn" onclick="promos.open('${p.id}')">Edit</button>
       </div>
@@ -662,9 +676,9 @@ const promos = {
   },
   openNew(){ promos.open(null) },
   open(id){
-    const p = id ? db.promotions.find(x=>x.id===id) : null;
+    const p = id ? cache.promotions.find(x=>x.id===id) : null;
     const isNew = !p;
-    const promo = p || {id:uid('P'), code:'', kind:'percent', value:10, perks:'', minQty:0, active:true};
+    const promo = p || { code:'', kind:'percent', value:10, perks:'', min_qty:0, active:true };
     ui.modal(`
       <h3>${isNew?'New promotion':'Edit promotion'}</h3>
       <div class="grid-2">
@@ -674,132 +688,136 @@ const promos = {
             ${['percent','shipping','bonus','access'].map(k=>`<option ${promo.kind===k?'selected':''}>${k}</option>`).join('')}
           </select>
         </div>
-        <div><label>Percent (if % off)</label><input id="p-val" type="number" step="0.1" value="${promo.value}"/></div>
-        <div><label>Min units</label><input id="p-min" type="number" step="1" value="${promo.minQty||0}"/></div>
-        <div style="grid-column:1/-1"><label>Perk description</label><input id="p-perk" value="${esc(promo.perks||'')}" placeholder="e.g. Free shipping, seminar access"/></div>
+        <div><label>Percent (if % off)</label><input id="p-val" type="number" step="0.1" value="${promo.value||0}"/></div>
+        <div><label>Min units</label><input id="p-min" type="number" step="1" value="${promo.min_qty||0}"/></div>
+        <div style="grid-column:1/-1"><label>Perk description</label><input id="p-perk" value="${esc(promo.perks||'')}"/></div>
         <div><label>Status</label>
           <select id="p-act"><option value="true" ${promo.active?'selected':''}>Active</option><option value="false" ${!promo.active?'selected':''}>Inactive</option></select>
         </div>
       </div>
       <div class="row" style="gap:8px;margin-top:10px">
-        <button class="icon-btn primary" onclick="promos.save('${promo.id}', ${isNew})">Save</button>
+        <button class="icon-btn primary" onclick="promos.save('${promo.id||''}', ${isNew})">Save</button>
         ${!isNew?`<button class="icon-btn danger" onclick="promos.remove('${promo.id}')">Delete</button>`:''}
         <button class="icon-btn ghost" onclick="ui.closeModal()">Close</button>
       </div>
     `);
   },
-  save(id, isNew){
-    const get = i=>document.getElementById(i).value;
-    let p = db.promotions.find(x=>x.id===id);
-    if(!p){ p = {id}; db.promotions.push(p); }
-    Object.assign(p, {
-      code:get('p-code').trim().toUpperCase(),
-      kind:get('p-kind'),
-      value:parseFloat(get('p-val')||'0'),
-      minQty:parseInt(get('p-min')||'0',10),
-      perks:get('p-perk'),
-      active:get('p-act')==='true'
-    });
-    save(); ui.closeModal(); promos.render();
+  async save(id, isNew){
+    const get = i => document.getElementById(i).value;
+    const payload = {
+      code: get('p-code').trim().toUpperCase(),
+      kind: get('p-kind'),
+      value: parseFloat(get('p-val')||'0'),
+      min_qty: parseInt(get('p-min')||'0',10),
+      perks: get('p-perk'),
+      active: get('p-act')==='true'
+    };
+    const q = isNew
+      ? await sb.from('promotions').insert(payload).select().single()
+      : await sb.from('promotions').update(payload).eq('id', id).select().single();
+    if(q.error){ ui.err(q.error); return; }
+    ui.closeModal(); promos.render();
   },
-  remove(id){
+  async remove(id){
     if(!confirm('Delete promotion?')) return;
-    db.promotions = db.promotions.filter(p=>p.id!==id);
-    save(); ui.closeModal(); promos.render();
+    const r = await sb.from('promotions').delete().eq('id', id);
+    if(r.error){ ui.err(r.error); return; }
+    ui.closeModal(); promos.render();
   }
 };
 
-/* ============ REPORTS ============ */
+/* ---------- REPORTS ---------- */
 const reports = {
-  init(){
+  async init(){
     document.getElementById('rep-from').value = startOfMonth();
     document.getElementById('rep-to').value = todayISO();
     const repSel = document.getElementById('rep-rep');
-    repSel.innerHTML = '<option value="">All reps</option>' + db.reps.map(r=>`<option value="${r.id}">${r.name} (${r.id})</option>`).join('');
-    if(!auth.isAdmin()){
-      repSel.value = auth.repIdForUser(); repSel.disabled = true;
-    } else repSel.disabled = false;
+    repSel.innerHTML = '<option value="">All reps</option>' + cache.reps.filter(r=>r.rep_id).map(r=>`<option value="${esc(r.rep_id)}">${esc(r.name||r.email)} (${esc(r.rep_id)})</option>`).join('');
+    if(!auth.isAdmin()){ repSel.value = auth.repId() || ''; repSel.disabled = true; } else { repSel.disabled = false; }
     const typeSel = document.getElementById('rep-type');
-    typeSel.innerHTML = '<option value="">All</option>' + db.accountTypes.map(t=>`<option>${t}</option>`).join('');
+    typeSel.innerHTML = '<option value="">All</option>' + cache.accountTypeList().map(t=>`<option>${esc(t)}</option>`).join('');
     reports.run();
   },
-  filter(){
+  async filter(){
     const from = document.getElementById('rep-from').value;
     const to   = document.getElementById('rep-to').value;
     const repId= document.getElementById('rep-rep').value;
     const acct = document.getElementById('rep-acct').value.trim().toUpperCase();
     const ord  = document.getElementById('rep-ord').value.trim().toUpperCase();
     const typ  = document.getElementById('rep-type').value;
-    return db.orders.filter(o=>{
-      if(o.status!=='finalized') return false;
-      const d = o.placedAt.slice(0,10);
-      if(from && d<from) return false;
-      if(to && d>to) return false;
-      if(repId && o.repId!==repId) return false;
-      if(!auth.isAdmin() && o.repId!==auth.repIdForUser()) return false;
-      if(ord && !o.orderNumber.toUpperCase().includes(ord)) return false;
-      const a = db.accounts.find(x=>x.id===o.accountId);
-      if(acct && !(a?.accountNumber||'').toUpperCase().includes(acct)) return false;
-      if(typ && a?.type!==typ) return false;
+    let q = sb.from('orders').select('*, account:accounts(account_number,business_name,type)').eq('status','finalized');
+    if(from) q = q.gte('placed_at', from);
+    if(to)   q = q.lte('placed_at', to + 'T23:59:59');
+    if(repId) q = q.eq('rep_id', repId);
+    if(ord) q = q.ilike('order_number', `%${ord}%`);
+    const { data, error } = await q.order('placed_at',{ascending:true});
+    if(error){ ui.err(error); return []; }
+    return (data||[]).filter(o=>{
+      if(acct && !((o.account?.account_number||'').toUpperCase().includes(acct))) return false;
+      if(typ && o.account?.type!==typ) return false;
       return true;
     });
   },
-  run(){
-    const list = reports.filter();
-    const rev = list.reduce((s,o)=>s+o.total,0);
-    const comm = orders.totalCommission(list);
+  async run(){
+    const list = await reports.filter();
+    const rev = list.reduce((s,o)=>s+Number(o.total||0),0);
+    const comm = list.reduce((s,o)=>{
+      const repPct = (cache.reps.find(r=>r.rep_id===o.rep_id)?.commission || 0)/100;
+      return s + (Number(o.total||0) - Number(o.shipping||0) - Number(o.tax||0)) * repPct;
+    }, 0);
     document.getElementById('rep-k-orders').textContent = list.length;
     document.getElementById('rep-k-rev').textContent = fmt$(rev);
     document.getElementById('rep-k-avg').textContent = fmt$(list.length?rev/list.length:0);
     document.getElementById('rep-k-comm').textContent = fmt$(comm);
 
-    /* by account type */
     const grp = {};
     list.forEach(o=>{
-      const a = db.accounts.find(x=>x.id===o.accountId);
-      const t = a?.type || 'Unknown';
+      const t = o.account?.type || 'Unknown';
       grp[t] = grp[t] || {orders:0, units:0, rev:0};
       grp[t].orders++;
-      grp[t].units += o.items.reduce((s,i)=>s+i.qty,0);
-      grp[t].rev += o.total;
+      grp[t].units += (o.items||[]).reduce((s,i)=>s+i.qty,0);
+      grp[t].rev += Number(o.total||0);
     });
-    const rowsT = Object.entries(grp).map(([t,v])=>`<tr><td>${t}</td><td>${v.orders}</td><td>${v.units}</td><td>${fmt$(v.rev)}</td></tr>`).join('');
+    const rowsT = Object.entries(grp).map(([t,v])=>`<tr><td>${esc(t)}</td><td>${v.orders}</td><td>${v.units}</td><td>${fmt$(v.rev)}</td></tr>`).join('');
     document.getElementById('rep-bytype').innerHTML = rowsT ? `<table><tr><th>Type</th><th>Orders</th><th>Units</th><th>Revenue</th></tr>${rowsT}</table>` : '<div class="muted">No data.</div>';
 
-    /* detail */
-    const rows = list.sort((x,y)=>x.placedAt.localeCompare(y.placedAt)).map(o=>{
-      const a = db.accounts.find(x=>x.id===o.accountId);
+    const rows = list.map(o=>{
       return `<tr>
-        <td class="nowrap">${o.placedAt.slice(0,10)}</td>
-        <td>${o.orderNumber}</td>
-        <td>${a?.accountNumber||''}</td>
-        <td>${esc(a?.businessName||'')}</td>
-        <td>${a?.type||''}</td>
-        <td>${o.repId}</td>
+        <td class="nowrap">${o.placed_at.slice(0,10)}</td>
+        <td>${esc(o.order_number||'')}</td>
+        <td>${esc(o.account?.account_number||'')}</td>
+        <td>${esc(o.account?.business_name||'')}</td>
+        <td>${esc(o.account?.type||'')}</td>
+        <td>${esc(o.rep_id||'')}</td>
         <td>${fmt$(o.total)}</td>
       </tr>`;
     }).join('');
     document.getElementById('rep-detail').innerHTML = rows ? `<table><tr><th>Date</th><th>Order</th><th>Account #</th><th>Account</th><th>Type</th><th>Rep</th><th>Total</th></tr>${rows}</table>` : '<div class="muted">No orders match.</div>';
+    reports._lastList = list;
   },
   exportCsv(){
-    const list = reports.filter();
+    const list = reports._lastList || [];
     const rows = [['Date','Order','AccountNumber','Account','Type','Rep','Subtotal','Discount','Shipping','Tax','Total','Commission']];
     list.forEach(o=>{
-      const a = db.accounts.find(x=>x.id===o.accountId);
-      const sub = o.items.reduce((s,i)=>s+i.qty*i.price,0);
-      const repPct = (db.reps.find(r=>r.id===o.repId)?.commission||0)/100;
-      const comm = (o.total-o.shipping-o.tax)*repPct;
-      rows.push([o.placedAt.slice(0,10), o.orderNumber, a?.accountNumber||'', a?.businessName||'', a?.type||'', o.repId, sub.toFixed(2), o.discount.toFixed(2), o.shipping.toFixed(2), o.tax.toFixed(2), o.total.toFixed(2), comm.toFixed(2)]);
+      const sub = (o.items||[]).reduce((s,i)=>s+i.qty*i.price,0);
+      const repPct = (cache.reps.find(r=>r.rep_id===o.rep_id)?.commission||0)/100;
+      const comm = (Number(o.total)-Number(o.shipping)-Number(o.tax))*repPct;
+      rows.push([
+        o.placed_at.slice(0,10), o.order_number||'',
+        o.account?.account_number||'', o.account?.business_name||'',
+        o.account?.type||'', o.rep_id||'',
+        sub.toFixed(2), Number(o.discount).toFixed(2),
+        Number(o.shipping).toFixed(2), Number(o.tax).toFixed(2),
+        Number(o.total).toFixed(2), comm.toFixed(2)
+      ]);
     });
     const csv = rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
     const blob = new Blob([csv],{type:'text/csv'});
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `reflectco-report-${todayISO()}.csv`; a.click();
+    const a = document.createElement('a'); a.href = url; a.download = `reflectco-report-${todayISO()}.csv`; a.click();
     URL.revokeObjectURL(url);
   },
   monthly(){
-    /* set last month and run */
     const d = new Date();
     const first = new Date(d.getFullYear(), d.getMonth()-1, 1);
     const last  = new Date(d.getFullYear(), d.getMonth(), 0);
@@ -810,18 +828,17 @@ const reports = {
   }
 };
 
-/* ============ CUSTOMER SERVICE (rule-based assistant) ============ */
+/* ---------- CUSTOMER SERVICE (rule-based, soon: Claude API) ---------- */
 const cs = {
   init(){
     document.getElementById('chat-log').innerHTML='';
-    cs.bot("Hi! I can look up accounts, orders, promos, and tax rules. Try “orders for ACC-0001”, “promo BOGO48”, or “tax for license”.");
+    cs.bot("Hi! I can look up accounts, orders, promos, and tax rules. Try \"orders for ACC-0001\", \"promo BOGO48\", or \"tax for license\".");
   },
-  send(){
+  async send(){
     const inp = document.getElementById('chat-in');
     const text = inp.value.trim(); if(!text) return;
-    inp.value='';
-    cs.user(text);
-    cs.bot(cs.answer(text));
+    inp.value=''; cs.user(text);
+    cs.bot(await cs.answer(text));
   },
   user(t){ cs.push('user', t) },
   bot(t){ cs.push('bot', t) },
@@ -831,142 +848,134 @@ const cs = {
     div.className = 'bubble '+who; div.textContent = t;
     log.appendChild(div); log.scrollTop = log.scrollHeight;
   },
-  answer(q){
+  async answer(q){
     const s = q.toLowerCase();
-    const accMatch = q.match(/ACC-\d{4}/i);
-    const ordMatch = q.match(/ORD-\d+/i);
-    const codeMatch = q.match(/[A-Z0-9]{4,}/);
-    if(accMatch){
-      const a = db.accounts.find(x=>x.accountNumber.toUpperCase()===accMatch[0].toUpperCase());
-      if(!a) return 'No account with that number.';
-      const last = db.orders.filter(o=>o.accountId===a.id).sort((x,y)=>y.placedAt.localeCompare(x.placedAt))[0];
-      return `${a.businessName} (${a.type}) — rep ${a.repId}. Last order: ${last?last.orderNumber+' on '+last.placedAt.slice(0,10):'none yet'}.`;
+    const accM = q.match(/ACC-\d{4}/i);
+    const ordM = q.match(/ORD-\d+/i);
+    const codeM = q.match(/[A-Z0-9]{4,}/);
+    if(accM){
+      const r = await sb.from('accounts').select('*').ilike('account_number', accM[0]).maybeSingle();
+      if(!r.data) return 'No account with that number.';
+      const last = await orders.lastForAccount(r.data.id);
+      return `${r.data.business_name} (${r.data.type}) — rep ${r.data.rep_id}. Last order: ${last?last.order_number+' on '+last.placed_at.slice(0,10):'none yet'}.`;
     }
-    if(ordMatch){
-      const o = db.orders.find(x=>x.orderNumber.toUpperCase()===ordMatch[0].toUpperCase());
-      if(!o) return 'No such order.';
-      const a = db.accounts.find(x=>x.id===o.accountId);
-      return `${o.orderNumber} for ${a?.businessName||'—'}: ${fmt$(o.total)} (${o.status}). Promo: ${o.promoCode||'none'}.`;
+    if(ordM){
+      const r = await sb.from('orders').select('*, account:accounts(business_name)').ilike('order_number', ordM[0]).maybeSingle();
+      if(!r.data) return 'No such order.';
+      return `${r.data.order_number} for ${r.data.account?.business_name||'—'}: ${fmt$(r.data.total)} (${r.data.status}). Promo: ${r.data.promo_code||'none'}.`;
     }
     if(s.includes('promo') || s.includes('code')){
-      if(codeMatch){
-        const p = db.promotions.find(x=>x.code===codeMatch[0].toUpperCase());
-        if(p) return `${p.code}: ${p.perks} (min ${p.minQty||0} units, ${p.active?'active':'off'}).`;
+      if(codeM){
+        const p = cache.promotions.find(x=>x.code===codeM[0].toUpperCase());
+        if(p) return `${p.code}: ${p.perks} (min ${p.min_qty||0} units, ${p.active?'active':'off'}).`;
       }
-      return 'Active codes: ' + db.promotions.filter(p=>p.active).map(p=>p.code).join(', ');
+      return 'Active codes: ' + cache.promotions.filter(p=>p.active).map(p=>p.code).join(', ');
     }
     if(s.includes('tax')){
-      return `Default tax is ${(db.settings.taxRateDefault*100).toFixed(2)}% (${db.settings.taxLabelDefault}). Accounts with a sales-tax license on file are not charged tax. For multi-state, recommend Shopify Tax / Avalara at order placement.`;
+      return `Default tax is ${(ref.taxRateDefault()*100).toFixed(2)}% (${ref.taxLabelDefault()}). Accounts with a sales-tax license on file are not charged tax.`;
     }
     if(s.includes('ship')){
-      return `Default shipping is ${fmt$(db.settings.shippingDefault)}. Some volume promos (e.g. FREESHIP24) waive it.`;
+      return `Default shipping is ${fmt$(ref.shipDefault())}. Some volume promos (e.g. FREESHIP24) waive it.`;
     }
-    if(s.includes('reorder')||s.includes('due')){
-      const due = accounts.scope(db.accounts).filter(a=>{
-        const last = db.orders.filter(o=>o.accountId===a.id).sort((x,y)=>y.placedAt.localeCompare(x.placedAt))[0];
-        if(!last) return false;
-        return (Date.now()-new Date(last.placedAt))/86400000 >= db.settings.reorderDueDays;
-      }).slice(0,5).map(a=>a.businessName||a.accountNumber);
-      return due.length ? 'Due for reorder: '+due.join(', ') : 'No accounts are past the reorder threshold.';
-    }
-    if(s.includes('help')||s.includes('hello')||s.includes('hi')){
+    if(s.includes('hi')||s.includes('help')){
       return 'I can look up an account # (ACC-0001), an order # (ORD-1001), or a promo code. Ask about tax, shipping, or reorder due.';
     }
-    return 'I’m a simple rule-based assistant here. A production AI (e.g. Claude API) would handle freeform questions.';
+    return 'Rule-based for now. Plug Claude API in to handle freeform questions.';
   }
 };
 
-/* ============ ADMIN ============ */
+/* ---------- ADMIN ---------- */
 const adminPanel = {
-  render(){
+  async render(){
     /* reps */
-    const wrap = document.getElementById('rep-list');
-    wrap.innerHTML = db.reps.map(r=>`
+    await profiles.loadReps();
+    document.getElementById('rep-list').innerHTML = cache.reps.map(r=>`
       <div class="list-item">
-        <div class="grow"><div class="title">${r.name} <span class="badge info">${r.id}</span></div>
-          <div class="meta">${r.email} · commission ${r.commission}% · territory ${(r.territory||[]).join(', ')||'—'}</div>
+        <div class="grow"><div class="title">${esc(r.name||r.email)} <span class="badge info">${esc(r.rep_id||'no rep id')}</span> <span class="badge ${r.role==='admin'?'ok':''}">${esc(r.role)}</span></div>
+          <div class="meta">${esc(r.email)} · commission ${r.commission||0}% · territory ${(r.territory||[]).join(', ')||'—'}</div>
         </div>
         <button class="icon-btn" onclick="adminPanel.editRep('${r.id}')">Edit</button>
-        <button class="icon-btn danger" onclick="adminPanel.removeRep('${r.id}')">✕</button>
       </div>`).join('');
-
     /* types */
     document.getElementById('type-list').innerHTML =
-      db.accountTypes.map(t=>`<span class="badge info" style="padding:6px 10px">${t} <a href="#" onclick="adminPanel.removeType('${t}');return false" style="margin-left:6px;color:#fecaca">✕</a></span>`).join('');
-
+      cache.accountTypeList().map(t=>`<span class="badge info" style="padding:6px 10px">${esc(t)} <a href="#" onclick="adminPanel.removeType('${esc(t)}');return false" style="margin-left:6px;color:#fecaca">✕</a></span>`).join('');
     /* settings */
-    document.getElementById('set-ship').value = db.settings.shippingDefault;
-    document.getElementById('set-tax').value  = db.settings.taxRateDefault;
-    document.getElementById('set-taxlbl').value = db.settings.taxLabelDefault;
-    document.getElementById('set-disc').value = db.settings.highDiscountAlertPct;
-    document.getElementById('set-reorder').value = db.settings.reorderDueDays;
-    document.getElementById('set-stock').value = db.settings.lowStockThreshold;
+    document.getElementById('set-ship').value = ref.shipDefault();
+    document.getElementById('set-tax').value  = ref.taxRateDefault();
+    document.getElementById('set-taxlbl').value = ref.taxLabelDefault();
+    document.getElementById('set-disc').value = ref.highDiscPct();
+    document.getElementById('set-reorder').value = ref.reorderDays();
+    document.getElementById('set-stock').value = ref.lowStock();
   },
-  addRep(){
-    const name = document.getElementById('new-rep-name').value.trim();
-    const email = document.getElementById('new-rep-email').value.trim();
-    const commission = parseFloat(document.getElementById('new-rep-commission').value||'10');
-    if(!name||!email) return ui.toast('Name and email required');
-    const id = 'R-' + String(db.reps.length+1).padStart(3,'0');
-    db.reps.push({id, name, email, commission, territory:[]});
-    db.users.push({id:uid('u'), name, email, pass:'rep', role:'rep', repId:id, commission, territory:[]});
-    save(); adminPanel.render(); ui.toast('Rep added (password: rep)');
-  },
-  editRep(id){
-    const r = db.reps.find(x=>x.id===id); if(!r) return;
-    const name = prompt('Name', r.name); if(name===null) return;
-    const email = prompt('Email', r.email); if(email===null) return;
-    const comm = prompt('Commission %', r.commission); if(comm===null) return;
+  async editRep(id){
+    const r = cache.reps.find(x=>x.id===id); if(!r) return;
+    const name = prompt('Name', r.name||''); if(name===null) return;
+    const repId = prompt('Rep ID (e.g. R-001)', r.rep_id||''); if(repId===null) return;
+    const role = prompt('Role (admin or rep)', r.role||'rep'); if(role===null) return;
+    const comm = prompt('Commission %', r.commission ?? 10); if(comm===null) return;
     const terr = prompt('Territory ZIPs (comma sep)', (r.territory||[]).join(',')); if(terr===null) return;
-    Object.assign(r, {name, email, commission:parseFloat(comm)||0, territory:terr.split(',').map(x=>x.trim()).filter(Boolean)});
-    /* sync user */
-    const u = db.users.find(u=>u.repId===id); if(u){ u.name=name; u.email=email; u.commission=r.commission; u.territory=r.territory; }
-    save(); adminPanel.render();
+    const q = await sb.from('profiles').update({
+      name, rep_id:repId, role, commission:parseFloat(comm)||0,
+      territory: terr.split(',').map(x=>x.trim()).filter(Boolean)
+    }).eq('id', id);
+    if(q.error){ ui.err(q.error); return; }
+    adminPanel.render();
   },
-  removeRep(id){
-    if(!confirm('Remove rep '+id+'?')) return;
-    db.reps = db.reps.filter(r=>r.id!==id);
-    db.users = db.users.filter(u=>u.repId!==id);
-    save(); adminPanel.render();
-  },
-  addType(){
-    const t = document.getElementById('new-type').value.trim();
-    if(!t) return;
-    if(!db.accountTypes.includes(t)) db.accountTypes.push(t);
+  async addType(){
+    const t = document.getElementById('new-type').value.trim(); if(!t) return;
+    const q = await sb.from('account_types').upsert({name:t, sort_order:50});
+    if(q.error){ ui.err(q.error); return; }
     document.getElementById('new-type').value='';
-    save(); adminPanel.render();
+    await ref.loadAll();
+    adminPanel.render();
   },
-  removeType(t){
-    db.accountTypes = db.accountTypes.filter(x=>x!==t);
-    save(); adminPanel.render();
+  async removeType(t){
+    const q = await sb.from('account_types').delete().eq('name', t);
+    if(q.error){ ui.err(q.error); return; }
+    await ref.loadAll();
+    adminPanel.render();
   },
-  saveSettings(){
-    db.settings.shippingDefault = parseFloat(document.getElementById('set-ship').value||'0');
-    db.settings.taxRateDefault  = parseFloat(document.getElementById('set-tax').value||'0');
-    db.settings.taxLabelDefault = document.getElementById('set-taxlbl').value;
-    db.settings.highDiscountAlertPct = parseFloat(document.getElementById('set-disc').value||'0');
-    db.settings.reorderDueDays = parseInt(document.getElementById('set-reorder').value||'0',10);
-    db.settings.lowStockThreshold = parseInt(document.getElementById('set-stock').value||'0',10);
-    save(); ui.toast('Settings saved');
+  async saveSettings(){
+    const upserts = [
+      { key:'shipping_default', value: Number(document.getElementById('set-ship').value||0) },
+      { key:'tax_rate_default', value: Number(document.getElementById('set-tax').value||0) },
+      { key:'tax_label_default', value: document.getElementById('set-taxlbl').value },
+      { key:'high_discount_alert_pct', value: Number(document.getElementById('set-disc').value||0) },
+      { key:'reorder_due_days', value: Number(document.getElementById('set-reorder').value||0) },
+      { key:'low_stock_threshold', value: Number(document.getElementById('set-stock').value||0) }
+    ];
+    for(const r of upserts){
+      const q = await sb.from('settings').upsert({ key:r.key, value:r.value, updated_at:new Date().toISOString() });
+      if(q.error){ ui.err(q.error); return; }
+    }
+    await ref.loadAll();
+    ui.toast('Settings saved');
   }
 };
 
-/* ============ UTIL ============ */
-function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])) }
-
-/* ============ BOOT ============ */
-function boot(){
-  if(!db.session){
+/* ---------- BOOT ---------- */
+async function boot(){
+  const { data: { session } } = await sb.auth.getSession();
+  if(!session){
     document.getElementById('auth').classList.remove('hide');
     document.getElementById('app').classList.add('hide');
+    return;
+  }
+  try{
+    await profiles.loadMe(session.user.id);
+    await Promise.all([ref.loadAll(), profiles.loadReps()]);
+  } catch(e){
+    ui.err(e);
     return;
   }
   document.getElementById('auth').classList.add('hide');
   document.getElementById('app').classList.remove('hide');
   document.querySelectorAll('.admin-only').forEach(el=>el.classList.toggle('hide', !auth.isAdmin()));
-  /* promos tab is admin */
-  const navPromos = document.querySelector('[data-view="admin"]');
-  /* always show admin tab only when admin */
   nav.go('dashboard');
 }
+
+sb.auth.onAuthStateChange((event)=>{
+  if(event === 'SIGNED_OUT') location.reload();
+});
+
 boot();

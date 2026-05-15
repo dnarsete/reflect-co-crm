@@ -7,6 +7,8 @@
 <meta name="description" content="Mobile-first sales-rep CRM for The Reflect Co. Accounts, orders, promotions, reports, and an internal assistant — all in the browser." />
 <meta name="theme-color" content="#0f1419" />
 <link rel="stylesheet" href="styles.css" />
+<script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
 </head>
 <body>
 
@@ -21,31 +23,26 @@
       </div>
     </div>
     <h1>Sign in</h1>
-    <div class="sub">Reps & admins use the same login. Roles control what you can do.</div>
+    <div class="sub">Real accounts, real shared data. First-time users hit <b>Create account</b>.</div>
     <div id="auth-err" class="alert err hide" style="margin-bottom:10px"></div>
     <form onsubmit="event.preventDefault();auth.login()">
       <div style="margin-bottom:10px">
         <label>Email</label>
-        <input id="auth-email" type="email" placeholder="rep@thereflectco.com" autocomplete="username" autocapitalize="none" spellcheck="false" />
+        <input id="auth-email" type="email" placeholder="you@thereflectco.com" autocomplete="username" autocapitalize="none" spellcheck="false" />
       </div>
       <div style="margin-bottom:10px">
         <label>Password</label>
-        <input id="auth-pass" type="password" placeholder="rep or admin" autocomplete="current-password" autocapitalize="none" spellcheck="false" />
+        <input id="auth-pass" type="password" placeholder="At least 6 characters" autocomplete="current-password" autocapitalize="none" spellcheck="false" />
       </div>
       <div class="row" style="gap:8px;margin-top:6px">
         <button type="submit" class="icon-btn primary grow">Sign in</button>
+        <button type="button" class="icon-btn grow" onclick="auth.signup()">Create account</button>
       </div>
     </form>
-    <div class="row" style="gap:8px;margin-top:8px">
-      <button class="icon-btn ghost grow" onclick="auth.fill('rep@thereflectco.com','rep')">Use Rep demo</button>
-      <button class="icon-btn ghost grow" onclick="auth.fill('admin@thereflectco.com','admin')">Use Admin demo</button>
-    </div>
     <details style="margin-top:10px">
-      <summary>Demo accounts</summary>
+      <summary>About accounts</summary>
       <div class="muted" style="font-size:13px;line-height:1.6">
-        <div><b>Rep</b> — rep@thereflectco.com / rep</div>
-        <div><b>Admin</b> — admin@thereflectco.com / admin</div>
-        <div style="margin-top:6px"><a href="#" onclick="auth.hardReset();return false">Reset local data</a> if you can't sign in (clears localStorage).</div>
+        New users start as <b>reps</b>. An admin promotes them via Admin → Reps. Bootstrap: the first user can run a one-line SQL in Supabase to make themselves admin (see setup guide).
       </div>
     </details>
   </div>
