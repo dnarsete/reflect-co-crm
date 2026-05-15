@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>The Reflect Co — Rep CRM</title>
+<meta name="description" content="Mobile-first sales-rep CRM for The Reflect Co. Accounts, orders, promotions, reports, and an internal assistant — all in the browser." />
+<meta name="theme-color" content="#0f1419" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<!-- ===================== AUTH ===================== -->
+<section id="auth" class="auth">
+  <div class="card">
+    <div class="brand" style="margin-bottom:10px">
+      <div class="brand-mark">R</div>
+      <div>
+        <div class="brand-name">The Reflect Co</div>
+        <div class="brand-sub">Sales Rep Portal</div>
+      </div>
+    </div>
+    <h1>Sign in</h1>
+    <div class="sub">Reps & admins use the same login. Roles control what you can do.</div>
+    <div id="auth-err" class="alert err hide" style="margin-bottom:10px"></div>
+    <form onsubmit="event.preventDefault();auth.login()">
+      <div style="margin-bottom:10px">
+        <label>Email</label>
+        <input id="auth-email" type="email" placeholder="rep@thereflectco.com" autocomplete="username" autocapitalize="none" spellcheck="false" />
+      </div>
+      <div style="margin-bottom:10px">
+        <label>Password</label>
+        <input id="auth-pass" type="password" placeholder="rep or admin" autocomplete="current-password" autocapitalize="none" spellcheck="false" />
+      </div>
+      <div class="row" style="gap:8px;margin-top:6px">
+        <button type="submit" class="icon-btn primary grow">Sign in</button>
+      </div>
+    </form>
+    <div class="row" style="gap:8px;margin-top:8px">
+      <button class="icon-btn ghost grow" onclick="auth.fill('rep@thereflectco.com','rep')">Use Rep demo</button>
+      <button class="icon-btn ghost grow" onclick="auth.fill('admin@thereflectco.com','admin')">Use Admin demo</button>
+    </div>
+    <details style="margin-top:10px">
+      <summary>Demo accounts</summary>
+      <div class="muted" style="font-size:13px;line-height:1.6">
+        <div><b>Rep</b> — rep@thereflectco.com / rep</div>
+        <div><b>Admin</b> — admin@thereflectco.com / admin</div>
+        <div style="margin-top:6px"><a href="#" onclick="auth.hardReset();return false">Reset local data</a> if you can't sign in (clears localStorage).</div>
+      </div>
+    </details>
+  </div>
+</section>
+
+<!-- ===================== APP ===================== -->
+<section id="app" class="app hide">
+  <header class="top">
+    <div class="brand">
+      <div class="brand-mark">R</div>
+      <div style="min-width:0">
+        <div class="brand-name">The Reflect Co</div>
+        <div class="brand-sub" id="who">—</div>
+      </div>
+    </div>
+    <div class="top-actions">
+      <span id="role-pill" class="pill">Rep</span>
+      <button class="icon-btn ghost" onclick="auth.logout()" title="Sign out">⎋</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Dashboard -->
+    <section id="view-dashboard" class="view">
+      <div class="section-h"><h1>Dashboard</h1></div>
+
+      <div class="card">
+        <div class="kpi">
+          <div class="tile"><div class="lbl">Accounts</div><div class="val" id="kpi-accounts">0</div></div>
+          <div class="tile"><div class="lbl">Orders (MTD)</div><div class="val" id="kpi-orders">0</div></div>
+          <div class="tile"><div class="lbl">Revenue (MTD)</div><div class="val" id="kpi-rev">$0</div></div>
+          <div class="tile"><div class="lbl">Commission (MTD)</div><div class="val" id="kpi-comm">$0</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Alerts</h2>
+        <div id="alerts"></div>
+      </div>
+
+      <div class="card">
+        <h2>Quick actions</h2>
+        <div class="row wrap">
+          <button class="icon-btn primary" onclick="nav.go('accounts');accounts.openNew()">+ New Account</button>
+          <button class="icon-btn" onclick="nav.go('orders');orders.openNew()">+ New Order</button>
+          <button class="icon-btn" onclick="nav.go('reports')">Reports</button>
+          <button class="icon-btn" onclick="nav.go('cs')">Customer Service</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Accounts -->
+    <section id="view-accounts" class="view hide">
+      <div class="section-h">
+        <h1>Accounts</h1>
+        <button class="icon-btn primary" onclick="accounts.openNew()">+ New</button>
+      </div>
+      <div class="card">
+        <div class="row" style="gap:8px;margin-bottom:8px">
+          <input id="acc-search" placeholder="Search by name, account #, city…" oninput="accounts.render()"/>
+          <select id="acc-type-filter" onchange="accounts.render()" style="max-width:200px">
+            <option value="">All types</option>
+          </select>
+        </div>
+        <div id="acc-list"></div>
+      </div>
+    </section>
+
+    <!-- Orders -->
+    <section id="view-orders" class="view hide">
+      <div class="section-h">
+        <h1>Orders</h1>
+        <button class="icon-btn primary" onclick="orders.openNew()">+ New</button>
+      </div>
+      <div class="card">
+        <div class="row" style="gap:8px;margin-bottom:8px">
+          <input id="ord-search" placeholder="Search order #, account, rep…" oninput="orders.render()"/>
+        </div>
+        <div id="ord-list"></div>
+      </div>
+    </section>
+
+    <!-- Promotions (admin) -->
+    <section id="view-promos" class="view hide">
+      <div class="section-h">
+        <h1>Promotions</h1>
+        <button class="icon-btn primary" onclick="promos.openNew()">+ New code</button>
+      </div>
+      <div class="card">
+        <p class="muted" style="margin-top:0">Reps cannot apply manual discounts. They enter a <b>promo code</b> at checkout. Volume-based perks attach to a code (free shipping, bonus product, seminar/training access).</p>
+        <div id="promo-list"></div>
+      </div>
+    </section>
+
+    <!-- Reports -->
+    <section id="view-reports" class="view hide">
+      <div class="section-h"><h1>Reports & KPIs</h1></div>
+      <div class="card">
+        <div class="grid-3">
+          <div><label>From</label><input id="rep-from" type="date"/></div>
+          <div><label>To</label><input id="rep-to" type="date"/></div>
+          <div><label>Rep</label><select id="rep-rep"></select></div>
+        </div>
+        <div class="grid-3" style="margin-top:10px">
+          <div><label>Account #</label><input id="rep-acct" placeholder="e.g. ACC-0001"/></div>
+          <div><label>Order #</label><input id="rep-ord" placeholder="e.g. ORD-1042"/></div>
+          <div><label>Account type</label><select id="rep-type"><option value="">All</option></select></div>
+        </div>
+        <div class="row" style="gap:8px;margin-top:10px">
+          <button class="icon-btn primary" onclick="reports.run()">Run report</button>
+          <button class="icon-btn" onclick="reports.exportCsv()">Export CSV</button>
+          <button class="icon-btn" onclick="reports.monthly()">Auto monthly w/ commission</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Summary</h2>
+        <div id="rep-summary" class="kpi">
+          <div class="tile"><div class="lbl">Orders</div><div class="val" id="rep-k-orders">0</div></div>
+          <div class="tile"><div class="lbl">Revenue</div><div class="val" id="rep-k-rev">$0</div></div>
+          <div class="tile"><div class="lbl">Avg order</div><div class="val" id="rep-k-avg">$0</div></div>
+          <div class="tile"><div class="lbl">Commission</div><div class="val" id="rep-k-comm">$0</div></div>
+        </div>
+        <h2 style="margin-top:14px">By account type</h2>
+        <div id="rep-bytype" class="table-wrap"></div>
+        <h2 style="margin-top:14px">Detail</h2>
+        <div id="rep-detail" class="table-wrap"></div>
+      </div>
+    </section>
+
+    <!-- Customer Service -->
+    <section id="view-cs" class="view hide">
+      <div class="section-h"><h1>Customer Service</h1></div>
+      <div class="card">
+        <p class="muted" style="margin-top:0">Internal AI assistant for reps. (Forward-facing chat lives on thereflectco.com — this is the rep-side copy.)</p>
+        <div id="chat-log" class="chat-log"></div>
+        <div class="row" style="gap:8px">
+          <input id="chat-in" placeholder="Ask about an account, order, tax, promo…" onkeydown="if(event.key==='Enter')cs.send()"/>
+          <button class="icon-btn primary" onclick="cs.send()">Send</button>
+        </div>
+        <div class="alert" style="margin-top:10px">
+          If all else fails: <b>1-800-TBD</b> · <b>hello@thereflectco.com</b> · 3642 S. Jason Street, Englewood, CO 80210
+        </div>
+      </div>
+    </section>
+
+    <!-- Admin -->
+    <section id="view-admin" class="view hide">
+      <div class="section-h"><h1>Admin</h1></div>
+
+      <div class="card">
+        <h2>Promotions</h2>
+        <p class="muted" style="margin-top:0">Promotion codes are managed in their own tab — open the Promotions view to edit codes.</p>
+        <button class="icon-btn" onclick="nav.go('promos')">Open Promotions</button>
+      </div>
+
+      <div class="card">
+        <h2>Reps</h2>
+        <div id="rep-list"></div>
+        <div class="row" style="gap:8px;margin-top:10px">
+          <input id="new-rep-name" placeholder="Name"/>
+          <input id="new-rep-email" placeholder="email@thereflectco.com"/>
+          <input id="new-rep-commission" placeholder="Commission %" type="number" step="0.1" value="10"/>
+          <button class="icon-btn primary" onclick="adminPanel.addRep()">Add rep</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Account types</h2>
+        <div id="type-list" class="row wrap" style="gap:6px"></div>
+        <div class="row" style="gap:8px;margin-top:10px">
+          <input id="new-type" placeholder="e.g. Hotel"/>
+          <button class="icon-btn primary" onclick="adminPanel.addType()">Add type</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Settings</h2>
+        <div class="grid-3">
+          <div><label>Default shipping ($)</label><input id="set-ship" type="number" step="0.01"/></div>
+          <div><label>Default tax rate (decimal)</label><input id="set-tax" type="number" step="0.0001"/></div>
+          <div><label>Default tax label</label><input id="set-taxlbl" /></div>
+        </div>
+        <div class="grid-3" style="margin-top:10px">
+          <div><label>High discount alert (%)</label><input id="set-disc" type="number" step="1"/></div>
+          <div><label>Reorder-due (days)</label><input id="set-reorder" type="number" step="1"/></div>
+          <div><label>Stock low threshold</label><input id="set-stock" type="number" step="1"/></div>
+        </div>
+        <div class="row" style="gap:8px;margin-top:10px">
+          <button class="icon-btn primary" onclick="adminPanel.saveSettings()">Save settings</button>
+          <button class="icon-btn" onclick="seed.reset()">Reset demo data</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Lead routing & tax (notes from outline)</h2>
+        <ul class="muted">
+          <li><b>Lead → rep routing:</b> match incoming web leads to a rep by ZIP/territory. Stored under each rep as <i>territory</i> (ZIP list).</li>
+          <li><b>Multi-jurisdiction sales tax:</b> recommend Shopify Tax / Avalara. CRM stores the rate per state/county and a sales-tax license # per account when provided.</li>
+          <li><b>Shopify sync:</b> orders, inventory, payments are sourced from Shopify. This UI is the rep-facing layer.</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer class="bottom-nav">
+    <button class="nav-btn active" data-view="dashboard" onclick="nav.go('dashboard')"><span class="ico">⌂</span>Home</button>
+    <button class="nav-btn" data-view="accounts" onclick="nav.go('accounts')"><span class="ico">👤</span>Accounts</button>
+    <button class="nav-btn" data-view="orders" onclick="nav.go('orders')"><span class="ico">🧾</span>Orders</button>
+    <button class="nav-btn admin-only hide" data-view="promos" onclick="nav.go('promos')"><span class="ico">🏷</span>Promos</button>
+    <button class="nav-btn" data-view="reports" onclick="nav.go('reports')"><span class="ico">📊</span>Reports</button>
+    <button class="nav-btn" data-view="cs" onclick="nav.go('cs')"><span class="ico">💬</span>Help</button>
+    <button class="nav-btn admin-only hide" data-view="admin" onclick="nav.go('admin')"><span class="ico">⚙</span>Admin</button>
+  </footer>
+</section>
+
+<!-- ===================== MODAL ===================== -->
+<div id="modal-back" class="modal-back" onclick="if(event.target===this)ui.closeModal()">
+  <div class="modal" id="modal"></div>
+</div>
+
+<div class="toast-wrap"><div id="toast" class="toast hide"></div></div>
+
+<script src="app.js"></script>
+</body>
+</html>
