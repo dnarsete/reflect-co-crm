@@ -9,7 +9,7 @@ const todayISO = () => new Date().toISOString().slice(0,10);
 const startOfMonth = () => { const d=new Date(); return new Date(d.getFullYear(),d.getMonth(),1).toISOString().slice(0,10) };
 const uid = (prefix='') => prefix + Math.random().toString(36).slice(2,9);
 
-let db = load();
+let db;
 
 function load(){
   try{
@@ -117,6 +117,8 @@ const seed = {
     });
   }
 };
+
+db = load();
 seed.populate();
 save();
 
