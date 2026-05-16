@@ -158,7 +158,6 @@ exception when duplicate_object then null; end $$;
 
 insert into public.products (sku, name, price, stock) values
   ('RC-SERUM-01', 'Reflect Serum 30ml', 48, 120),
-  ('RC-CREAM-02', 'Reflect Cream 50ml', 62, 18),
   ('RC-MASK-03',  'Reflect Hydrating Mask', 24, 200),
   ('RC-KIT-04',   'Reflect Starter Kit', 140, 42)
 on conflict (sku) do nothing;
