@@ -91,6 +91,35 @@ const auth = {
     await sb.auth.signOut();
     location.reload();
   },
+  async resetPassword(){
+    const errEl = document.getElementById('auth-err');
+    const email = (document.getElementById('auth-email').value||'').trim().toLowerCase();
+    if(!email){
+      errEl.textContent = 'Enter your email above, then click "Forgot password?".'; errEl.classList.remove('hide'); return;
+    }
+    ui.busy(true);
+    const { error } = await sb.auth.resetPasswordForEmail(email, {
+      redirectTo: location.origin + location.pathname + '#reset'
+    });
+    ui.busy(false);
+    if(error){ errEl.textContent = 'Reset failed: '+error.message; errEl.classList.remove('hide'); return; }
+    errEl.classList.remove('err'); errEl.classList.add('ok'); errEl.classList.remove('hide');
+    errEl.innerHTML = '✉️ Check your inbox ('+esc(email)+') for a reset link. Open it on this device to set a new password.';
+  },
+  async applyRecoveryFlow(){
+    /* After clicking the email link, Supabase puts a recovery token in the URL hash.
+       Prompt for new password and set it. */
+    if(!location.hash.includes('access_token') && !location.hash.includes('type=recovery') && location.hash !== '#reset') return;
+    setTimeout(async ()=>{
+      const newp = prompt('Set a new password (at least 6 characters):');
+      if(!newp || newp.length<6){ alert('Password must be at least 6 characters.'); return; }
+      const { error } = await sb.auth.updateUser({ password: newp });
+      if(error){ alert('Failed: '+error.message); return; }
+      alert('Password updated. You are now signed in.');
+      history.replaceState(null, '', location.pathname);
+      location.reload();
+    }, 200);
+  },
   user(){ return cache.me; },
   isAdmin(){ return !!cache.me && cache.me.role === 'admin'; },
   repId(){ return cache.me ? cache.me.rep_id : null; }
@@ -976,6 +1005,8 @@ async function boot(){
 
 sb.auth.onAuthStateChange((event)=>{
   if(event === 'SIGNED_OUT') location.reload();
+  if(event === 'PASSWORD_RECOVERY') auth.applyRecoveryFlow();
 });
 
+auth.applyRecoveryFlow();
 boot();
