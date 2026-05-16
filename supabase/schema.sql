@@ -30,20 +30,32 @@ do $$ begin
     for update to authenticated using (auth.uid() = id) with check (auth.uid() = id);
 exception when duplicate_object then null; end $$;
 
+create or replace function public.is_admin()
+returns boolean
+language plpgsql security definer stable
+set search_path = public
+as $$
+begin
+  return exists(select 1 from public.profiles where id = auth.uid() and role = 'admin');
+end $$;
+
+create or replace function public.my_rep_id()
+returns text
+language plpgsql security definer stable
+set search_path = public
+as $$
+declare v text;
+begin
+  select rep_id into v from public.profiles where id = auth.uid();
+  return v;
+end $$;
+
 do $$ begin
   create policy "profiles admin all" on public.profiles
     for all to authenticated
-    using (exists (select 1 from public.profiles p where p.id = auth.uid() and p.role = 'admin'))
-    with check (exists (select 1 from public.profiles p where p.id = auth.uid() and p.role = 'admin'));
+    using (public.is_admin())
+    with check (public.is_admin());
 exception when duplicate_object then null; end $$;
-
-create or replace function public.is_admin() returns boolean language sql stable as $$
-  select exists (select 1 from public.profiles where id = auth.uid() and role = 'admin');
-$$;
-
-create or replace function public.my_rep_id() returns text language sql stable as $$
-  select rep_id from public.profiles where id = auth.uid();
-$$;
 
 create or replace function public.handle_new_user() returns trigger
 language plpgsql security definer set search_path = public as $$
