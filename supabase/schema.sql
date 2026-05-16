@@ -1,12 +1,12 @@
 -- =====================================================================
--- The Reflect Co — Rep CRM database schema (first-time setup)
--- Run this once in Supabase: SQL Editor → New query → paste → Run.
+-- The Reflect Co — Rep CRM database schema
+-- Fully idempotent: safe to run any number of times.
 -- =====================================================================
 
 create extension if not exists "pgcrypto";
 
 -- =====================================================================
--- profiles (1:1 with auth.users)
+-- profiles
 -- =====================================================================
 create table if not exists public.profiles (
   id uuid primary key references auth.users on delete cascade,
@@ -20,16 +20,22 @@ create table if not exists public.profiles (
 );
 alter table public.profiles enable row level security;
 
-create policy "profiles read all authenticated" on public.profiles
-  for select to authenticated using (true);
+do $$ begin
+  create policy "profiles read all authenticated" on public.profiles
+    for select to authenticated using (true);
+exception when duplicate_object then null; end $$;
 
-create policy "profiles update self" on public.profiles
-  for update to authenticated using (auth.uid() = id) with check (auth.uid() = id);
+do $$ begin
+  create policy "profiles update self" on public.profiles
+    for update to authenticated using (auth.uid() = id) with check (auth.uid() = id);
+exception when duplicate_object then null; end $$;
 
-create policy "profiles admin all" on public.profiles
-  for all to authenticated
-  using (exists (select 1 from public.profiles p where p.id = auth.uid() and p.role = 'admin'))
-  with check (exists (select 1 from public.profiles p where p.id = auth.uid() and p.role = 'admin'));
+do $$ begin
+  create policy "profiles admin all" on public.profiles
+    for all to authenticated
+    using (exists (select 1 from public.profiles p where p.id = auth.uid() and p.role = 'admin'))
+    with check (exists (select 1 from public.profiles p where p.id = auth.uid() and p.role = 'admin'));
+exception when duplicate_object then null; end $$;
 
 create or replace function public.is_admin() returns boolean language sql stable as $$
   select exists (select 1 from public.profiles where id = auth.uid() and role = 'admin');
@@ -48,9 +54,11 @@ begin
   return new;
 end $$;
 
-create trigger on_auth_user_created
-  after insert on auth.users
-  for each row execute procedure public.handle_new_user();
+do $$ begin
+  create trigger on_auth_user_created
+    after insert on auth.users
+    for each row execute procedure public.handle_new_user();
+exception when duplicate_object then null; end $$;
 
 -- =====================================================================
 -- account_types
@@ -61,12 +69,16 @@ create table if not exists public.account_types (
 );
 alter table public.account_types enable row level security;
 
-create policy "types read all" on public.account_types
-  for select to authenticated using (true);
+do $$ begin
+  create policy "types read all" on public.account_types
+    for select to authenticated using (true);
+exception when duplicate_object then null; end $$;
 
-create policy "types admin write" on public.account_types
-  for all to authenticated
-  using (public.is_admin()) with check (public.is_admin());
+do $$ begin
+  create policy "types admin write" on public.account_types
+    for all to authenticated
+    using (public.is_admin()) with check (public.is_admin());
+exception when duplicate_object then null; end $$;
 
 insert into public.account_types (name, sort_order) values
   ('Dermatologist', 1),
@@ -88,12 +100,16 @@ create table if not exists public.settings (
 );
 alter table public.settings enable row level security;
 
-create policy "settings read all" on public.settings
-  for select to authenticated using (true);
+do $$ begin
+  create policy "settings read all" on public.settings
+    for select to authenticated using (true);
+exception when duplicate_object then null; end $$;
 
-create policy "settings admin write" on public.settings
-  for all to authenticated
-  using (public.is_admin()) with check (public.is_admin());
+do $$ begin
+  create policy "settings admin write" on public.settings
+    for all to authenticated
+    using (public.is_admin()) with check (public.is_admin());
+exception when duplicate_object then null; end $$;
 
 insert into public.settings (key, value) values
   ('shipping_default', '30'::jsonb),
@@ -117,12 +133,16 @@ create table if not exists public.products (
 );
 alter table public.products enable row level security;
 
-create policy "products read all" on public.products
-  for select to authenticated using (true);
+do $$ begin
+  create policy "products read all" on public.products
+    for select to authenticated using (true);
+exception when duplicate_object then null; end $$;
 
-create policy "products admin write" on public.products
-  for all to authenticated
-  using (public.is_admin()) with check (public.is_admin());
+do $$ begin
+  create policy "products admin write" on public.products
+    for all to authenticated
+    using (public.is_admin()) with check (public.is_admin());
+exception when duplicate_object then null; end $$;
 
 insert into public.products (sku, name, price, stock) values
   ('RC-SERUM-01', 'Reflect Serum 30ml', 48, 120),
@@ -146,12 +166,16 @@ create table if not exists public.promotions (
 );
 alter table public.promotions enable row level security;
 
-create policy "promos read all" on public.promotions
-  for select to authenticated using (true);
+do $$ begin
+  create policy "promos read all" on public.promotions
+    for select to authenticated using (true);
+exception when duplicate_object then null; end $$;
 
-create policy "promos admin write" on public.promotions
-  for all to authenticated
-  using (public.is_admin()) with check (public.is_admin());
+do $$ begin
+  create policy "promos admin write" on public.promotions
+    for all to authenticated
+    using (public.is_admin()) with check (public.is_admin());
+exception when duplicate_object then null; end $$;
 
 insert into public.promotions (code, kind, value, min_qty, perks) values
   ('WELCOME10',   'percent',  10, 0,   '10% off intro'),
@@ -169,11 +193,15 @@ create table if not exists public.counters (
 );
 alter table public.counters enable row level security;
 
-create policy "counters read all" on public.counters
-  for select to authenticated using (true);
+do $$ begin
+  create policy "counters read all" on public.counters
+    for select to authenticated using (true);
+exception when duplicate_object then null; end $$;
 
-create policy "counters auth write" on public.counters
-  for all to authenticated using (true) with check (true);
+do $$ begin
+  create policy "counters auth write" on public.counters
+    for all to authenticated using (true) with check (true);
+exception when duplicate_object then null; end $$;
 
 insert into public.counters (key, value) values
   ('account', 0),
@@ -212,26 +240,36 @@ create table if not exists public.accounts (
 );
 alter table public.accounts enable row level security;
 
-create policy "accounts admin all" on public.accounts
-  for all to authenticated
-  using (public.is_admin()) with check (public.is_admin());
+do $$ begin
+  create policy "accounts admin all" on public.accounts
+    for all to authenticated
+    using (public.is_admin()) with check (public.is_admin());
+exception when duplicate_object then null; end $$;
 
-create policy "accounts rep read own" on public.accounts
-  for select to authenticated
-  using (rep_id = public.my_rep_id());
+do $$ begin
+  create policy "accounts rep read own" on public.accounts
+    for select to authenticated
+    using (rep_id = public.my_rep_id());
+exception when duplicate_object then null; end $$;
 
-create policy "accounts rep insert" on public.accounts
-  for insert to authenticated
-  with check (rep_id = public.my_rep_id() or rep_id is null);
+do $$ begin
+  create policy "accounts rep insert" on public.accounts
+    for insert to authenticated
+    with check (rep_id = public.my_rep_id() or rep_id is null);
+exception when duplicate_object then null; end $$;
 
-create policy "accounts rep update own" on public.accounts
-  for update to authenticated
-  using (rep_id = public.my_rep_id())
-  with check (rep_id = public.my_rep_id());
+do $$ begin
+  create policy "accounts rep update own" on public.accounts
+    for update to authenticated
+    using (rep_id = public.my_rep_id())
+    with check (rep_id = public.my_rep_id());
+exception when duplicate_object then null; end $$;
 
-create policy "accounts rep delete own" on public.accounts
-  for delete to authenticated
-  using (rep_id = public.my_rep_id());
+do $$ begin
+  create policy "accounts rep delete own" on public.accounts
+    for delete to authenticated
+    using (rep_id = public.my_rep_id());
+exception when duplicate_object then null; end $$;
 
 create index if not exists accounts_rep_idx on public.accounts(rep_id);
 create index if not exists accounts_type_idx on public.accounts(type);
@@ -245,9 +283,11 @@ begin
   return new;
 end $$;
 
-create trigger trg_set_account_number
-  before insert on public.accounts
-  for each row execute procedure public.set_account_number();
+do $$ begin
+  create trigger trg_set_account_number
+    before insert on public.accounts
+    for each row execute procedure public.set_account_number();
+exception when duplicate_object then null; end $$;
 
 -- =====================================================================
 -- orders
@@ -274,26 +314,36 @@ create table if not exists public.orders (
 );
 alter table public.orders enable row level security;
 
-create policy "orders admin all" on public.orders
-  for all to authenticated
-  using (public.is_admin()) with check (public.is_admin());
+do $$ begin
+  create policy "orders admin all" on public.orders
+    for all to authenticated
+    using (public.is_admin()) with check (public.is_admin());
+exception when duplicate_object then null; end $$;
 
-create policy "orders rep read own" on public.orders
-  for select to authenticated
-  using (rep_id = public.my_rep_id());
+do $$ begin
+  create policy "orders rep read own" on public.orders
+    for select to authenticated
+    using (rep_id = public.my_rep_id());
+exception when duplicate_object then null; end $$;
 
-create policy "orders rep insert" on public.orders
-  for insert to authenticated
-  with check (rep_id = public.my_rep_id());
+do $$ begin
+  create policy "orders rep insert" on public.orders
+    for insert to authenticated
+    with check (rep_id = public.my_rep_id());
+exception when duplicate_object then null; end $$;
 
-create policy "orders rep update own" on public.orders
-  for update to authenticated
-  using (rep_id = public.my_rep_id())
-  with check (rep_id = public.my_rep_id());
+do $$ begin
+  create policy "orders rep update own" on public.orders
+    for update to authenticated
+    using (rep_id = public.my_rep_id())
+    with check (rep_id = public.my_rep_id());
+exception when duplicate_object then null; end $$;
 
-create policy "orders rep delete own" on public.orders
-  for delete to authenticated
-  using (rep_id = public.my_rep_id() and status = 'draft');
+do $$ begin
+  create policy "orders rep delete own" on public.orders
+    for delete to authenticated
+    using (rep_id = public.my_rep_id() and status = 'draft');
+exception when duplicate_object then null; end $$;
 
 create index if not exists orders_account_idx on public.orders(account_id);
 create index if not exists orders_rep_idx on public.orders(rep_id);
@@ -309,9 +359,11 @@ begin
   return new;
 end $$;
 
-create trigger trg_set_order_number
-  before insert or update on public.orders
-  for each row execute procedure public.set_order_number();
+do $$ begin
+  create trigger trg_set_order_number
+    before insert or update on public.orders
+    for each row execute procedure public.set_order_number();
+exception when duplicate_object then null; end $$;
 
 -- =====================================================================
 -- Done. After signing up your first user, run:
