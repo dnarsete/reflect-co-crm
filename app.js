@@ -947,6 +947,53 @@ const promos = {
 
 /* ---------- REPORTS ---------- */
 const reports = {
+  setRange(preset){
+    const d = new Date();
+    const iso = x => x.toISOString().slice(0,10);
+    const monStart = (yr, mo) => new Date(yr, mo, 1);
+    const monEnd   = (yr, mo) => new Date(yr, mo+1, 0);
+    let from, to;
+    switch(preset){
+      case 'today':       from = to = iso(d); break;
+      case 'yesterday': {
+        const y = new Date(d); y.setDate(d.getDate()-1);
+        from = to = iso(y); break;
+      }
+      case 'week': {
+        const dow = d.getDay() || 7; /* Mon=1..Sun=7 */
+        const mon = new Date(d); mon.setDate(d.getDate() - (dow-1));
+        from = iso(mon); to = iso(d); break;
+      }
+      case 'lastweek': {
+        const dow = d.getDay() || 7;
+        const thisMon = new Date(d); thisMon.setDate(d.getDate() - (dow-1));
+        const lastMon = new Date(thisMon); lastMon.setDate(thisMon.getDate() - 7);
+        const lastSun = new Date(thisMon); lastSun.setDate(thisMon.getDate() - 1);
+        from = iso(lastMon); to = iso(lastSun); break;
+      }
+      case 'month':       from = iso(monStart(d.getFullYear(), d.getMonth())); to = iso(d); break;
+      case 'lastmonth':   from = iso(monStart(d.getFullYear(), d.getMonth()-1));
+                          to   = iso(monEnd  (d.getFullYear(), d.getMonth()-1)); break;
+      case 'quarter': {
+        const q = Math.floor(d.getMonth()/3);
+        from = iso(monStart(d.getFullYear(), q*3)); to = iso(d); break;
+      }
+      case 'lastquarter': {
+        const q = Math.floor(d.getMonth()/3) - 1;
+        const yr = q < 0 ? d.getFullYear()-1 : d.getFullYear();
+        const qm = q < 0 ? 9 : q*3;
+        from = iso(monStart(yr, qm)); to = iso(monEnd(yr, qm+2)); break;
+      }
+      case 'ytd':         from = iso(monStart(d.getFullYear(), 0));  to = iso(d); break;
+      case 'lastyear':    from = iso(monStart(d.getFullYear()-1, 0));
+                          to   = iso(monEnd  (d.getFullYear()-1, 11)); break;
+      case 'all':         from = '2000-01-01'; to = iso(d); break;
+      default: return;
+    }
+    document.getElementById('rep-from').value = from;
+    document.getElementById('rep-to').value = to;
+    reports.run();
+  },
   async init(){
     document.getElementById('rep-from').value = startOfMonth();
     document.getElementById('rep-to').value = todayISO();
@@ -1000,6 +1047,9 @@ const reports = {
     const rowsT = Object.entries(grp).map(([t,v])=>`<tr><td>${esc(t)}</td><td>${v.orders}</td><td>${v.units}</td><td>${fmt$(v.rev)}</td></tr>`).join('');
     document.getElementById('rep-bytype').innerHTML = rowsT ? `<table><tr><th>Type</th><th>Orders</th><th>Units</th><th>Revenue</th></tr>${rowsT}</table>` : '<div class="muted">No data.</div>';
 
+    /* trend over time */
+    reports.renderTrend(list);
+
     const rows = list.map(o=>{
       return `<tr>
         <td class="nowrap">${o.placed_at.slice(0,10)}</td>
@@ -1013,6 +1063,85 @@ const reports = {
     }).join('');
     document.getElementById('rep-detail').innerHTML = rows ? `<table><tr><th>Date</th><th>Order</th><th>Account #</th><th>Account</th><th>Type</th><th>Rep</th><th>Total</th></tr>${rows}</table>` : '<div class="muted">No orders match.</div>';
     reports._lastList = list;
+  },
+  renderTrend(list){
+    const fromStr = document.getElementById('rep-from').value;
+    const toStr   = document.getElementById('rep-to').value;
+    const titleEl = document.getElementById('rep-trend-title');
+    const wrap    = document.getElementById('rep-trend');
+    if(!fromStr || !toStr){ wrap.innerHTML=''; return; }
+    const from = new Date(fromStr + 'T00:00:00');
+    const to   = new Date(toStr   + 'T23:59:59');
+    const dayMs = 86400000;
+    const days = Math.max(1, Math.ceil((to - from) / dayMs) + 1);
+    const bucketBy = days <= 31 ? 'day' : days <= 120 ? 'week' : 'month';
+    titleEl.textContent = 'Revenue trend — by ' + bucketBy;
+
+    const buckets = new Map();
+    const keyFor = d => {
+      if(bucketBy === 'day'){
+        return { key: d.toISOString().slice(0,10), label: d.toLocaleDateString(undefined,{month:'short', day:'numeric'}) };
+      }
+      if(bucketBy === 'week'){
+        const dow = d.getDay() || 7;
+        const mon = new Date(d); mon.setDate(d.getDate() - (dow-1)); mon.setHours(0,0,0,0);
+        return { key: mon.toISOString().slice(0,10), label: 'Wk of ' + mon.toLocaleDateString(undefined,{month:'short', day:'numeric'}) };
+      }
+      const m = new Date(d.getFullYear(), d.getMonth(), 1);
+      return { key: m.toISOString().slice(0,10), label: m.toLocaleDateString(undefined,{month:'short', year:'numeric'}) };
+    };
+
+    const stepper = new Date(from);
+    if(bucketBy === 'day'){
+      while(stepper <= to){
+        const k = keyFor(new Date(stepper));
+        buckets.set(k.key, { label:k.label, orders:0, revenue:0 });
+        stepper.setDate(stepper.getDate()+1);
+      }
+    } else if(bucketBy === 'week'){
+      const dow = stepper.getDay() || 7;
+      stepper.setDate(stepper.getDate() - (dow-1));
+      while(stepper <= to){
+        const k = keyFor(new Date(stepper));
+        buckets.set(k.key, { label:k.label, orders:0, revenue:0 });
+        stepper.setDate(stepper.getDate()+7);
+      }
+    } else {
+      stepper.setDate(1);
+      while(stepper <= to){
+        const k = keyFor(new Date(stepper));
+        buckets.set(k.key, { label:k.label, orders:0, revenue:0 });
+        stepper.setMonth(stepper.getMonth()+1);
+      }
+    }
+
+    list.forEach(o=>{
+      const k = keyFor(new Date(o.placed_at));
+      const b = buckets.get(k.key) || { label:k.label, orders:0, revenue:0 };
+      b.orders++;
+      b.revenue += Number(o.total||0);
+      buckets.set(k.key, b);
+    });
+
+    const arr = Array.from(buckets.entries()).map(([key,v])=>({key, ...v}));
+    if(!arr.length){ wrap.innerHTML = '<div class="muted">No data.</div>'; return; }
+    const maxRev = Math.max(1, ...arr.map(x=>x.revenue));
+    const totalRev = arr.reduce((s,x)=>s+x.revenue,0);
+
+    const rows = arr.map(b=>{
+      const pct = (b.revenue / maxRev) * 100;
+      return `<tr>
+        <td class="nowrap">${esc(b.label)}</td>
+        <td>${b.orders}</td>
+        <td class="nowrap">${fmt$(b.revenue)}</td>
+        <td style="min-width:140px;width:100%">
+          <div style="position:relative;background:#0c1117;border:1px solid var(--line);border-radius:4px;height:18px">
+            <div style="position:absolute;left:0;top:0;height:100%;background:linear-gradient(90deg,var(--brand-2),var(--brand));width:${pct.toFixed(1)}%;border-radius:4px"></div>
+          </div>
+        </td>
+      </tr>`;
+    }).join('');
+    wrap.innerHTML = `<table><tr><th>Period</th><th>Orders</th><th>Revenue</th><th></th></tr>${rows}<tr><td><b>Total</b></td><td><b>${list.length}</b></td><td colspan="2"><b>${fmt$(totalRev)}</b></td></tr></table>`;
   },
   exportCsv(){
     const list = reports._lastList || [];

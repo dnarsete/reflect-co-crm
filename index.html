@@ -155,6 +155,19 @@
           <div><label>Order #</label><input id="rep-ord" placeholder="e.g. ORD-1042"/></div>
           <div><label>Account type</label><select id="rep-type"><option value="">All</option></select></div>
         </div>
+        <div class="row wrap" style="gap:6px;margin-top:10px">
+          <button class="icon-btn" onclick="reports.setRange('today')">Today</button>
+          <button class="icon-btn" onclick="reports.setRange('week')">This Week</button>
+          <button class="icon-btn" onclick="reports.setRange('month')">This Month</button>
+          <button class="icon-btn" onclick="reports.setRange('quarter')">This Quarter</button>
+          <button class="icon-btn" onclick="reports.setRange('ytd')">YTD</button>
+          <button class="icon-btn ghost" onclick="reports.setRange('yesterday')">Yesterday</button>
+          <button class="icon-btn ghost" onclick="reports.setRange('lastweek')">Last Week</button>
+          <button class="icon-btn ghost" onclick="reports.setRange('lastmonth')">Last Month</button>
+          <button class="icon-btn ghost" onclick="reports.setRange('lastquarter')">Last Quarter</button>
+          <button class="icon-btn ghost" onclick="reports.setRange('lastyear')">Last Year</button>
+          <button class="icon-btn ghost" onclick="reports.setRange('all')">All time</button>
+        </div>
         <div class="row" style="gap:8px;margin-top:10px">
           <button class="icon-btn primary" onclick="reports.run()">Run report</button>
           <button class="icon-btn" onclick="reports.exportCsv()">Export CSV</button>
@@ -170,6 +183,8 @@
           <div class="tile"><div class="lbl">Avg order</div><div class="val" id="rep-k-avg">$0</div></div>
           <div class="tile"><div class="lbl">Commission</div><div class="val" id="rep-k-comm">$0</div></div>
         </div>
+        <h2 style="margin-top:14px" id="rep-trend-title">Revenue trend</h2>
+        <div id="rep-trend" class="table-wrap"></div>
         <h2 style="margin-top:14px">By account type</h2>
         <div id="rep-bytype" class="table-wrap"></div>
         <h2 style="margin-top:14px">Detail</h2>
