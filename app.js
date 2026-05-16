@@ -492,8 +492,8 @@ const orders = {
             </select>
           </div>
           <div><label>Card last 4 (if card)</label><input id="o-pay-l4" value="${esc(orders._draft.payment?.last4||'')}" maxlength="4"/></div>
-          <div><label>New card e-signature</label>
-            <select id="o-pay-esign"><option value="false" ${!orders._draft.payment?.esign?'selected':''}>Not signed</option><option value="true" ${orders._draft.payment?.esign?'selected':''}>E-signed on file</option></select>
+          <div><label>Authorization signature</label>
+            <div id="o-sig-wrap"></div>
           </div>
         </div>
         <p class="muted" style="font-size:12px;margin:8px 0 0">All sales final. No payment terms. Returns only for shipping damage (case-by-case). Card data is never stored in the CRM — production uses Shopify Payments / tokenized vault.</p>
@@ -521,7 +521,45 @@ const orders = {
       orders._lastAccountId = orders._draft.account_id;
     }
     orders.renderItems();
+    orders.renderSig();
     orders.refresh();
+  },
+  renderSig(){
+    const wrap = document.getElementById('o-sig-wrap'); if(!wrap) return;
+    const sig = orders._draft.payment?.signature;
+    if(sig){
+      const when = orders._draft.payment.signed_at ? new Date(orders._draft.payment.signed_at).toLocaleString() : '';
+      wrap.innerHTML = `
+        <div style="background:white;border-radius:6px;padding:4px;margin-bottom:4px">
+          <img src="${sig}" style="display:block;width:100%;max-height:50px;object-fit:contain"/>
+        </div>
+        <div class="muted" style="font-size:11px;margin-bottom:4px">Signed ${esc(when)}</div>
+        <button class="icon-btn" onclick="orders.getSignature()" style="width:100%">Re-sign</button>`;
+    } else {
+      wrap.innerHTML = `<button class="icon-btn" onclick="orders.getSignature()" style="width:100%">Get signature</button>`;
+    }
+  },
+  async getSignature(){
+    const accId = document.getElementById('o-acc').value;
+    const accList = await accounts.list();
+    const acc = accList.find(a=>a.id===accId);
+    const method = document.getElementById('o-pay-method').value;
+    const last4 = document.getElementById('o-pay-l4').value;
+    /* Make sure total is current */
+    orders.recompute();
+    const total = orders._draft.total || 0;
+    const r = await sigpad.open({
+      customer: acc?.billing_name || acc?.business_name || '',
+      method, last4,
+      amount: fmt$(total)
+    });
+    if(r.signed){
+      orders._draft.payment = orders._draft.payment || {};
+      orders._draft.payment.signature = r.dataUrl;
+      orders._draft.payment.signed_at = r.signedAt;
+      orders.renderSig();
+      ui.toast('Signature captured');
+    }
   },
   async refresh(){
     const accId = document.getElementById('o-acc').value;
@@ -626,12 +664,11 @@ const orders = {
     d.account_id = document.getElementById('o-acc').value || null;
     d.rep_id = document.getElementById('o-rep').value || auth.repId();
     d.shipping = parseFloat(document.getElementById('o-ship').value||0);
-    d.payment = {
-      method: document.getElementById('o-pay-method').value,
-      last4: document.getElementById('o-pay-l4').value,
-      esign: document.getElementById('o-pay-esign').value==='true',
-      authorized: false
-    };
+    const pm = orders._draft.payment || {};
+    pm.method = document.getElementById('o-pay-method').value;
+    pm.last4 = document.getElementById('o-pay-l4').value;
+    pm.authorized = false;
+    d.payment = pm;
     d.tax_exempt = document.getElementById('o-exempt').checked;
     d._stl = (document.getElementById('o-stl').value||'').trim();
     d._sts = (document.getElementById('o-sts').value||'').trim();
@@ -682,7 +719,7 @@ const orders = {
     if(!d.account_id){ ui.toast('Pick an account first'); return; }
     if(!(d.items||[]).length){ ui.toast('Add at least one item'); return; }
     const cardMethods = ['Visa','Mastercard','Amex'];
-    if(cardMethods.includes(d.payment.method) && !d.payment.esign){ ui.toast('New card requires e-signature'); return; }
+    if(cardMethods.includes(d.payment.method) && !d.payment.signature){ ui.toast('Card payment requires an authorization signature. Tap "Get signature".'); return; }
 
     const sub = d.items.reduce((s,i)=>s+i.qty*i.price,0);
     const discPct = sub>0 ? (Number(d.discount)/sub*100) : 0;
@@ -710,6 +747,83 @@ const orders = {
     const r = await sb.from('orders').delete().eq('id', id);
     if(r.error){ ui.err(r.error); return; }
     ui.closeModal(); ui.toast('Deleted'); orders.render();
+  }
+};
+
+/* ---------- SIGNATURE PAD ----------
+   Canvas-based signature capture. Modal-driven; returns a data URL on confirm.
+*/
+const sigpad = {
+  _resolve:null, _drawn:false,
+  open(context){
+    return new Promise(resolve=>{
+      sigpad._resolve = resolve; sigpad._drawn = false;
+      const customer = esc(context.customer || 'the cardholder');
+      const method = esc(context.method || 'card');
+      const last4 = esc(context.last4 || '____');
+      const amount = esc(context.amount || 'the order total');
+      const co = ref.company();
+      ui.modal(`
+        <h3>Credit card authorization</h3>
+        <p class="muted" style="font-size:13px;margin:0 0 12px">
+          By signing below, <b>${customer}</b> authorizes ${esc(co.name||'The Reflect Co')} to charge ${method} ending in ${last4} for <b>${amount}</b> on ${new Date().toLocaleDateString()}. All sales final.
+        </p>
+        <div style="background:white;border-radius:8px;padding:6px">
+          <canvas id="sig-canvas" width="900" height="240" style="display:block;width:100%;height:200px;touch-action:none;background:white;border-radius:4px;cursor:crosshair"></canvas>
+          <div class="muted" style="font-size:11px;text-align:center;padding:4px 0;color:#666">Sign above with your finger or trackpad</div>
+        </div>
+        <div class="row" style="gap:8px;margin-top:10px">
+          <button class="icon-btn ghost" onclick="sigpad.clear()">Clear</button>
+          <div class="grow"></div>
+          <button class="icon-btn" onclick="sigpad.cancel()">Cancel</button>
+          <button class="icon-btn primary" onclick="sigpad.confirm()">I authorize</button>
+        </div>
+      `);
+      sigpad._init();
+    });
+  },
+  _init(){
+    const c = document.getElementById('sig-canvas'); if(!c) return;
+    const ctx = c.getContext('2d');
+    ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#000';
+    ctx.fillStyle = '#fff'; ctx.fillRect(0,0,c.width,c.height);
+    let drawing = false;
+    const pos = e => {
+      const r = c.getBoundingClientRect();
+      return { x: (e.clientX - r.left) * (c.width/r.width), y: (e.clientY - r.top) * (c.height/r.height) };
+    };
+    c.addEventListener('pointerdown', e=>{
+      drawing = true; c.setPointerCapture(e.pointerId);
+      const { x,y } = pos(e);
+      ctx.beginPath(); ctx.moveTo(x,y);
+    });
+    c.addEventListener('pointermove', e=>{
+      if(!drawing) return;
+      const { x,y } = pos(e);
+      ctx.lineTo(x,y); ctx.stroke();
+      sigpad._drawn = true;
+    });
+    const stop = ()=> drawing = false;
+    c.addEventListener('pointerup', stop);
+    c.addEventListener('pointerleave', stop);
+    c.addEventListener('pointercancel', stop);
+  },
+  clear(){
+    const c = document.getElementById('sig-canvas'); if(!c) return;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0,0,c.width,c.height);
+    sigpad._drawn = false;
+  },
+  confirm(){
+    if(!sigpad._drawn){ ui.toast('Please sign before authorizing'); return; }
+    const c = document.getElementById('sig-canvas');
+    const dataUrl = c.toDataURL('image/png');
+    ui.closeModal();
+    if(sigpad._resolve){ const r = sigpad._resolve; sigpad._resolve = null; r({ signed:true, dataUrl, signedAt:new Date().toISOString() }); }
+  },
+  cancel(){
+    ui.closeModal();
+    if(sigpad._resolve){ const r = sigpad._resolve; sigpad._resolve = null; r({ signed:false }); }
   }
 };
 
@@ -741,7 +855,15 @@ const invoice = {
         <div>Tax (${esc(o.tax_label||'')}): ${fmt$(o.tax)}</div>
         <div style="font-size:18px;margin-top:4px"><b>Total: ${fmt$(o.total)}</b></div>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:8px">Payment: ${esc(o.payment?.method||'')} ${o.payment?.last4?'····'+esc(o.payment.last4):''} · E-sign: ${o.payment?.esign?'on file':'n/a'}<br>Tracking will be emailed to ${esc(acc.email||'the account')} when shipped.</div>
+      <div class="muted" style="font-size:12px;margin-top:8px">Payment: ${esc(o.payment?.method||'')} ${o.payment?.last4?'····'+esc(o.payment.last4):''}<br>Tracking will be emailed to ${esc(acc.email||'the account')} when shipped.</div>
+      ${o.payment?.signature ? `
+        <div style="margin-top:10px">
+          <div class="muted" style="font-size:11px;margin-bottom:4px">Authorization signature</div>
+          <div style="background:white;border-radius:6px;padding:4px;max-width:320px">
+            <img src="${o.payment.signature}" style="display:block;width:100%;max-height:80px;object-fit:contain"/>
+          </div>
+          <div class="muted" style="font-size:11px;margin-top:2px">Signed ${o.payment.signed_at ? new Date(o.payment.signed_at).toLocaleString() : ''}</div>
+        </div>` : ''}
       <div class="row" style="gap:8px;margin-top:10px">
         <button class="icon-btn primary" onclick="window.print()">Print / Save PDF</button>
         <button class="icon-btn" onclick="ui.closeModal()">Done</button>
