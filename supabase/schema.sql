@@ -244,6 +244,7 @@ create table if not exists public.accounts (
   business_phone text,
   sales_tax_license text,
   sales_tax_state text,
+  tax_exempt boolean default false,
   opt_in boolean default true,
   notes jsonb default '[]'::jsonb,
   created_at timestamptz default now(),
@@ -320,6 +321,7 @@ create table if not exists public.orders (
   status text default 'draft' check (status in ('draft','finalized','cancelled','refunded')),
   tracking text,
   total numeric default 0,
+  tax_exempt boolean default false,
   created_by uuid references auth.users on delete set null,
   finalized_at timestamptz
 );

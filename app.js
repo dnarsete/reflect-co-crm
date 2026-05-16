@@ -276,7 +276,7 @@ const accounts = {
     const acc = a || {
       type:'Medical Spa', business_name:'', billing_name:'', business_address:'', billing_address:'',
       email:'', cell:'', business_phone:'', sales_tax_license:'', sales_tax_state:'',
-      opt_in:true, notes:[], rep_id: auth.repId()
+      tax_exempt:false, opt_in:true, notes:[], rep_id: auth.repId()
     };
     const typeOpts = cache.accountTypeList().map(t=>`<option ${acc.type===t?'selected':''}>${t}</option>`).join('');
     const repOpts = cache.reps.length
@@ -295,6 +295,9 @@ const accounts = {
         <div><label>Business phone</label><input id="f-bp" value="${esc(acc.business_phone)}"/></div>
         <div><label>Sales tax license #</label><input id="f-stl" value="${esc(acc.sales_tax_license)}"/></div>
         <div><label>License state</label><input id="f-sts" value="${esc(acc.sales_tax_state)}" placeholder="CO"/></div>
+        <div><label>Tax exempt</label>
+          <label class="toggle"><input type="checkbox" id="f-exempt" ${acc.tax_exempt?'checked':''}/> <span>Do not charge sales tax</span></label>
+        </div>
         <div><label>Opt-in to comms</label>
           <select id="f-opt"><option value="true" ${acc.opt_in?'selected':''}>Opted in</option><option value="false" ${!acc.opt_in?'selected':''}>Opted out</option></select>
         </div>
@@ -328,6 +331,7 @@ const accounts = {
       email:get('f-em'), business_address:get('f-ba'), billing_address:get('f-bla'),
       cell:get('f-cell'), business_phone:get('f-bp'),
       sales_tax_license:get('f-stl'), sales_tax_state:get('f-sts'),
+      tax_exempt: document.getElementById('f-exempt').checked,
       opt_in:get('f-opt')==='true', rep_id: get('f-rep') || auth.repId()
     };
     let q;
@@ -408,6 +412,13 @@ const orders = {
       const r = await sb.from('orders').select('*').eq('id', id).single();
       if(r.error){ ui.err(r.error); return; }
       o = r.data;
+      if(o.account_id){
+        const ar = await sb.from('accounts').select('sales_tax_license, sales_tax_state').eq('id', o.account_id).single();
+        if(!ar.error){
+          o._stl = ar.data?.sales_tax_license || '';
+          o._sts = ar.data?.sales_tax_state || '';
+        }
+      }
     }
     const isNew = !o;
     orders._draft = o || {
@@ -415,8 +426,10 @@ const orders = {
       items:[], shipping:ref.shipDefault(), tax:0, tax_label:ref.taxLabelDefault(),
       promo_code:'', promo_effect:'', discount:0,
       payment:{method:'Visa', last4:'', esign:false},
-      status:'draft', total:0
+      status:'draft', total:0, tax_exempt:false,
+      _stl:'', _sts:''
     };
+    orders._lastAccountId = null;
     const accs = await accounts.list();
     const accOpts = accs.map(a=>`<option value="${a.id}" ${orders._draft.account_id===a.id?'selected':''}>${esc(a.account_number)} — ${esc(a.business_name||'(unnamed)')}</option>`).join('');
     const repOpts = cache.reps.length
@@ -458,6 +471,19 @@ const orders = {
       </div>
 
       <div class="card">
+        <h2>Tax exempt status</h2>
+        <div class="grid-3">
+          <div>
+            <label>Tax exempt</label>
+            <label class="toggle"><input type="checkbox" id="o-exempt" ${orders._draft.tax_exempt?'checked':''} onchange="orders.refresh()"/> <span>Do not charge sales tax</span></label>
+          </div>
+          <div><label>Sales tax license #</label><input id="o-stl" value="${esc(orders._draft._stl||'')}" placeholder="Optional documentation"/></div>
+          <div><label>License state</label><input id="o-sts" value="${esc(orders._draft._sts||'')}" placeholder="CO"/></div>
+        </div>
+        <div class="muted" style="font-size:12px;margin-top:6px">Saving the order updates the account so future orders for the same account inherit these settings.</div>
+      </div>
+
+      <div class="card">
         <h2>Payment</h2>
         <div class="grid-3">
           <div><label>Method</label>
@@ -490,17 +516,35 @@ const orders = {
         <button class="icon-btn ghost" onclick="ui.closeModal()">Close</button>
       </div>
     `);
+    /* For existing orders, mark account as already-loaded so refresh() doesn't overwrite the order's saved tax_exempt */
+    if(!isNew && orders._draft.account_id){
+      orders._lastAccountId = orders._draft.account_id;
+    }
     orders.renderItems();
     orders.refresh();
   },
   async refresh(){
     const accId = document.getElementById('o-acc').value;
     const acc = (await accounts.list()).find(a=>a.id===accId);
+    /* When the account picker changes, repopulate the form's tax-exempt/license/state from the account */
+    if(acc && orders._lastAccountId !== acc.id){
+      orders._lastAccountId = acc.id;
+      const ex = document.getElementById('o-exempt');
+      const stl = document.getElementById('o-stl');
+      const sts = document.getElementById('o-sts');
+      if(ex)  ex.checked = !!acc.tax_exempt;
+      if(stl) stl.value  = acc.sales_tax_license || '';
+      if(sts) sts.value  = acc.sales_tax_state || '';
+    }
+    const exempt = document.getElementById('o-exempt')?.checked;
+    const stl = (document.getElementById('o-stl')?.value || '').trim();
+    const sts = (document.getElementById('o-sts')?.value || '').trim();
     let rate = ref.taxRateDefault(), label = ref.taxLabelDefault();
     let note = `Default: ${label} (${(rate*100).toFixed(2)}%).`;
-    if(acc && acc.sales_tax_license){
-      rate = 0; label = `Tax-exempt (license ${acc.sales_tax_license}, ${acc.sales_tax_state||'state'})`;
-      note = `Account has a sales tax license — tax not collected.`;
+    if(exempt){
+      rate = 0;
+      label = stl ? `Tax-exempt (license ${stl}${sts?', '+sts:''})` : 'Tax-exempt';
+      note = `Tax exempt — no sales tax collected.`;
     }
     orders._taxRate = rate; orders._taxLabel = label;
     document.getElementById('o-tax-note').textContent = note;
@@ -588,6 +632,9 @@ const orders = {
       esign: document.getElementById('o-pay-esign').value==='true',
       authorized: false
     };
+    d.tax_exempt = document.getElementById('o-exempt').checked;
+    d._stl = (document.getElementById('o-stl').value||'').trim();
+    d._sts = (document.getElementById('o-sts').value||'').trim();
     return d;
   },
   buildPayload(d){
@@ -595,8 +642,26 @@ const orders = {
       account_id: d.account_id, rep_id: d.rep_id, items: d.items||[],
       shipping: Number(d.shipping||0), tax: Number(d.tax||0), tax_label: d.tax_label,
       promo_code: d.promo_code, promo_effect: d.promo_effect, discount: Number(d.discount||0),
-      payment: d.payment, status: d.status, total: Number(d.total||0)
+      payment: d.payment, status: d.status, total: Number(d.total||0),
+      tax_exempt: !!d.tax_exempt
     };
+  },
+  async syncTaxToAccount(d){
+    if(!d.account_id) return;
+    const r = await sb.from('accounts').select('tax_exempt, sales_tax_license, sales_tax_state').eq('id', d.account_id).single();
+    if(r.error) return;
+    const cur = r.data;
+    const next = {
+      tax_exempt: !!d.tax_exempt,
+      sales_tax_license: d._stl || null,
+      sales_tax_state: d._sts || null
+    };
+    const changed = cur.tax_exempt !== next.tax_exempt
+      || (cur.sales_tax_license||'') !== (next.sales_tax_license||'')
+      || (cur.sales_tax_state||'') !== (next.sales_tax_state||'');
+    if(changed){
+      await sb.from('accounts').update(next).eq('id', d.account_id);
+    }
   },
   async saveDraft(id, isNew){
     const d = orders.collect(); d.status='draft';
@@ -609,6 +674,7 @@ const orders = {
       q = await sb.from('orders').update(payload).eq('id', id).select().single();
     }
     if(q.error){ ui.err(q.error); return; }
+    await orders.syncTaxToAccount(d);
     ui.closeModal(); ui.toast('Draft saved'); orders.render();
   },
   async finalize(id, isNew){
@@ -634,6 +700,7 @@ const orders = {
       q = await sb.from('orders').update(payload).eq('id', id).select().single();
     }
     if(q.error){ ui.err(q.error); return; }
+    await orders.syncTaxToAccount(d);
     ui.closeModal();
     invoice.show(q.data);
     dashboard.render(); orders.render();

@@ -151,3 +151,23 @@
 
   /* Small util */
   details > summary{cursor:pointer;color:var(--muted);padding:6px 0}
+
+  /* Checkbox toggle (used for tax-exempt and similar booleans) */
+  .toggle{
+    display:inline-flex;align-items:center;gap:10px;
+    min-height:var(--tap);padding:0 12px;border-radius:10px;
+    background:#0c1117;border:1px solid var(--line);cursor:pointer;
+    width:100%;user-select:none
+  }
+  .toggle input[type=checkbox]{
+    appearance:none;-webkit-appearance:none;
+    width:22px;height:22px;border-radius:6px;
+    border:2px solid var(--line);background:#0c1117;
+    cursor:pointer;display:inline-grid;place-content:center;margin:0;flex:none
+  }
+  .toggle input[type=checkbox]:checked{background:var(--brand);border-color:var(--brand)}
+  .toggle input[type=checkbox]:checked::after{
+    content:"";width:6px;height:11px;border:solid #1a1208;border-width:0 3px 3px 0;
+    transform:rotate(45deg) translate(-1px,-1px)
+  }
+  .toggle input[type=checkbox]:focus{outline:3px solid rgba(199,154,91,.25)}
