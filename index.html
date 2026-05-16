@@ -91,6 +91,7 @@
         <div class="row wrap">
           <button class="icon-btn primary" onclick="nav.go('accounts');accounts.openNew()">+ New Account</button>
           <button class="icon-btn" onclick="nav.go('orders');orders.openNew()">+ New Order</button>
+          <button class="icon-btn" onclick="nav.go('forecast');forecasts.openNew()">+ New Forecast</button>
           <button class="icon-btn" onclick="nav.go('reports')">Reports</button>
           <button class="icon-btn" onclick="nav.go('cs')">Customer Service</button>
         </div>
@@ -176,6 +177,43 @@
       </div>
     </section>
 
+    <!-- Forecast -->
+    <section id="view-forecast" class="view hide">
+      <div class="section-h">
+        <h1>Forecast</h1>
+        <button class="icon-btn primary" onclick="forecasts.openNew()">+ New Forecast</button>
+      </div>
+
+      <div class="card">
+        <div class="grid-3">
+          <div><label>Forecast month</label><select id="fc-period" onchange="forecasts.render()"></select></div>
+          <div><label>Rep</label><select id="fc-rep" onchange="forecasts.render()"></select></div>
+          <div style="display:flex;align-items:flex-end"><button class="icon-btn" onclick="forecasts.exportCsv()">Export CSV</button></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Summary</h2>
+        <div class="kpi">
+          <div class="tile"><div class="lbl">Monthly forecast</div><div class="val" id="fc-k-monthly">$0</div></div>
+          <div class="tile"><div class="lbl">Quarterly forecast</div><div class="val" id="fc-k-quarterly">$0</div></div>
+          <div class="tile"><div class="lbl">Weighted (× close %)</div><div class="val" id="fc-k-weighted">$0</div></div>
+          <div class="tile"><div class="lbl">Appose Lip TX cases to order</div><div class="val" id="fc-k-cases">0 cases</div></div>
+        </div>
+        <p class="muted" style="font-size:12px;margin:8px 0 0">Cases = weighted forecast ÷ $600 per case (24 units). Adjust in Admin → Settings.</p>
+      </div>
+
+      <div class="card hide">
+        <h2>Team rollup (admin)</h2>
+        <div id="fc-admin-rollup" class="table-wrap"></div>
+      </div>
+
+      <div class="card">
+        <h2>Forecasts in this period</h2>
+        <div id="fc-list"></div>
+      </div>
+    </section>
+
     <!-- Customer Service -->
     <section id="view-cs" class="view hide">
       <div class="section-h"><h1>Customer Service</h1></div>
@@ -256,6 +294,7 @@
     <button class="nav-btn" data-view="accounts" onclick="nav.go('accounts')"><span class="ico">👤</span>Accounts</button>
     <button class="nav-btn" data-view="orders" onclick="nav.go('orders')"><span class="ico">🧾</span>Orders</button>
     <button class="nav-btn admin-only hide" data-view="promos" onclick="nav.go('promos')"><span class="ico">🏷</span>Promos</button>
+    <button class="nav-btn" data-view="forecast" onclick="nav.go('forecast')"><span class="ico">🔮</span>Forecast</button>
     <button class="nav-btn" data-view="reports" onclick="nav.go('reports')"><span class="ico">📊</span>Reports</button>
     <button class="nav-btn" data-view="cs" onclick="nav.go('cs')"><span class="ico">💬</span>Help</button>
     <button class="nav-btn admin-only hide" data-view="admin" onclick="nav.go('admin')"><span class="ico">⚙</span>Admin</button>

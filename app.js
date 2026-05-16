@@ -179,6 +179,7 @@ const nav = {
     if(view==='orders')    orders.render();
     if(view==='promos')    promos.render();
     if(view==='reports')   reports.init();
+    if(view==='forecast')  forecasts.render();
     if(view==='cs')        cs.init();
     if(view==='admin')     adminPanel.render();
   }
@@ -910,6 +911,269 @@ const cs = {
       return 'I can look up an account # (ACC-0001), an order # (ORD-1001), or a promo code. Ask about tax, shipping, or reorder due.';
     }
     return 'Rule-based for now. Plug Claude API in to handle freeform questions.';
+  }
+};
+
+/* ---------- PROSPECTS ---------- */
+const prospects = {
+  async list(){
+    const { data, error } = await sb.from('prospects').select('*').order('created_at',{ascending:false});
+    if(error){ ui.err(error); return []; }
+    return data || [];
+  },
+  async create(payload){
+    payload.rep_id = payload.rep_id || auth.repId();
+    payload.created_by = (await sb.auth.getUser()).data.user.id;
+    const { data, error } = await sb.from('prospects').insert(payload).select().single();
+    if(error){ ui.err(error); return null; }
+    return data;
+  }
+};
+
+/* ---------- FORECASTS ---------- */
+const forecasts = {
+  monthStart(d){ const x = d ? new Date(d) : new Date(); return new Date(x.getFullYear(), x.getMonth(), 1).toISOString().slice(0,10); },
+  async list(filter){
+    let q = sb.from('forecasts').select('*, account:accounts(business_name,account_number,type), prospect:prospects(name,account_type)').order('period_month',{ascending:false}).order('created_at',{ascending:false});
+    if(filter?.period) q = q.eq('period_month', filter.period);
+    if(filter?.rep_id) q = q.eq('rep_id', filter.rep_id);
+    if(filter?.status) q = q.eq('status', filter.status);
+    const { data, error } = await q;
+    if(error){ ui.err(error); return []; }
+    return data || [];
+  },
+  weighted(f){ return Number(f.monthly_amount||0) * Number(f.close_probability||0)/100 },
+  async render(){
+    /* period filter */
+    const periodSel = document.getElementById('fc-period');
+    const cur = periodSel.value || forecasts.monthStart();
+    periodSel.innerHTML = forecasts._periodOptions(cur);
+    /* rep filter (admin only) */
+    const repSel = document.getElementById('fc-rep');
+    repSel.parentElement.style.display = auth.isAdmin() ? '' : 'none';
+    if(auth.isAdmin()){
+      const curR = repSel.value;
+      repSel.innerHTML = '<option value="">All reps</option>' + cache.reps.filter(r=>r.rep_id).map(r=>`<option value="${esc(r.rep_id)}" ${curR===r.rep_id?'selected':''}>${esc(r.name||r.email)} (${esc(r.rep_id)})</option>`).join('');
+    }
+    const filter = { period: cur };
+    if(auth.isAdmin() && repSel.value) filter.rep_id = repSel.value;
+    const list = await forecasts.list(filter);
+
+    /* summary tiles */
+    const open = list.filter(f=>f.status==='open' || f.status==='pending');
+    const totalMonthly = open.reduce((s,f)=>s+Number(f.monthly_amount||0),0);
+    const totalQuarterly = open.reduce((s,f)=>s+Number(f.quarterly_amount||0),0);
+    const weighted = open.reduce((s,f)=>s+forecasts.weighted(f),0);
+    const casePrice = Number(cache.settings.forecast_case_price || 600);
+    const casesNeeded = casePrice>0 ? Math.ceil(weighted/casePrice) : 0;
+
+    document.getElementById('fc-k-monthly').textContent = fmt$(totalMonthly);
+    document.getElementById('fc-k-quarterly').textContent = fmt$(totalQuarterly);
+    document.getElementById('fc-k-weighted').textContent = fmt$(weighted);
+    document.getElementById('fc-k-cases').textContent = casesNeeded + ' cases';
+
+    /* admin rollup */
+    const rollupWrap = document.getElementById('fc-admin-rollup');
+    if(auth.isAdmin()){
+      rollupWrap.parentElement.classList.remove('hide');
+      const byRep = {}; const byType = {};
+      open.forEach(f=>{
+        const k = f.rep_id || '(unassigned)';
+        byRep[k] = byRep[k] || {monthly:0,weighted:0,count:0};
+        byRep[k].monthly += Number(f.monthly_amount||0);
+        byRep[k].weighted += forecasts.weighted(f);
+        byRep[k].count++;
+        const t = f.account_type || f.account?.type || f.prospect?.account_type || 'Unknown';
+        byType[t] = byType[t] || {monthly:0,weighted:0,count:0};
+        byType[t].monthly += Number(f.monthly_amount||0);
+        byType[t].weighted += forecasts.weighted(f);
+        byType[t].count++;
+      });
+      const repRows = Object.entries(byRep).sort((a,b)=>b[1].weighted-a[1].weighted).map(([k,v])=>{
+        const r = cache.reps.find(x=>x.rep_id===k);
+        const cases = casePrice>0 ? Math.ceil(v.weighted/casePrice) : 0;
+        return `<tr><td>${esc((r?.name||r?.email||k))}</td><td>${v.count}</td><td>${fmt$(v.monthly)}</td><td>${fmt$(v.weighted)}</td><td>${cases}</td></tr>`;
+      }).join('');
+      const typeRows = Object.entries(byType).sort((a,b)=>b[1].weighted-a[1].weighted).map(([k,v])=>{
+        const cases = casePrice>0 ? Math.ceil(v.weighted/casePrice) : 0;
+        return `<tr><td>${esc(k)}</td><td>${v.count}</td><td>${fmt$(v.monthly)}</td><td>${fmt$(v.weighted)}</td><td>${cases}</td></tr>`;
+      }).join('');
+      document.getElementById('fc-admin-rollup').innerHTML = `
+        <h3 style="margin-top:0">By rep</h3>
+        ${repRows ? `<table><tr><th>Rep</th><th># Forecasts</th><th>Monthly</th><th>Weighted</th><th>Cases Appose Lip TX</th></tr>${repRows}</table>` : '<div class="muted">No forecasts.</div>'}
+        <h3 style="margin-top:14px">By account type</h3>
+        ${typeRows ? `<table><tr><th>Type</th><th># Forecasts</th><th>Monthly</th><th>Weighted</th><th>Cases</th></tr>${typeRows}</table>` : '<div class="muted">No data.</div>'}
+      `;
+    } else {
+      rollupWrap.parentElement.classList.add('hide');
+    }
+
+    /* detail list */
+    const wrap = document.getElementById('fc-list');
+    if(!list.length){ wrap.innerHTML = '<div class="muted">No forecasts for this period yet. Tap "+ New Forecast".</div>'; return; }
+    wrap.innerHTML = list.map(f=>{
+      const name = f.account?.business_name || f.prospect?.name || '(unlinked)';
+      const tag = f.account_id ? `<span class="badge ok">Account</span>` : `<span class="badge warn">Prospect</span>`;
+      const stat = {open:'info', pending:'warn', won:'ok', lost:'err'}[f.status] || 'info';
+      return `<div class="list-item">
+        <div class="grow">
+          <div class="title">${esc(name)} ${tag} <span class="badge ${stat}">${esc(f.status)}</span></div>
+          <div class="meta">${f.period_month} · ${esc(f.account_type||'')} · ${esc(f.appointment_kind||'')} · ${fmt$(f.monthly_amount)} · ${f.close_probability||0}% · weighted ${fmt$(forecasts.weighted(f))}</div>
+        </div>
+        <button class="icon-btn" onclick="forecasts.open('${f.id}')">Open</button>
+      </div>`;
+    }).join('');
+  },
+  _periodOptions(selected){
+    const d = new Date(); const out = [];
+    for(let i=-2; i<=10; i++){
+      const m = new Date(d.getFullYear(), d.getMonth()+i, 1);
+      const iso = m.toISOString().slice(0,10);
+      const label = m.toLocaleString(undefined,{month:'long', year:'numeric'});
+      out.push(`<option value="${iso}" ${selected===iso?'selected':''}>${label}</option>`);
+    }
+    return out.join('');
+  },
+  async openNew(){ forecasts.open(null) },
+  async open(id){
+    let f = null;
+    if(id){
+      const r = await sb.from('forecasts').select('*').eq('id', id).single();
+      if(r.error){ ui.err(r.error); return; }
+      f = r.data;
+    }
+    const isNew = !f;
+    const fc = f || {
+      period_month: forecasts.monthStart(),
+      rep_id: auth.repId(),
+      account_id: null, prospect_id: null,
+      primary_contact:'', account_type:'Medical Spa',
+      appointment_kind:'existing', appointment_date:null,
+      monthly_amount:0, quarterly_amount:0,
+      close_probability:50, status:'open',
+      source:'', notes:''
+    };
+    const accs = await accounts.list();
+    const accOpts = accs.map(a=>`<option value="acc:${a.id}" ${fc.account_id===a.id?'selected':''}>📒 ${esc(a.account_number)} — ${esc(a.business_name||'(unnamed)')}</option>`).join('');
+    const prosList = await prospects.list();
+    const prosOpts = prosList.map(p=>`<option value="pros:${p.id}" ${fc.prospect_id===p.id?'selected':''}>🌱 ${esc(p.name)}</option>`).join('');
+    const typeOpts = cache.accountTypeList().map(t=>`<option ${fc.account_type===t?'selected':''}>${t}</option>`).join('');
+    const periodOpts = forecasts._periodOptions(fc.period_month);
+
+    ui.modal(`
+      <h3>${isNew?'New forecast':'Edit forecast'}</h3>
+      <div class="grid-2">
+        <div><label>Forecast month</label><select id="f-period">${periodOpts}</select></div>
+        <div><label>Account or Prospect</label>
+          <select id="f-target">
+            <option value="">— pick one or add a prospect below —</option>
+            <optgroup label="Existing accounts">${accOpts}</optgroup>
+            <optgroup label="Prospects">${prosOpts}</optgroup>
+          </select>
+          <div style="margin-top:6px">
+            <button type="button" class="icon-btn ghost" onclick="forecasts.addProspectInline()">+ Add new prospect</button>
+          </div>
+        </div>
+        <div><label>Primary contact</label><input id="f-contact" value="${esc(fc.primary_contact)}"/></div>
+        <div><label>Account type</label><select id="f-type">${typeOpts}</select></div>
+        <div><label>Appointment kind</label>
+          <select id="f-kind">
+            <option value="existing" ${fc.appointment_kind==='existing'?'selected':''}>Existing customer</option>
+            <option value="new" ${fc.appointment_kind==='new'?'selected':''}>New (prospect)</option>
+          </select>
+        </div>
+        <div><label>Appointment date</label><input id="f-apptdate" type="date" value="${fc.appointment_date||''}"/></div>
+        <div><label>Monthly forecast ($)</label><input id="f-monthly" type="number" step="0.01" value="${fc.monthly_amount||0}"/></div>
+        <div><label>Quarterly forecast ($)</label><input id="f-quarterly" type="number" step="0.01" value="${fc.quarterly_amount||0}"/></div>
+        <div><label>Likely closing (%)</label><input id="f-prob" type="number" min="0" max="100" value="${fc.close_probability||0}"/></div>
+        <div><label>Status</label>
+          <select id="f-status">
+            ${['open','pending','won','lost'].map(s=>`<option ${fc.status===s?'selected':''}>${s}</option>`).join('')}
+          </select>
+        </div>
+        <div><label>Source of business</label><input id="f-source" value="${esc(fc.source||'')}" placeholder="Referral, trade show, cold call…"/></div>
+        <div style="grid-column:1/-1"><label>Comments / notes</label><textarea id="f-notes">${esc(fc.notes||'')}</textarea></div>
+      </div>
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="icon-btn primary" onclick="forecasts.save('${fc.id||''}', ${isNew})">Save</button>
+        ${!isNew?`<button class="icon-btn danger" onclick="forecasts.remove('${fc.id}')">Delete</button>`:''}
+        <button class="icon-btn ghost" onclick="ui.closeModal()">Close</button>
+      </div>
+    `);
+    /* set initial target dropdown value */
+    if(fc.account_id) document.getElementById('f-target').value = 'acc:'+fc.account_id;
+    else if(fc.prospect_id) document.getElementById('f-target').value = 'pros:'+fc.prospect_id;
+  },
+  async addProspectInline(){
+    const name = prompt('Prospect (business) name:'); if(!name) return;
+    const contact = prompt('Primary contact (optional):') || '';
+    const city = prompt('City (optional):') || '';
+    const state = prompt('State (optional):') || '';
+    const p = await prospects.create({ name, primary_contact:contact, city, state, account_type:document.getElementById('f-type')?.value || null });
+    if(!p) return;
+    /* re-render the target select to include the new prospect */
+    const tgt = document.getElementById('f-target');
+    const opt = document.createElement('option');
+    opt.value = 'pros:'+p.id;
+    opt.textContent = '🌱 '+p.name;
+    /* try to add into the Prospects optgroup */
+    const groups = tgt.querySelectorAll('optgroup');
+    const pg = groups[1] || tgt;
+    pg.appendChild(opt);
+    tgt.value = 'pros:'+p.id;
+    ui.toast('Prospect added');
+  },
+  async save(id, isNew){
+    const get = i=>document.getElementById(i).value;
+    const target = get('f-target');
+    if(!target){ ui.toast('Pick an account or add a prospect.'); return; }
+    const [kind, ref] = target.split(':');
+    const payload = {
+      rep_id: auth.repId(),
+      account_id: kind==='acc' ? ref : null,
+      prospect_id: kind==='pros' ? ref : null,
+      period_month: get('f-period'),
+      primary_contact: get('f-contact'),
+      account_type: get('f-type'),
+      appointment_kind: get('f-kind'),
+      appointment_date: get('f-apptdate') || null,
+      monthly_amount: parseFloat(get('f-monthly')||'0'),
+      quarterly_amount: parseFloat(get('f-quarterly')||'0'),
+      close_probability: Math.min(100, Math.max(0, parseInt(get('f-prob')||'0',10))),
+      status: get('f-status'),
+      source: get('f-source'),
+      notes: get('f-notes'),
+      updated_at: new Date().toISOString()
+    };
+    let q;
+    if(isNew){
+      payload.created_by = (await sb.auth.getUser()).data.user.id;
+      q = await sb.from('forecasts').insert(payload).select().single();
+    } else {
+      q = await sb.from('forecasts').update(payload).eq('id', id).select().single();
+    }
+    if(q.error){ ui.err(q.error); return; }
+    ui.closeModal(); ui.toast(isNew?'Forecast added':'Saved'); forecasts.render();
+  },
+  async remove(id){
+    if(!confirm('Delete this forecast?')) return;
+    const r = await sb.from('forecasts').delete().eq('id', id);
+    if(r.error){ ui.err(r.error); return; }
+    ui.closeModal(); ui.toast('Deleted'); forecasts.render();
+  },
+  exportCsv(){
+    /* export current view */
+    forecasts.list({period: document.getElementById('fc-period').value}).then(list=>{
+      const rows = [['Period','Rep','Type','Name','Primary contact','Account type','Appt kind','Appt date','Monthly','Quarterly','Close %','Weighted','Status','Source','Notes']];
+      list.forEach(f=>{
+        const name = f.account?.business_name || f.prospect?.name || '(unlinked)';
+        const type = f.account_id ? 'Account' : 'Prospect';
+        rows.push([f.period_month, f.rep_id, type, name, f.primary_contact||'', f.account_type||'', f.appointment_kind||'', f.appointment_date||'', Number(f.monthly_amount||0).toFixed(2), Number(f.quarterly_amount||0).toFixed(2), f.close_probability||0, forecasts.weighted(f).toFixed(2), f.status, f.source||'', (f.notes||'').replace(/\n/g,' ')]);
+      });
+      const csv = rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+      const blob = new Blob([csv],{type:'text/csv'});
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `forecasts-${todayISO()}.csv`; a.click();
+    });
   }
 };
 
