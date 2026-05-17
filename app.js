@@ -326,7 +326,7 @@ const accounts = {
   async renderNotes(accountId){
     const nw = document.getElementById('acc-notes'); if(!nw) return;
     const { data, error } = await sb.from('account_notes')
-      .select('id, account_id, author_id, rep_id, text, created_at, updated_at, author:profiles!author_id(name, email)')
+      .select('id, account_id, author_id, rep_id, text, created_at, updated_at')
       .eq('account_id', accountId)
       .order('created_at', { ascending: false });
     if(error){ nw.innerHTML = '<div class="muted">Could not load notes.</div>'; ui.err(error); return; }
@@ -334,12 +334,14 @@ const accounts = {
     if(!notes.length){ nw.innerHTML = '<div class="muted">No notes yet.</div>'; return; }
     const me = (await sb.auth.getUser()).data.user;
     const isAdmin = auth.isAdmin();
+    const profileById = {}; (cache.reps||[]).forEach(p => profileById[p.id] = p);
     nw.innerHTML = notes.map(n => {
       const ageMs = Date.now() - new Date(n.created_at).getTime();
       const isMine = me && n.author_id === me.id;
       const withinWindow = ageMs < 24*60*60*1000;
       const canEdit = isAdmin || (isMine && withinWindow);
-      const author = n.author?.name || n.author?.email || (n.author_id ? 'Unknown' : 'Legacy note');
+      const prof = profileById[n.author_id];
+      const author = prof?.name || prof?.email || (n.author_id ? 'Unknown user' : 'Legacy note');
       const when = new Date(n.created_at).toLocaleString();
       const edited = (new Date(n.updated_at).getTime() - new Date(n.created_at).getTime() > 5000)
         ? ` · edited ${new Date(n.updated_at).toLocaleString()}` : '';
