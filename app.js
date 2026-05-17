@@ -1577,15 +1577,45 @@ const forecasts = {
 /* ---------- ADMIN ---------- */
 const adminPanel = {
   async render(){
-    /* reps */
     await profiles.loadReps();
-    document.getElementById('rep-list').innerHTML = cache.reps.map(r=>`
-      <div class="list-item">
-        <div class="grow"><div class="title">${esc(r.name||r.email)} <span class="badge info">${esc(r.rep_id||'no rep id')}</span> <span class="badge ${r.role==='admin'?'ok':''}">${esc(r.role)}</span></div>
+    const me = cache.me;
+    document.getElementById('rep-list').innerHTML = cache.reps.length ? cache.reps.map(r=>{
+      const disabled = !!r.disabled;
+      const isSelf = me && r.id === me.id;
+      return `<div class="list-item" style="${disabled?'opacity:0.6':''}">
+        <div class="grow">
+          <div class="title">
+            ${esc(r.name||r.email)}
+            <span class="badge info">${esc(r.rep_id||'no rep id')}</span>
+            <span class="badge ${r.role==='admin'?'ok':''}">${esc(r.role)}</span>
+            ${disabled?'<span class="badge err">disabled</span>':''}
+            ${isSelf?'<span class="badge">you</span>':''}
+          </div>
           <div class="meta">${esc(r.email)} · commission ${r.commission||0}% · territory ${(r.territory||[]).join(', ')||'—'}</div>
         </div>
-        <button class="icon-btn" onclick="adminPanel.editRep('${r.id}')">Edit</button>
-      </div>`).join('');
+        <button class="icon-btn" onclick="adminPanel.openRepModal('${r.id}')">Edit</button>
+        <button class="icon-btn ghost" onclick="adminPanel.resetRepPassword('${esc(r.email).replace(/'/g,'&#39;')}')">Reset PW</button>
+        ${isSelf ? '' : (disabled
+          ? `<button class="icon-btn" onclick="adminPanel.enableRep('${r.id}')">Enable</button>`
+          : `<button class="icon-btn danger" onclick="adminPanel.disableRep('${r.id}')">Disable</button>`)}
+      </div>`;
+    }).join('') : '<div class="muted">No reps yet.</div>';
+
+    /* pending invites */
+    const inviteWrap = document.getElementById('invite-list');
+    if(inviteWrap){
+      const invites = await adminPanel.loadInvites();
+      inviteWrap.innerHTML = invites.length ? invites.map(i=>`
+        <div class="list-item">
+          <div class="grow">
+            <div class="title">${esc(i.email)} <span class="badge warn">${esc(i.rep_id||'no rep id')}</span> <span class="badge">${esc(i.role)}</span></div>
+            <div class="meta">Will become: ${esc(i.name||'(name from email)')} · commission ${i.commission||0}% · invited ${new Date(i.created_at).toLocaleDateString()}</div>
+          </div>
+          <button class="icon-btn" onclick="adminPanel.openInviteModal('${esc(i.email).replace(/'/g,'&#39;')}')">Edit</button>
+          <button class="icon-btn danger" onclick="adminPanel.cancelInvite('${esc(i.email).replace(/'/g,'&#39;')}')">Cancel</button>
+        </div>`).join('') : '<div class="muted" style="font-size:13px">No pending invites. New reps you add via "+ Add rep" appear here until they sign up.</div>';
+    }
+
     /* types */
     document.getElementById('type-list').innerHTML =
       cache.accountTypeList().map(t=>`<span class="badge info" style="padding:6px 10px">${esc(t)} <a href="#" onclick="adminPanel.removeType('${esc(t)}');return false" style="margin-left:6px;color:#fecaca">✕</a></span>`).join('');
@@ -1597,19 +1627,135 @@ const adminPanel = {
     document.getElementById('set-reorder').value = ref.reorderDays();
     document.getElementById('set-stock').value = ref.lowStock();
   },
-  async editRep(id){
-    const r = cache.reps.find(x=>x.id===id); if(!r) return;
-    const name = prompt('Name', r.name||''); if(name===null) return;
-    const repId = prompt('Rep ID (e.g. R-001)', r.rep_id||''); if(repId===null) return;
-    const role = prompt('Role (admin or rep)', r.role||'rep'); if(role===null) return;
-    const comm = prompt('Commission %', r.commission ?? 10); if(comm===null) return;
-    const terr = prompt('Territory ZIPs (comma sep)', (r.territory||[]).join(',')); if(terr===null) return;
-    const q = await sb.from('profiles').update({
-      name, rep_id:repId, role, commission:parseFloat(comm)||0,
-      territory: terr.split(',').map(x=>x.trim()).filter(Boolean)
-    }).eq('id', id);
+  async loadInvites(){
+    const { data, error } = await sb.from('pending_invites').select('*').order('created_at',{ascending:false});
+    if(error){ return []; }
+    return data || [];
+  },
+  async openRepModal(id){
+    const r = id ? cache.reps.find(x=>x.id===id) : null;
+    const isNew = !r;
+    const prof = r || { email:'', name:'', rep_id:'', role:'rep', commission:10, territory:[] };
+    ui.modal(`
+      <h3>${isNew?'Add rep':'Edit '+esc(prof.name||prof.email)}</h3>
+      ${isNew ? '<p class="muted" style="font-size:13px;margin:0 0 12px">If this email has already signed up, this updates their profile. If not, the settings are saved as a pending invite and applied automatically when they sign up at the CRM URL.</p>' : ''}
+      <div class="grid-2">
+        <div><label>Email</label><input id="r-email" type="email" value="${esc(prof.email)}" ${isNew?'':'disabled'} autocapitalize="none"/></div>
+        <div><label>Name</label><input id="r-name" value="${esc(prof.name||'')}"/></div>
+        <div><label>Rep ID</label><input id="r-repid" value="${esc(prof.rep_id||'')}" placeholder="R-002"/></div>
+        <div><label>Role</label>
+          <select id="r-role">
+            <option value="rep" ${prof.role==='rep'?'selected':''}>rep</option>
+            <option value="admin" ${prof.role==='admin'?'selected':''}>admin</option>
+          </select>
+        </div>
+        <div><label>Commission %</label><input id="r-comm" type="number" step="0.1" value="${prof.commission ?? 10}"/></div>
+        <div><label>Territory ZIPs (comma)</label><input id="r-terr" value="${esc((prof.territory||[]).join(', '))}" placeholder="80210, 80211"/></div>
+      </div>
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="icon-btn primary" onclick="adminPanel.saveRep('${id||''}', ${isNew})">Save</button>
+        <button class="icon-btn ghost" onclick="ui.closeModal()">Cancel</button>
+      </div>
+    `);
+  },
+  async openInviteModal(email){
+    const inv = (await adminPanel.loadInvites()).find(i=>i.email===email);
+    if(!inv) return;
+    ui.modal(`
+      <h3>Edit pending invite — ${esc(inv.email)}</h3>
+      <p class="muted" style="font-size:13px;margin:0 0 12px">These settings will apply when this person signs up at the CRM URL.</p>
+      <div class="grid-2">
+        <div><label>Email</label><input id="r-email" value="${esc(inv.email)}" disabled/></div>
+        <div><label>Name</label><input id="r-name" value="${esc(inv.name||'')}"/></div>
+        <div><label>Rep ID</label><input id="r-repid" value="${esc(inv.rep_id||'')}" placeholder="R-002"/></div>
+        <div><label>Role</label>
+          <select id="r-role">
+            <option value="rep" ${inv.role==='rep'?'selected':''}>rep</option>
+            <option value="admin" ${inv.role==='admin'?'selected':''}>admin</option>
+          </select>
+        </div>
+        <div><label>Commission %</label><input id="r-comm" type="number" step="0.1" value="${inv.commission ?? 10}"/></div>
+        <div><label>Territory ZIPs (comma)</label><input id="r-terr" value="${esc((inv.territory||[]).join(', '))}" placeholder="80210, 80211"/></div>
+      </div>
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="icon-btn primary" onclick="adminPanel.saveInvite('${esc(inv.email).replace(/'/g,'&#39;')}')">Save</button>
+        <button class="icon-btn ghost" onclick="ui.closeModal()">Cancel</button>
+      </div>
+    `);
+  },
+  async saveRep(id, isNew){
+    const get = i => document.getElementById(i).value;
+    const email = get('r-email').trim().toLowerCase();
+    const payload = {
+      name: get('r-name').trim(),
+      rep_id: get('r-repid').trim() || null,
+      role: get('r-role'),
+      commission: parseFloat(get('r-comm')||'0') || 0,
+      territory: get('r-terr').split(',').map(x=>x.trim()).filter(Boolean)
+    };
+    if(!isNew){
+      const q = await sb.from('profiles').update(payload).eq('id', id);
+      if(q.error){ ui.err(q.error); return; }
+      ui.closeModal(); ui.toast('Saved'); adminPanel.render();
+      return;
+    }
+    if(!email){ ui.toast('Email required'); return; }
+    /* Does this email already have a profile? If so update; else upsert pending invite */
+    const ex = await sb.from('profiles').select('id').ilike('email', email).maybeSingle();
+    if(ex.data){
+      const q = await sb.from('profiles').update(payload).eq('id', ex.data.id);
+      if(q.error){ ui.err(q.error); return; }
+      ui.closeModal(); ui.toast('Existing user — profile updated.'); adminPanel.render();
+      return;
+    }
+    /* Upsert pending invite */
+    const me = (await sb.auth.getUser()).data.user;
+    const q = await sb.from('pending_invites').upsert({
+      email, ...payload, invited_by: me?.id || null
+    });
     if(q.error){ ui.err(q.error); return; }
+    ui.closeModal();
+    ui.toast(`Invite saved. Tell ${email} to sign up at the CRM URL.`);
     adminPanel.render();
+  },
+  async saveInvite(email){
+    const get = i => document.getElementById(i).value;
+    const payload = {
+      email,
+      name: get('r-name').trim(),
+      rep_id: get('r-repid').trim() || null,
+      role: get('r-role'),
+      commission: parseFloat(get('r-comm')||'0') || 0,
+      territory: get('r-terr').split(',').map(x=>x.trim()).filter(Boolean)
+    };
+    const q = await sb.from('pending_invites').upsert(payload);
+    if(q.error){ ui.err(q.error); return; }
+    ui.closeModal(); ui.toast('Invite updated'); adminPanel.render();
+  },
+  async cancelInvite(email){
+    if(!confirm(`Cancel invite for ${email}?`)) return;
+    const q = await sb.from('pending_invites').delete().eq('email', email);
+    if(q.error){ ui.err(q.error); return; }
+    ui.toast('Invite cancelled'); adminPanel.render();
+  },
+  async disableRep(id){
+    if(!confirm('Disable this rep? They will not be able to sign in, but their data stays for history.')) return;
+    const q = await sb.from('profiles').update({ disabled: true }).eq('id', id);
+    if(q.error){ ui.err(q.error); return; }
+    ui.toast('Disabled'); adminPanel.render();
+  },
+  async enableRep(id){
+    const q = await sb.from('profiles').update({ disabled: false }).eq('id', id);
+    if(q.error){ ui.err(q.error); return; }
+    ui.toast('Re-enabled'); adminPanel.render();
+  },
+  async resetRepPassword(email){
+    if(!confirm(`Send password reset email to ${email}?`)) return;
+    const { error } = await sb.auth.resetPasswordForEmail(email, {
+      redirectTo: location.origin + location.pathname + '#reset'
+    });
+    if(error){ ui.err(error); return; }
+    ui.toast('Reset email sent to ' + email);
   },
   async addType(){
     const t = document.getElementById('new-type').value.trim(); if(!t) return;
@@ -1653,6 +1799,12 @@ async function boot(){
   }
   try{
     await profiles.loadMe(session.user.id);
+    if(cache.me?.disabled){
+      await sb.auth.signOut();
+      alert('Your access has been disabled. Contact your administrator.');
+      location.reload();
+      return;
+    }
     await Promise.all([ref.loadAll(), profiles.loadReps()]);
   } catch(e){
     ui.err(e);

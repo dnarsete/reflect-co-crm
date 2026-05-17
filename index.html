@@ -256,14 +256,13 @@
       </div>
 
       <div class="card">
-        <h2>Reps</h2>
-        <div id="rep-list"></div>
-        <div class="row" style="gap:8px;margin-top:10px">
-          <input id="new-rep-name" placeholder="Name"/>
-          <input id="new-rep-email" placeholder="email@thereflectco.com"/>
-          <input id="new-rep-commission" placeholder="Commission %" type="number" step="0.1" value="10"/>
-          <button class="icon-btn primary" onclick="adminPanel.addRep()">Add rep</button>
+        <div class="section-h" style="margin-bottom:8px">
+          <h2 style="margin:0;flex:1">Reps</h2>
+          <button class="icon-btn primary" onclick="adminPanel.openRepModal(null)">+ Add rep</button>
         </div>
+        <div id="rep-list"></div>
+        <h3 style="margin:14px 0 6px 0;font-size:14px;color:var(--muted)">Pending invites</h3>
+        <div id="invite-list"></div>
       </div>
 
       <div class="card">

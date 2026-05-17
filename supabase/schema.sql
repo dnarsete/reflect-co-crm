@@ -16,6 +16,7 @@ create table if not exists public.profiles (
   rep_id text,
   commission numeric default 10,
   territory text[] default '{}',
+  disabled boolean default false,
   created_at timestamptz default now()
 );
 alter table public.profiles enable row level security;
