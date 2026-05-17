@@ -27,16 +27,32 @@
     <div id="auth-err" class="alert err hide" style="margin-bottom:10px"></div>
     <form onsubmit="event.preventDefault();auth.login()">
       <div style="margin-bottom:10px">
-        <label>Email</label>
+        <label>Email <span class="muted" style="font-size:11px">*</span></label>
         <input id="auth-email" type="email" placeholder="you@thereflectco.com" autocomplete="username" autocapitalize="none" spellcheck="false" />
       </div>
       <div style="margin-bottom:10px">
-        <label>Password</label>
+        <label>Password <span class="muted" style="font-size:11px">*</span></label>
         <input id="auth-pass" type="password" placeholder="At least 6 characters" autocomplete="current-password" autocapitalize="none" spellcheck="false" />
       </div>
+
+      <div id="signup-extras" class="hide">
+        <div style="border-top:1px solid var(--line);padding-top:10px;margin-bottom:8px">
+          <div class="muted" style="font-size:12px;margin-bottom:8px"><span style="color:var(--brand)">*</span> = required</div>
+          <div class="grid-2">
+            <div><label>Full name <span class="muted" style="font-size:11px">*</span></label><input id="su-name" autocomplete="name"/></div>
+            <div><label>Cell phone <span class="muted" style="font-size:11px">*</span></label><input id="su-cell" type="tel" autocomplete="tel" placeholder="555-555-5555"/></div>
+            <div style="grid-column:1/-1"><label>Company (optional)</label><input id="su-company" autocomplete="organization"/></div>
+            <div style="grid-column:1/-1"><label>Street address</label><input id="su-street" autocomplete="street-address"/></div>
+            <div><label>City</label><input id="su-city" autocomplete="address-level2"/></div>
+            <div><label>State</label><input id="su-state" autocomplete="address-level1" placeholder="CO"/></div>
+            <div><label>ZIP</label><input id="su-zip" autocomplete="postal-code"/></div>
+          </div>
+        </div>
+      </div>
+
       <div class="row" style="gap:8px;margin-top:6px">
-        <button type="submit" class="icon-btn primary grow">Sign in</button>
-        <button type="button" class="icon-btn grow" onclick="auth.signup()">Create account</button>
+        <button id="auth-signin-btn" type="submit" class="icon-btn primary grow">Sign in</button>
+        <button id="auth-signup-btn" type="button" class="icon-btn grow" onclick="auth.signup()">Create account</button>
       </div>
       <div style="margin-top:8px;text-align:center">
         <a href="#" onclick="auth.resetPassword();return false" class="muted" style="font-size:13px">Forgot password?</a>

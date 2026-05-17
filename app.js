@@ -69,23 +69,58 @@ const auth = {
   },
   async signup(){
     const errEl = document.getElementById('auth-err');
+    const extras = document.getElementById('signup-extras');
     const email = (document.getElementById('auth-email').value||'').trim().toLowerCase();
     const pass  = (document.getElementById('auth-pass').value||'');
     if(!email || pass.length < 6){
-      errEl.textContent = 'Email + a password of at least 6 characters required.'; errEl.classList.remove('hide'); return;
+      errEl.classList.remove('ok'); errEl.classList.add('err');
+      errEl.textContent = 'Email + a password of at least 6 characters required first.';
+      errEl.classList.remove('hide');
+      return;
     }
+    /* Stage 1: expand the form to collect contact info */
+    if(extras.classList.contains('hide')){
+      extras.classList.remove('hide');
+      document.getElementById('auth-signin-btn').classList.add('hide');
+      document.getElementById('auth-signup-btn').textContent = 'Complete sign-up';
+      errEl.classList.add('hide');
+      setTimeout(()=>document.getElementById('su-name')?.focus(), 50);
+      return;
+    }
+    /* Stage 2: validate required fields and submit */
+    const name = (document.getElementById('su-name').value||'').trim();
+    const cell = (document.getElementById('su-cell').value||'').trim();
+    if(!name || !cell){
+      errEl.classList.remove('ok'); errEl.classList.add('err');
+      errEl.textContent = 'Full name and cell phone are required.';
+      errEl.classList.remove('hide');
+      return;
+    }
+    const metadata = {
+      name,
+      cell,
+      company: (document.getElementById('su-company').value||'').trim(),
+      street:  (document.getElementById('su-street').value||'').trim(),
+      city:    (document.getElementById('su-city').value||'').trim(),
+      state:   (document.getElementById('su-state').value||'').trim(),
+      zip:     (document.getElementById('su-zip').value||'').trim()
+    };
     ui.busy(true);
-    const { error } = await sb.auth.signUp({ email, password: pass });
+    const { error } = await sb.auth.signUp({ email, password: pass, options:{ data: metadata } });
     ui.busy(false);
     if(error){
+      errEl.classList.remove('ok'); errEl.classList.add('err');
       errEl.textContent = 'Sign-up failed: '+error.message;
       errEl.classList.remove('hide');
       return;
     }
+    errEl.classList.remove('err'); errEl.classList.add('ok');
     errEl.classList.remove('hide');
-    errEl.classList.remove('err');
-    errEl.classList.add('ok');
-    errEl.innerHTML = 'Account created. If email confirmation is on (Supabase default), check your inbox and click the link before signing in.';
+    errEl.innerHTML = 'Account created. Click <b>Sign in</b> with the same credentials.';
+    /* Collapse the extras + restore the Sign-in button */
+    extras.classList.add('hide');
+    document.getElementById('auth-signin-btn').classList.remove('hide');
+    document.getElementById('auth-signup-btn').textContent = 'Create account';
   },
   async logout(){
     await sb.auth.signOut();
@@ -1591,7 +1626,7 @@ const adminPanel = {
             ${disabled?'<span class="badge err">disabled</span>':''}
             ${isSelf?'<span class="badge">you</span>':''}
           </div>
-          <div class="meta">${esc(r.email)} · commission ${r.commission||0}% · territory ${(r.territory||[]).join(', ')||'—'}</div>
+          <div class="meta">${esc(r.email)}${r.cell?' · '+esc(r.cell):''}${(r.city||r.state)?' · '+esc([r.city, r.state].filter(Boolean).join(', ')):''} · commission ${r.commission||0}% · territory ${(r.territory||[]).join(', ')||'—'}</div>
         </div>
         <button class="icon-btn" onclick="adminPanel.openRepModal('${r.id}')">Edit</button>
         <button class="icon-btn ghost" onclick="adminPanel.resetRepPassword('${esc(r.email).replace(/'/g,'&#39;')}')">Reset PW</button>
@@ -1635,13 +1670,15 @@ const adminPanel = {
   async openRepModal(id){
     const r = id ? cache.reps.find(x=>x.id===id) : null;
     const isNew = !r;
-    const prof = r || { email:'', name:'', rep_id:'', role:'rep', commission:10, territory:[] };
+    const prof = r || { email:'', name:'', rep_id:'', role:'rep', commission:10, territory:[], cell:'', company:'', street:'', city:'', state:'', zip:'' };
     ui.modal(`
       <h3>${isNew?'Add rep':'Edit '+esc(prof.name||prof.email)}</h3>
-      ${isNew ? '<p class="muted" style="font-size:13px;margin:0 0 12px">If this email has already signed up, this updates their profile. If not, the settings are saved as a pending invite and applied automatically when they sign up at the CRM URL.</p>' : ''}
+      ${isNew ? '<p class="muted" style="font-size:13px;margin:0 0 12px">If this email has already signed up, this updates their profile. If not, the settings are saved as a pending invite and applied automatically when they sign up.</p>' : ''}
       <div class="grid-2">
         <div><label>Email</label><input id="r-email" type="email" value="${esc(prof.email)}" ${isNew?'':'disabled'} autocapitalize="none"/></div>
-        <div><label>Name</label><input id="r-name" value="${esc(prof.name||'')}"/></div>
+        <div><label>Full name</label><input id="r-name" value="${esc(prof.name||'')}"/></div>
+        <div><label>Cell phone</label><input id="r-cell" value="${esc(prof.cell||'')}" placeholder="555-555-5555"/></div>
+        <div><label>Company (optional)</label><input id="r-company" value="${esc(prof.company||'')}"/></div>
         <div><label>Rep ID</label><input id="r-repid" value="${esc(prof.rep_id||'')}" placeholder="R-002"/></div>
         <div><label>Role</label>
           <select id="r-role">
@@ -1651,6 +1688,10 @@ const adminPanel = {
         </div>
         <div><label>Commission %</label><input id="r-comm" type="number" step="0.1" value="${prof.commission ?? 10}"/></div>
         <div><label>Territory ZIPs (comma)</label><input id="r-terr" value="${esc((prof.territory||[]).join(', '))}" placeholder="80210, 80211"/></div>
+        <div style="grid-column:1/-1"><label>Street address</label><input id="r-street" value="${esc(prof.street||'')}"/></div>
+        <div><label>City</label><input id="r-city" value="${esc(prof.city||'')}"/></div>
+        <div><label>State</label><input id="r-state" value="${esc(prof.state||'')}" placeholder="CO"/></div>
+        <div><label>ZIP</label><input id="r-zip" value="${esc(prof.zip||'')}"/></div>
       </div>
       <div class="row" style="gap:8px;margin-top:12px">
         <button class="icon-btn primary" onclick="adminPanel.saveRep('${id||''}', ${isNew})">Save</button>
@@ -1684,14 +1725,20 @@ const adminPanel = {
     `);
   },
   async saveRep(id, isNew){
-    const get = i => document.getElementById(i).value;
+    const get = i => (document.getElementById(i)?.value || '');
     const email = get('r-email').trim().toLowerCase();
     const payload = {
       name: get('r-name').trim(),
       rep_id: get('r-repid').trim() || null,
       role: get('r-role'),
       commission: parseFloat(get('r-comm')||'0') || 0,
-      territory: get('r-terr').split(',').map(x=>x.trim()).filter(Boolean)
+      territory: get('r-terr').split(',').map(x=>x.trim()).filter(Boolean),
+      cell: get('r-cell').trim() || null,
+      company: get('r-company').trim() || null,
+      street: get('r-street').trim() || null,
+      city: get('r-city').trim() || null,
+      state: get('r-state').trim() || null,
+      zip: get('r-zip').trim() || null
     };
     if(!isNew){
       const q = await sb.from('profiles').update(payload).eq('id', id);

@@ -17,6 +17,12 @@ create table if not exists public.profiles (
   commission numeric default 10,
   territory text[] default '{}',
   disabled boolean default false,
+  cell text,
+  company text,
+  street text,
+  city text,
+  state text,
+  zip text,
   created_at timestamptz default now()
 );
 alter table public.profiles enable row level security;
