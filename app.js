@@ -1290,17 +1290,71 @@ const reports = {
   }
 };
 
-/* ---------- CUSTOMER SERVICE (rule-based, soon: Claude API) ---------- */
+/* ---------- CUSTOMER SERVICE (rule-based OR live AI via Edge Function) ---------- */
 const cs = {
+  _history: [],
+  _modeBadge(){
+    const mode = window.REFLECT_CONFIG?.AI_MODE || 'off';
+    if(mode === 'live') return '<span class="badge ok">AI: live</span>';
+    return '<span class="badge">AI: rule-based</span>';
+  },
   init(){
     document.getElementById('chat-log').innerHTML='';
-    cs.bot("Hi! I can look up accounts, orders, promos, and tax rules. Try \"orders for ACC-0001\", \"promo BOGO48\", or \"tax for license\".");
+    cs._history = [];
+    const mode = window.REFLECT_CONFIG?.AI_MODE || 'off';
+    const badge = document.getElementById('cs-mode-badge');
+    if(badge) badge.innerHTML = cs._modeBadge();
+    if(mode === 'live'){
+      cs.bot("Hi! Ask me anything about your accounts, orders, forecasts, or performance. I can look up records and reason about them.");
+    } else {
+      cs.bot("Hi! I'm in rule-based mode. Try \"orders for ACC-0001\", \"promo BOGO48\", or \"tax for license\". Real AI mode is coded and ready — flip AI_MODE to 'live' in config.js when your Anthropic API key is set up.");
+    }
   },
   async send(){
     const inp = document.getElementById('chat-in');
     const text = inp.value.trim(); if(!text) return;
     inp.value=''; cs.user(text);
-    cs.bot(await cs.answer(text));
+    const mode = window.REFLECT_CONFIG?.AI_MODE || 'off';
+    if(mode === 'live'){
+      await cs.sendToAI(text);
+    } else {
+      cs.bot(await cs.answer(text));
+    }
+  },
+  async sendToAI(text){
+    const log = document.getElementById('chat-log');
+    /* loading indicator */
+    const loading = document.createElement('div');
+    loading.className = 'bubble bot';
+    loading.textContent = '…thinking';
+    log.appendChild(loading); log.scrollTop = log.scrollHeight;
+    cs._history.push({ role: 'user', content: text });
+    try{
+      const session = await sb.auth.getSession();
+      const token = session.data.session?.access_token;
+      if(!token){ throw new Error('Not signed in'); }
+      const url = window.REFLECT_CONFIG.AI_FUNCTION_URL;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + token,
+          'Content-Type': 'application/json',
+          'apikey': window.REFLECT_CONFIG.SUPABASE_KEY
+        },
+        body: JSON.stringify({ messages: cs._history })
+      });
+      const body = await res.json();
+      loading.remove();
+      if(!res.ok || body.error){
+        cs.bot('⚠ ' + (body.error || `HTTP ${res.status}`));
+        return;
+      }
+      cs._history.push({ role: 'assistant', content: body.message });
+      cs.bot(body.message);
+    } catch(e){
+      loading.remove();
+      cs.bot('⚠ ' + (e.message || 'Request failed'));
+    }
   },
   user(t){ cs.push('user', t) },
   bot(t){ cs.push('bot', t) },
