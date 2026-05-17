@@ -306,9 +306,10 @@ const accounts = {
       ${!isNew ? `
       <div class="card" style="margin-top:10px">
         <h2>Call / visit log</h2>
+        <p class="muted" style="font-size:12px;margin:0 0 8px">${auth.isAdmin() ? 'Admin: full control over all notes.' : 'You can edit or delete your own notes for 24 hours after posting. After that they are locked.'}</p>
         <div id="acc-notes"></div>
         <div class="row" style="gap:8px;margin-top:8px">
-          <input id="note-text" placeholder="Add a note (call, visit, geo check-in…)" />
+          <input id="note-text" placeholder="Add a note (call, visit, geo check-in…)" onkeydown="if(event.key==='Enter')accounts.addNote('${acc.id}')"/>
           <button class="icon-btn" onclick="accounts.addNote('${acc.id}')">Add</button>
         </div>
       </div>` : ''}
@@ -319,10 +320,96 @@ const accounts = {
       </div>
     `);
     if(!isNew){
-      const nw = document.getElementById('acc-notes');
-      const real = (acc.notes||[]).slice().reverse();
-      nw.innerHTML = real.length ? real.map(n=>`<div class="list-item"><div class="grow"><div>${esc(n.text)}</div><div class="meta">${esc(n.at)}</div></div></div>`).join('') : '<div class="muted">No notes yet.</div>';
+      accounts.renderNotes(acc.id);
     }
+  },
+  async renderNotes(accountId){
+    const nw = document.getElementById('acc-notes'); if(!nw) return;
+    const { data, error } = await sb.from('account_notes')
+      .select('id, account_id, author_id, rep_id, text, created_at, updated_at, author:profiles!author_id(name, email)')
+      .eq('account_id', accountId)
+      .order('created_at', { ascending: false });
+    if(error){ nw.innerHTML = '<div class="muted">Could not load notes.</div>'; ui.err(error); return; }
+    const notes = data || [];
+    if(!notes.length){ nw.innerHTML = '<div class="muted">No notes yet.</div>'; return; }
+    const me = (await sb.auth.getUser()).data.user;
+    const isAdmin = auth.isAdmin();
+    nw.innerHTML = notes.map(n => {
+      const ageMs = Date.now() - new Date(n.created_at).getTime();
+      const isMine = me && n.author_id === me.id;
+      const withinWindow = ageMs < 24*60*60*1000;
+      const canEdit = isAdmin || (isMine && withinWindow);
+      const author = n.author?.name || n.author?.email || (n.author_id ? 'Unknown' : 'Legacy note');
+      const when = new Date(n.created_at).toLocaleString();
+      const edited = (new Date(n.updated_at).getTime() - new Date(n.created_at).getTime() > 5000)
+        ? ` · edited ${new Date(n.updated_at).toLocaleString()}` : '';
+      let statusBadge = '';
+      if(isMine && withinWindow){
+        const hrsLeft = Math.max(0, 24 - ageMs/3600000);
+        statusBadge = ` <span class="badge warn">${hrsLeft.toFixed(1)}h left to edit</span>`;
+      } else if(isMine && !withinWindow){
+        statusBadge = ` <span class="badge">🔒 locked</span>`;
+      } else if(isAdmin && !isMine){
+        statusBadge = ` <span class="badge info">admin override</span>`;
+      }
+      const safeText = esc(n.text).replace(/\n/g,'<br>');
+      const editBtn = canEdit
+        ? `<button class="icon-btn ghost" onclick="accounts.editNote('${n.id}','${accountId}')">Edit</button>` : '';
+      const delBtn  = canEdit
+        ? `<button class="icon-btn danger" onclick="accounts.deleteNote('${n.id}','${accountId}')">✕</button>` : '';
+      return `<div class="list-item">
+        <div class="grow">
+          <div>${safeText}</div>
+          <div class="meta">${esc(author)} · ${esc(when)}${edited}${statusBadge}</div>
+        </div>
+        ${editBtn}${delBtn}
+      </div>`;
+    }).join('');
+  },
+  async addNote(accountId){
+    const text = (document.getElementById('note-text').value||'').trim();
+    if(!text) return;
+    const userId = (await sb.auth.getUser()).data.user.id;
+    const r = await sb.from('account_notes').insert({
+      account_id: accountId,
+      text,
+      author_id: userId,
+      rep_id: auth.repId() || null
+    });
+    if(r.error){ ui.err(r.error); return; }
+    document.getElementById('note-text').value = '';
+    accounts.renderNotes(accountId);
+  },
+  async editNote(noteId, accountId){
+    /* fetch the current text first so prompt is prefilled */
+    const cur = await sb.from('account_notes').select('text').eq('id', noteId).single();
+    if(cur.error){ ui.err(cur.error); return; }
+    const newText = prompt('Edit note:', cur.data.text);
+    if(newText === null) return;
+    if(!newText.trim()){ ui.toast('Note cannot be empty'); return; }
+    const r = await sb.from('account_notes')
+      .update({ text: newText.trim(), updated_at: new Date().toISOString() })
+      .eq('id', noteId);
+    if(r.error){
+      const msg = /row-level security|permission/i.test(r.error.message)
+        ? 'Cannot edit this note — past the 24-hour window or not your note.'
+        : r.error.message;
+      ui.err({ message: msg });
+      return;
+    }
+    accounts.renderNotes(accountId);
+  },
+  async deleteNote(noteId, accountId){
+    if(!confirm('Delete this note? This cannot be undone.')) return;
+    const r = await sb.from('account_notes').delete().eq('id', noteId);
+    if(r.error){
+      const msg = /row-level security|permission/i.test(r.error.message)
+        ? 'Cannot delete this note — past the 24-hour window or not your note.'
+        : r.error.message;
+      ui.err({ message: msg });
+      return;
+    }
+    accounts.renderNotes(accountId);
   },
   async save(id, isNew){
     const get = i => document.getElementById(i).value;
@@ -343,16 +430,6 @@ const accounts = {
     }
     if(q.error){ ui.err(q.error); return; }
     ui.closeModal(); ui.toast(isNew?'Account created':'Saved'); accounts.render(); dashboard.render();
-  },
-  async addNote(id){
-    const r = await sb.from('accounts').select('notes').eq('id', id).single();
-    if(r.error){ ui.err(r.error); return; }
-    const text = document.getElementById('note-text').value.trim(); if(!text) return;
-    const notes = Array.isArray(r.data.notes) ? r.data.notes : [];
-    notes.push({text, at:new Date().toLocaleString()});
-    const u = await sb.from('accounts').update({ notes }).eq('id', id);
-    if(u.error){ ui.err(u.error); return; }
-    accounts.open(id);
   },
   async remove(id){
     if(!confirm('Delete this account? Orders will keep their reference.')) return;

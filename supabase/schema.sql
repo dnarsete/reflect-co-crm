@@ -302,6 +302,58 @@ do $$ begin
 exception when duplicate_object then null; end $$;
 
 -- =====================================================================
+-- account_notes (24h edit window for reps, unrestricted for admin)
+-- =====================================================================
+create table if not exists public.account_notes (
+  id uuid primary key default gen_random_uuid(),
+  account_id uuid not null references public.accounts(id) on delete cascade,
+  author_id uuid references auth.users on delete set null,
+  rep_id text,
+  text text not null,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+alter table public.account_notes enable row level security;
+
+do $$ begin
+  create policy "notes admin all" on public.account_notes
+    for all to authenticated
+    using (public.is_admin()) with check (public.is_admin());
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "notes rep read on own account" on public.account_notes
+    for select to authenticated
+    using (exists (select 1 from public.accounts a where a.id = account_id and a.rep_id = public.my_rep_id()));
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "notes rep insert on own account" on public.account_notes
+    for insert to authenticated
+    with check (
+      exists (select 1 from public.accounts a where a.id = account_id and a.rep_id = public.my_rep_id())
+      and author_id = auth.uid()
+    );
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "notes rep update own within 24h" on public.account_notes
+    for update to authenticated
+    using (author_id = auth.uid() and created_at > now() - interval '24 hours')
+    with check (author_id = auth.uid() and created_at > now() - interval '24 hours');
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "notes rep delete own within 24h" on public.account_notes
+    for delete to authenticated
+    using (author_id = auth.uid() and created_at > now() - interval '24 hours');
+exception when duplicate_object then null; end $$;
+
+create index if not exists account_notes_account_idx on public.account_notes(account_id);
+create index if not exists account_notes_author_idx on public.account_notes(author_id);
+create index if not exists account_notes_created_idx on public.account_notes(created_at);
+
+-- =====================================================================
 -- orders
 -- =====================================================================
 create table if not exists public.orders (
