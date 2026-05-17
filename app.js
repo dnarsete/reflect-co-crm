@@ -1259,7 +1259,13 @@ const reports = {
   },
   exportCsv(){
     const list = reports._lastList || [];
-    const rows = [['Date','Order','AccountNumber','Account','Type','Rep','Subtotal','Discount','Shipping','Tax','Total','Commission']];
+    const from = document.getElementById('rep-from').value;
+    const to = document.getElementById('rep-to').value;
+    const rep = document.getElementById('rep-rep').value;
+    const rows = [
+      ...csvWatermark(`Orders ${from} → ${to}${rep?' · rep '+rep:''}`),
+      ['Date','Order','AccountNumber','Account','Type','Rep','Subtotal','Discount','Shipping','Tax','Total','Commission']
+    ];
     list.forEach(o=>{
       const sub = (o.items||[]).reduce((s,i)=>s+i.qty*i.price,0);
       const repPct = (cache.reps.find(r=>r.rep_id===o.rep_id)?.commission||0)/100;
@@ -1650,7 +1656,11 @@ const forecasts = {
   exportCsv(){
     /* export current view */
     forecasts.list({period: document.getElementById('fc-period').value}).then(list=>{
-      const rows = [['Period','Rep','Type','Name','Primary contact','Account type','Appt kind','Appt date','Monthly','Quarterly','Close %','Weighted','Status','Source','Notes']];
+      const period = document.getElementById('fc-period').value;
+      const rows = [
+        ...csvWatermark(`Forecasts · ${period}`),
+        ['Period','Rep','Type','Name','Primary contact','Account type','Appt kind','Appt date','Monthly','Quarterly','Close %','Weighted','Status','Source','Notes']
+      ];
       list.forEach(f=>{
         const name = f.account?.business_name || f.prospect?.name || '(unlinked)';
         const type = f.account_id ? 'Account' : 'Prospect';
@@ -1715,6 +1725,8 @@ const adminPanel = {
     document.getElementById('set-disc').value = ref.highDiscPct();
     document.getElementById('set-reorder').value = ref.reorderDays();
     document.getElementById('set-stock').value = ref.lowStock();
+    /* audit log */
+    auditLog.render();
   },
   async loadInvites(){
     const { data, error } = await sb.from('pending_invites').select('*').order('created_at',{ascending:false});
@@ -1890,6 +1902,80 @@ const adminPanel = {
   }
 };
 
+/* ---------- IDLE AUTO-LOGOUT ---------- */
+const idleLogout = {
+  TIMEOUT_MS: 30 * 60 * 1000,
+  WARN_MS:     2 * 60 * 1000,
+  _idleTimer:null, _warnTimer:null, _started:false,
+  start(){
+    if(idleLogout._started) return;
+    idleLogout._started = true;
+    ['mousedown','mousemove','keypress','scroll','touchstart','click'].forEach(evt=>{
+      document.addEventListener(evt, idleLogout.reset, { passive:true, capture:true });
+    });
+    idleLogout.reset();
+  },
+  reset(){
+    clearTimeout(idleLogout._idleTimer); clearTimeout(idleLogout._warnTimer);
+    idleLogout._warnTimer = setTimeout(idleLogout._warn, idleLogout.TIMEOUT_MS - idleLogout.WARN_MS);
+    idleLogout._idleTimer = setTimeout(idleLogout._sign_out, idleLogout.TIMEOUT_MS);
+  },
+  _warn(){
+    ui.toast('Signing you out in 2 minutes due to inactivity. Tap anywhere to stay signed in.');
+  },
+  _sign_out(){
+    alert('You have been signed out due to inactivity.');
+    auth.logout();
+  }
+};
+
+/* ---------- AUDIT LOG (admin view) ---------- */
+const auditLog = {
+  async render(){
+    const wrap = document.getElementById('audit-list'); if(!wrap) return;
+    const tableFilter = document.getElementById('audit-table-filter')?.value || '';
+    const actionFilter = document.getElementById('audit-action-filter')?.value || '';
+    let q = sb.from('audit_log').select('*').order('at',{ascending:false}).limit(100);
+    if(tableFilter) q = q.eq('table_name', tableFilter);
+    if(actionFilter) q = q.eq('action', actionFilter);
+    const { data, error } = await q;
+    if(error){ wrap.innerHTML = '<div class="muted">'+esc(error.message)+'</div>'; return; }
+    const rows = data || [];
+    if(!rows.length){ wrap.innerHTML = '<div class="muted">No audit entries match.</div>'; return; }
+    wrap.innerHTML = `<table>
+      <tr><th>When</th><th>Who</th><th>Action</th><th>Table</th><th>Record</th></tr>
+      ${rows.map(r=>{
+        const when = new Date(r.at).toLocaleString();
+        const who = `${esc(r.user_email||'(system)')}${r.rep_id?' · '+esc(r.rep_id):''}`;
+        const recId = r.record_id ? r.record_id.slice(0,8) : '';
+        const actionBadge = {insert:'ok', update:'info', delete:'err'}[r.action] || '';
+        return `<tr>
+          <td class="nowrap">${esc(when)}</td>
+          <td>${who}</td>
+          <td><span class="badge ${actionBadge}">${esc(r.action)}</span></td>
+          <td>${esc(r.table_name)}</td>
+          <td class="nowrap">${esc(recId)}</td>
+        </tr>`;
+      }).join('')}
+    </table>`;
+  }
+};
+
+/* ---------- CSV EXPORT WATERMARK ---------- */
+function csvWatermark(filterDesc){
+  const me = cache.me || {};
+  return [
+    ['The Reflect Co — CRM Export'],
+    ['Exported by', me.name || me.email || ''],
+    ['Rep ID', me.rep_id || ''],
+    ['Role', me.role || ''],
+    ['Exported at', new Date().toISOString()],
+    ['Filter', filterDesc || ''],
+    ['', '', 'Confidential — for the named exporter only. Do not redistribute.'],
+    ['']
+  ];
+}
+
 /* ---------- BOOT ---------- */
 async function boot(){
   const { data: { session } } = await sb.auth.getSession();
@@ -1914,6 +2000,7 @@ async function boot(){
   document.getElementById('auth').classList.add('hide');
   document.getElementById('app').classList.remove('hide');
   document.querySelectorAll('.admin-only').forEach(el=>el.classList.toggle('hide', !auth.isAdmin()));
+  idleLogout.start();
   nav.go('dashboard');
 }
 
