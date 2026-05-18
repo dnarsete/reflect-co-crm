@@ -226,6 +226,7 @@ const nav = {
     if(view==='promos')    promos.render();
     if(view==='reports')   reports.init();
     if(view==='forecast')  forecasts.render();
+    if(view==='profile')   profile.render();
     if(view==='cs')        cs.init();
     if(view==='admin')     adminPanel.render();
   }
@@ -1534,6 +1535,54 @@ const cs = {
   }
 };
 
+/* ---------- PROFILE (my own contact info) ---------- */
+const profile = {
+  render(){
+    const me = cache.me; if(!me) return;
+    const set = (id, val) => { const el = document.getElementById(id); if(el) el.value = val ?? ''; };
+    set('p-name', me.name);
+    set('p-email', me.email);
+    set('p-cell', me.cell);
+    set('p-company', me.company);
+    set('p-tax-id', me.tax_id);
+    set('p-street', me.street);
+    set('p-city', me.city);
+    set('p-state', me.state);
+    set('p-zip', me.zip);
+    set('p-ro-repid', me.rep_id || '(not assigned)');
+    set('p-ro-role', me.role);
+    set('p-ro-comm', (me.commission ?? 0) + '%');
+    set('p-ro-terr', (me.territory || []).join(', ') || '—');
+    /* Onboarding banner: show if first time */
+    const banner = document.getElementById('onboard-banner');
+    if(banner) banner.classList.toggle('hide', !!me.onboarded);
+  },
+  async save(){
+    const get = i => (document.getElementById(i)?.value || '').trim();
+    const name = get('p-name'); const cell = get('p-cell');
+    if(!name || !cell){
+      ui.toast('Full name and cell phone are required.');
+      return;
+    }
+    const payload = {
+      name, cell,
+      company: get('p-company') || null,
+      tax_id: get('p-tax-id') || null,
+      street: get('p-street') || null,
+      city: get('p-city') || null,
+      state: get('p-state') || null,
+      zip: get('p-zip') || null,
+      onboarded: true
+    };
+    const r = await sb.from('profiles').update(payload).eq('id', cache.me.id).select().single();
+    if(r.error){ ui.err(r.error); return; }
+    cache.me = r.data;
+    document.getElementById('onboard-banner')?.classList.add('hide');
+    ui.toast('Profile saved');
+    profile.render();
+  }
+};
+
 /* ---------- PROSPECTS ---------- */
 const prospects = {
   async list(){
@@ -1880,6 +1929,8 @@ const adminPanel = {
         <div><label>Full name</label><input id="r-name" value="${esc(prof.name||'')}"/></div>
         <div><label>Cell phone</label><input id="r-cell" value="${esc(prof.cell||'')}" placeholder="555-555-5555"/></div>
         <div><label>Company (optional)</label><input id="r-company" value="${esc(prof.company||'')}"/></div>
+        <div><label>Tax ID / EIN (optional)</label><input id="r-tax-id" value="${esc(prof.tax_id||'')}" placeholder="For 1099 purposes"/></div>
+        <div></div>
         <div><label>Rep ID</label><input id="r-repid" value="${esc(prof.rep_id||'')}" placeholder="R-002"/></div>
         <div><label>Role</label>
           <select id="r-role">
@@ -1936,6 +1987,7 @@ const adminPanel = {
       territory: get('r-terr').split(',').map(x=>x.trim()).filter(Boolean),
       cell: get('r-cell').trim() || null,
       company: get('r-company').trim() || null,
+      tax_id: get('r-tax-id').trim() || null,
       street: get('r-street').trim() || null,
       city: get('r-city').trim() || null,
       state: get('r-state').trim() || null,
@@ -2347,7 +2399,12 @@ async function boot(){
   document.querySelectorAll('.admin-only').forEach(el=>el.classList.toggle('hide', !auth.isAdmin()));
   idleLogout.start();
   absoluteTimeout.start();
-  nav.go('dashboard');
+  /* First-login prompt: if profile not yet onboarded, send them to Profile */
+  if(cache.me && !cache.me.onboarded){
+    nav.go('profile');
+  } else {
+    nav.go('dashboard');
+  }
 }
 
 sb.auth.onAuthStateChange((event)=>{

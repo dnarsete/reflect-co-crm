@@ -252,6 +252,46 @@
       </div>
     </section>
 
+    <!-- Profile -->
+    <section id="view-profile" class="view hide">
+      <div class="section-h"><h1>My Profile</h1></div>
+
+      <div id="onboard-banner" class="alert warn hide" style="margin-bottom:12px">
+        👋 <b>Welcome!</b> Please fill in your contact info below. Fields marked <span style="color:var(--brand)">*</span> are required. Once you save, you can use the rest of the CRM.
+      </div>
+
+      <div class="card">
+        <h2>Contact information</h2>
+        <p class="muted" style="font-size:13px;margin:0 0 10px">This is your contact info on file with The Reflect Co. Visible to admin. Update any time.</p>
+        <div class="grid-2">
+          <div><label>Full name <span style="color:var(--brand)">*</span></label><input id="p-name" autocomplete="name"/></div>
+          <div><label>Email</label><input id="p-email" disabled style="opacity:0.6"/></div>
+          <div><label>Cell phone <span style="color:var(--brand)">*</span></label><input id="p-cell" type="tel" autocomplete="tel" placeholder="555-555-5555"/></div>
+          <div><label>Company (optional)</label><input id="p-company" autocomplete="organization"/></div>
+          <div><label>Tax ID / EIN (optional)</label><input id="p-tax-id" placeholder="For 1099 purposes"/></div>
+          <div></div>
+          <div style="grid-column:1/-1"><label>Street address</label><input id="p-street" autocomplete="street-address"/></div>
+          <div><label>City</label><input id="p-city" autocomplete="address-level2"/></div>
+          <div><label>State</label><input id="p-state" autocomplete="address-level1" placeholder="CO"/></div>
+          <div><label>ZIP</label><input id="p-zip" autocomplete="postal-code"/></div>
+        </div>
+        <div class="row" style="gap:8px;margin-top:12px">
+          <button class="icon-btn primary" onclick="profile.save()">Save changes</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Role & assignments</h2>
+        <p class="muted" style="font-size:13px;margin:0 0 10px">Set by your admin — contact them to make changes.</p>
+        <div class="grid-2">
+          <div><label>Rep ID</label><input id="p-ro-repid" disabled style="opacity:0.6"/></div>
+          <div><label>Role</label><input id="p-ro-role" disabled style="opacity:0.6"/></div>
+          <div><label>Commission %</label><input id="p-ro-comm" disabled style="opacity:0.6"/></div>
+          <div><label>Territory</label><input id="p-ro-terr" disabled style="opacity:0.6"/></div>
+        </div>
+      </div>
+    </section>
+
     <!-- Customer Service -->
     <section id="view-cs" class="view hide">
       <div class="section-h">
@@ -361,6 +401,7 @@
     <button class="nav-btn admin-only hide" data-view="promos" onclick="nav.go('promos')"><span class="ico">🏷</span>Promos</button>
     <button class="nav-btn" data-view="forecast" onclick="nav.go('forecast')"><span class="ico">🔮</span>Forecast</button>
     <button class="nav-btn" data-view="reports" onclick="nav.go('reports')"><span class="ico">📊</span>Reports</button>
+    <button class="nav-btn" data-view="profile" onclick="nav.go('profile')"><span class="ico">👤</span>Profile</button>
     <button class="nav-btn" data-view="cs" onclick="nav.go('cs')"><span class="ico">💬</span>Help</button>
     <button class="nav-btn admin-only hide" data-view="admin" onclick="nav.go('admin')"><span class="ico">⚙</span>Admin</button>
   </footer>
