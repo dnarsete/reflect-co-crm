@@ -185,8 +185,8 @@
         </div>
         <div class="row" style="gap:8px;margin-top:10px">
           <button class="icon-btn primary" onclick="reports.run()">Run report</button>
-          <button class="icon-btn" onclick="reports.exportCsv()">Export CSV</button>
-          <button class="icon-btn" onclick="reports.monthly()">Auto monthly w/ commission</button>
+          <button class="icon-btn admin-only" onclick="reports.exportCsv()">Export CSV</button>
+          <button class="icon-btn admin-only" onclick="reports.monthly()">Auto monthly w/ commission</button>
         </div>
       </div>
 
@@ -226,7 +226,7 @@
         <div class="grid-3">
           <div><label>Forecast month</label><select id="fc-period" onchange="forecasts.render()"></select></div>
           <div><label>Rep</label><select id="fc-rep" onchange="forecasts.render()"></select></div>
-          <div style="display:flex;align-items:flex-end"><button class="icon-btn" onclick="forecasts.exportCsv()">Export CSV</button></div>
+          <div style="display:flex;align-items:flex-end"><button class="icon-btn admin-only" onclick="forecasts.exportCsv()">Export CSV</button></div>
         </div>
       </div>
 

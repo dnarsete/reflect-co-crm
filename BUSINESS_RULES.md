@@ -203,8 +203,10 @@ Atomically incremented via `public.next_counter(key)` SECURITY DEFINER function.
 
 ### CSV exports
 
+- **Exports are admin-only.** Reps see all data on screen but cannot click Export CSV — the button is hidden for the rep role. The exportCsv functions also defensively block non-admins server-side.
 - Reports and Forecast CSV exports are **watermarked** with the exporter's name, rep ID, role, ISO timestamp, and filter description.
 - A "Confidential — for the named exporter only. Do not redistribute." line is prepended to every export.
+- **Every export is logged to `audit_log`** via `public.log_export()` (record count, filter, timestamp, who). Blocked rep attempts are also logged as `BLOCKED — rep attempted`.
 
 ---
 

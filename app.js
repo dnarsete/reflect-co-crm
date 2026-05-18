@@ -1327,13 +1327,22 @@ const reports = {
     }).join('');
     wrap.innerHTML = `<table><tr><th>Period</th><th>Orders</th><th>Revenue</th><th></th></tr>${rows}<tr><td><b>Total</b></td><td><b>${list.length}</b></td><td colspan="2"><b>${fmt$(totalRev)}</b></td></tr></table>`;
   },
-  exportCsv(){
+  async exportCsv(){
+    if(!auth.isAdmin()){
+      /* Log the attempted export even though we block it */
+      try{ await sb.rpc('log_export', { p_table_name:'orders_report', p_record_count:0, p_filter_desc:'BLOCKED — rep attempted' }); } catch(_){}
+      ui.toast('Exports are limited to admins. All this data is visible on screen for you.');
+      return;
+    }
     const list = reports._lastList || [];
     const from = document.getElementById('rep-from').value;
     const to = document.getElementById('rep-to').value;
     const rep = document.getElementById('rep-rep').value;
+    const filterDesc = `Orders ${from} → ${to}${rep?' · rep '+rep:''}`;
+    /* Audit log */
+    try{ await sb.rpc('log_export', { p_table_name:'orders_report', p_record_count: list.length, p_filter_desc: filterDesc }); } catch(_){}
     const rows = [
-      ...csvWatermark(`Orders ${from} → ${to}${rep?' · rep '+rep:''}`),
+      ...csvWatermark(filterDesc),
       ['Date','Order','AccountNumber','Account','Type','Rep','Subtotal','Discount','Shipping','Tax','Total','Commission']
     ];
     list.forEach(o=>{
@@ -1723,12 +1732,19 @@ const forecasts = {
     if(r.error){ ui.err(r.error); return; }
     ui.closeModal(); ui.toast('Deleted'); forecasts.render();
   },
-  exportCsv(){
+  async exportCsv(){
+    if(!auth.isAdmin()){
+      try{ await sb.rpc('log_export', { p_table_name:'forecasts', p_record_count:0, p_filter_desc:'BLOCKED — rep attempted' }); } catch(_){}
+      ui.toast('Exports are limited to admins. All this data is visible on screen for you.');
+      return;
+    }
     /* export current view */
-    forecasts.list({period: document.getElementById('fc-period').value}).then(list=>{
+    forecasts.list({period: document.getElementById('fc-period').value}).then(async list=>{
       const period = document.getElementById('fc-period').value;
+      const filterDesc = `Forecasts · ${period}`;
+      try{ await sb.rpc('log_export', { p_table_name:'forecasts', p_record_count: list.length, p_filter_desc: filterDesc }); } catch(_){}
       const rows = [
-        ...csvWatermark(`Forecasts · ${period}`),
+        ...csvWatermark(filterDesc),
         ['Period','Rep','Type','Name','Primary contact','Account type','Appt kind','Appt date','Monthly','Quarterly','Close %','Weighted','Status','Source','Notes']
       ];
       list.forEach(f=>{
