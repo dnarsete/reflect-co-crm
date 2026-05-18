@@ -211,8 +211,8 @@ Atomically incremented via `public.next_counter(key)` SECURITY DEFINER function.
 ## Lead routing (not yet implemented)
 
 The schema supports it:
-- Each rep has a `territory` text array (ZIP codes).
-- Incoming web leads should be matched to a rep by ZIP overlap.
+- Each rep has a `territory` text array — free-form tags (e.g., "Denver Metro", "Boulder", "Colorado").
+- Incoming web leads should be matched to a rep by territory tag (or city/state on the lead).
 
 Currently captured but not auto-routed — Phase 3 / 4 work.
 

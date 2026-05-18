@@ -14,7 +14,7 @@ Data persists in the browser via `localStorage`. The intent is for this UI to si
 - **Promotions** — code-based with four kinds: `percent`, `shipping` (free), `bonus` (extra product), `access` (seminars/trainings). Minimum-units gating for volume tiers.
 - **Reports & KPIs** — date range, rep, account #, order #, account-type filters; by-type breakdown; commission computed per rep; **CSV export**; one-click "last month w/ commission" report.
 - **Customer Service** — in-app rule-based assistant that looks up accounts, orders, promos, tax, and reorder-due. Footer fallback (1-800 / email / mailing address). Production should plug into the [Claude API](https://docs.anthropic.com) here.
-- **Admin** — rep CRUD with territory ZIPs (lead routing), account-type management, system settings (shipping/tax/discount alert/reorder window/low-stock threshold), full demo-data reset.
+- **Admin** — rep CRUD with free-form territory tags (e.g. "Denver Metro, Boulder"), account-type management, system settings (shipping/tax/discount alert/reorder window/low-stock threshold), full demo-data reset.
 - **Alerts** — low-stock and reorder-due tiles on the dashboard; high-discount orders prompt before finalizing.
 
 ## Quick start

@@ -168,7 +168,7 @@ function buildSystemPrompt(profile: any, isAdmin: boolean) {
 - Role: ${profile.role}
 - Rep ID: ${profile.rep_id || "(none)"}
 - Commission rate: ${profile.commission ?? 10}%
-- Territory ZIPs: ${(profile.territory || []).join(", ") || "(none set)"}
+- Territory: ${(profile.territory || []).join(", ") || "(none set)"}
 
 # Today's date: ${today}
 

@@ -1764,7 +1764,7 @@ const adminPanel = {
           </select>
         </div>
         <div><label>Commission %</label><input id="r-comm" type="number" step="0.1" value="${prof.commission ?? 10}"/></div>
-        <div><label>Territory ZIPs (comma)</label><input id="r-terr" value="${esc((prof.territory||[]).join(', '))}" placeholder="80210, 80211"/></div>
+        <div><label>Territory (comma-separated)</label><input id="r-terr" value="${esc((prof.territory||[]).join(', '))}" placeholder="Denver Metro, Boulder, Colorado Springs"/></div>
         <div style="grid-column:1/-1"><label>Street address</label><input id="r-street" value="${esc(prof.street||'')}"/></div>
         <div><label>City</label><input id="r-city" value="${esc(prof.city||'')}"/></div>
         <div><label>State</label><input id="r-state" value="${esc(prof.state||'')}" placeholder="CO"/></div>
@@ -1793,7 +1793,7 @@ const adminPanel = {
           </select>
         </div>
         <div><label>Commission %</label><input id="r-comm" type="number" step="0.1" value="${inv.commission ?? 10}"/></div>
-        <div><label>Territory ZIPs (comma)</label><input id="r-terr" value="${esc((inv.territory||[]).join(', '))}" placeholder="80210, 80211"/></div>
+        <div><label>Territory (comma-separated)</label><input id="r-terr" value="${esc((inv.territory||[]).join(', '))}" placeholder="Denver Metro, Boulder, Colorado Springs"/></div>
       </div>
       <div class="row" style="gap:8px;margin-top:12px">
         <button class="icon-btn primary" onclick="adminPanel.saveInvite('${esc(inv.email).replace(/'/g,'&#39;')}')">Save</button>
