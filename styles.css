@@ -45,6 +45,7 @@
   .icon-btn.primary{background:var(--brand);color:#1a1208;border-color:transparent;font-weight:700}
   .icon-btn.ghost{background:transparent}
   .icon-btn.danger{background:#3b1a1a;border-color:#7a2c2c;color:#fecaca}
+  .icon-btn.active-preset{border-color:var(--brand);background:rgba(199,154,91,0.15);color:var(--brand);font-weight:600}
 
   main{padding:14px;max-width:1100px;margin:0 auto;width:100%}
   footer.bottom-nav{

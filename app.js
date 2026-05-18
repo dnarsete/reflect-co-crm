@@ -1073,6 +1073,12 @@ const promos = {
 /* ---------- REPORTS ---------- */
 const reports = {
   _mode: 'standard',  /* or 'yoy' */
+  setActivePreset(preset){
+    const wrap = document.getElementById('rep-presets'); if(!wrap) return;
+    wrap.querySelectorAll('button[data-preset]').forEach(b => {
+      b.classList.toggle('active-preset', b.dataset.preset === preset);
+    });
+  },
   setRange(preset){
     const d = new Date();
     const iso = x => x.toISOString().slice(0,10);
@@ -1109,11 +1115,21 @@ const reports = {
     }
     document.getElementById('rep-from').value = from;
     document.getElementById('rep-to').value = to;
+    reports.setActivePreset(preset);
     reports.run();
   },
   async init(){
     document.getElementById('rep-from').value = startOfMonth();
     document.getElementById('rep-to').value = todayISO();
+    reports.setActivePreset('month');
+    /* Clear active preset if user manually edits either date */
+    ['rep-from','rep-to'].forEach(id => {
+      const el = document.getElementById(id);
+      if(el && !el._presetClearBound){
+        el.addEventListener('change', () => reports.setActivePreset(null));
+        el._presetClearBound = true;
+      }
+    });
     const repSel = document.getElementById('rep-rep');
     repSel.innerHTML = '<option value="">All reps</option>' + cache.reps.filter(r=>r.rep_id).map(r=>`<option value="${esc(r.rep_id)}">${esc(r.name||r.email)} (${esc(r.rep_id)})</option>`).join('');
     if(!auth.isAdmin()){ repSel.value = auth.repId() || ''; repSel.disabled = true; } else { repSel.disabled = false; }
