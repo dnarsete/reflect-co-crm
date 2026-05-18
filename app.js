@@ -1564,6 +1564,26 @@ const profile = {
       ui.toast('Full name and cell phone are required.');
       return;
     }
+    /* Email change flow */
+    const newEmail = get('p-email').toLowerCase();
+    const currentEmail = (cache.me.email || '').toLowerCase();
+    let emailChangeNote = '';
+    if(newEmail && newEmail !== currentEmail){
+      if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail)){
+        ui.toast('Please enter a valid email address.'); return;
+      }
+      if(!confirm(`Change your email from "${currentEmail}" to "${newEmail}"?\n\nSupabase will send confirmation links to BOTH email addresses. The change takes effect only after you click the link in your new inbox. You can keep signing in with your current email until then.`)){
+        document.getElementById('p-email').value = currentEmail;
+        return;
+      }
+      const er = await sb.auth.updateUser({ email: newEmail });
+      if(er.error){
+        ui.err(er.error);
+        return;
+      }
+      emailChangeNote = ' Verification email sent to ' + newEmail + '.';
+    }
+    /* Profile fields (everything except email, which is handled via auth) */
     const payload = {
       name, cell,
       company: get('p-company') || null,
@@ -1578,7 +1598,7 @@ const profile = {
     if(r.error){ ui.err(r.error); return; }
     cache.me = r.data;
     document.getElementById('onboard-banner')?.classList.add('hide');
-    ui.toast('Profile saved');
+    ui.toast('Profile saved.' + emailChangeNote);
     profile.render();
   }
 };
