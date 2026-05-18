@@ -1072,29 +1072,20 @@ const promos = {
 
 /* ---------- REPORTS ---------- */
 const reports = {
+  _mode: 'standard',  /* or 'yoy' */
   setRange(preset){
     const d = new Date();
     const iso = x => x.toISOString().slice(0,10);
     const monStart = (yr, mo) => new Date(yr, mo, 1);
     const monEnd   = (yr, mo) => new Date(yr, mo+1, 0);
     let from, to;
+    reports._mode = 'standard';
     switch(preset){
       case 'today':       from = to = iso(d); break;
-      case 'yesterday': {
-        const y = new Date(d); y.setDate(d.getDate()-1);
-        from = to = iso(y); break;
-      }
       case 'week': {
         const dow = d.getDay() || 7; /* Mon=1..Sun=7 */
         const mon = new Date(d); mon.setDate(d.getDate() - (dow-1));
         from = iso(mon); to = iso(d); break;
-      }
-      case 'lastweek': {
-        const dow = d.getDay() || 7;
-        const thisMon = new Date(d); thisMon.setDate(d.getDate() - (dow-1));
-        const lastMon = new Date(thisMon); lastMon.setDate(thisMon.getDate() - 7);
-        const lastSun = new Date(thisMon); lastSun.setDate(thisMon.getDate() - 1);
-        from = iso(lastMon); to = iso(lastSun); break;
       }
       case 'month':       from = iso(monStart(d.getFullYear(), d.getMonth())); to = iso(d); break;
       case 'lastmonth':   from = iso(monStart(d.getFullYear(), d.getMonth()-1));
@@ -1110,8 +1101,9 @@ const reports = {
         from = iso(monStart(yr, qm)); to = iso(monEnd(yr, qm+2)); break;
       }
       case 'ytd':         from = iso(monStart(d.getFullYear(), 0));  to = iso(d); break;
-      case 'lastyear':    from = iso(monStart(d.getFullYear()-1, 0));
-                          to   = iso(monEnd  (d.getFullYear()-1, 11)); break;
+      case 'yoy':
+        reports._mode = 'yoy';
+        from = iso(monStart(d.getFullYear(), 0));  to = iso(d); break;
       case 'all':         from = '2000-01-01'; to = iso(d); break;
       default: return;
     }
@@ -1172,8 +1164,11 @@ const reports = {
     const rowsT = Object.entries(grp).map(([t,v])=>`<tr><td>${esc(t)}</td><td>${v.orders}</td><td>${v.units}</td><td>${fmt$(v.rev)}</td></tr>`).join('');
     document.getElementById('rep-bytype').innerHTML = rowsT ? `<table><tr><th>Type</th><th>Orders</th><th>Units</th><th>Revenue</th></tr>${rowsT}</table>` : '<div class="muted">No data.</div>';
 
-    /* trend over time */
+    /* trend over time (auto-hidden for short ranges) */
     reports.renderTrend(list);
+
+    /* Year-over-year comparison card */
+    await reports.renderYoY(list);
 
     const rows = list.map(o=>{
       return `<tr>
@@ -1189,17 +1184,81 @@ const reports = {
     document.getElementById('rep-detail').innerHTML = rows ? `<table><tr><th>Date</th><th>Order</th><th>Account #</th><th>Account</th><th>Type</th><th>Rep</th><th>Total</th></tr>${rows}</table>` : '<div class="muted">No orders match.</div>';
     reports._lastList = list;
   },
+  async renderYoY(currentList){
+    const card = document.getElementById('rep-yoy-card');
+    if(!card) return;
+    if(reports._mode !== 'yoy'){ card.classList.add('hide'); return; }
+
+    const fromStr = document.getElementById('rep-from').value;
+    const toStr   = document.getElementById('rep-to').value;
+    const from = new Date(fromStr); const to = new Date(toStr);
+    /* Same range, one year earlier */
+    const pf = new Date(from); pf.setFullYear(pf.getFullYear()-1);
+    const pt = new Date(to);   pt.setFullYear(pt.getFullYear()-1);
+    const pfIso = pf.toISOString().slice(0,10);
+    const ptIso = pt.toISOString().slice(0,10);
+
+    /* Fetch prior-year same-period orders */
+    const repId = document.getElementById('rep-rep').value;
+    let q = sb.from('orders').select('rep_id, total, shipping, tax').eq('status','finalized')
+      .gte('placed_at', pfIso).lte('placed_at', ptIso + 'T23:59:59');
+    if(repId) q = q.eq('rep_id', repId);
+    const r = await q;
+    if(r.error){ card.classList.add('hide'); return; }
+    const priorRows = r.data || [];
+    const priorRev = priorRows.reduce((s,o)=>s+Number(o.total||0),0);
+    const priorOrders = priorRows.length;
+    const priorComm = priorRows.reduce((s,o)=>{
+      const repPct = (cache.reps.find(rr=>rr.rep_id===o.rep_id)?.commission || 0)/100;
+      return s + (Number(o.total||0) - Number(o.shipping||0) - Number(o.tax||0)) * repPct;
+    }, 0);
+
+    const curRev = currentList.reduce((s,o)=>s+Number(o.total||0),0);
+    const curOrders = currentList.length;
+    const curComm = currentList.reduce((s,o)=>{
+      const repPct = (cache.reps.find(rr=>rr.rep_id===o.rep_id)?.commission || 0)/100;
+      return s + (Number(o.total||0) - Number(o.shipping||0) - Number(o.tax||0)) * repPct;
+    }, 0);
+
+    const pct = (now, then) => {
+      if(!then) return now ? '+∞%' : '0.0%';
+      const v = ((now-then)/then) * 100;
+      return (v >= 0 ? '+' : '') + v.toFixed(1) + '%';
+    };
+    const ratio = (now, then) => then ? (now/then).toFixed(2) : '—';
+    const klass = v => v.startsWith('-') ? 'err' : (v === '0.0%' ? '' : 'ok');
+
+    card.classList.remove('hide');
+    const yrThis = from.getFullYear();
+    const yrPrev = pf.getFullYear();
+    document.getElementById('rep-yoy-body').innerHTML = `
+      <div class="muted" style="font-size:12px;margin-bottom:8px">
+        Comparing <b>${fromStr} → ${toStr}</b> (${yrThis}) vs <b>${pfIso} → ${ptIso}</b> (${yrPrev})
+      </div>
+      <div class="table-wrap"><table>
+        <tr><th>Metric</th><th>${yrPrev}</th><th>${yrThis}</th><th>Change</th><th>Ratio</th></tr>
+        <tr><td>Revenue</td><td>${fmt$(priorRev)}</td><td>${fmt$(curRev)}</td><td><span class="badge ${klass(pct(curRev,priorRev))}">${pct(curRev,priorRev)}</span></td><td>${ratio(curRev,priorRev)}x</td></tr>
+        <tr><td>Orders</td><td>${priorOrders}</td><td>${curOrders}</td><td><span class="badge ${klass(pct(curOrders,priorOrders))}">${pct(curOrders,priorOrders)}</span></td><td>${ratio(curOrders,priorOrders)}x</td></tr>
+        <tr><td>Commission</td><td>${fmt$(priorComm)}</td><td>${fmt$(curComm)}</td><td><span class="badge ${klass(pct(curComm,priorComm))}">${pct(curComm,priorComm)}</span></td><td>${ratio(curComm,priorComm)}x</td></tr>
+      </table></div>
+      ${priorOrders === 0 ? '<div class="muted" style="font-size:12px;margin-top:8px">No orders in the prior-year period — ratios shown as ∞.</div>' : ''}
+    `;
+  },
   renderTrend(list){
     const fromStr = document.getElementById('rep-from').value;
     const toStr   = document.getElementById('rep-to').value;
     const titleEl = document.getElementById('rep-trend-title');
     const wrap    = document.getElementById('rep-trend');
-    if(!fromStr || !toStr){ wrap.innerHTML=''; return; }
+    const trendWrap = document.getElementById('rep-trend-wrap');
+    if(!fromStr || !toStr){ trendWrap.classList.add('hide'); return; }
     const from = new Date(fromStr + 'T00:00:00');
     const to   = new Date(toStr   + 'T23:59:59');
     const dayMs = 86400000;
     const days = Math.max(1, Math.ceil((to - from) / dayMs) + 1);
-    const bucketBy = days <= 31 ? 'day' : days <= 120 ? 'week' : 'month';
+    /* Hide trend for short ranges — summary tiles already show the total */
+    if(days <= 31){ trendWrap.classList.add('hide'); return; }
+    trendWrap.classList.remove('hide');
+    const bucketBy = days <= 120 ? 'week' : 'month';
     titleEl.textContent = 'Revenue trend — by ' + bucketBy;
 
     const buckets = new Map();
