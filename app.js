@@ -1110,7 +1110,31 @@ const reports = {
       case 'yoy':
         reports._mode = 'yoy';
         from = iso(monStart(d.getFullYear(), 0));  to = iso(d); break;
-      case 'all':         from = '2000-01-01'; to = iso(d); break;
+      case 'all': {
+        /* "All time" = from the relevant person's start date (when they joined the company),
+           not the literal beginning of time. */
+        let startISO = null;
+        if(!auth.isAdmin()){
+          /* Rep view: their own join date */
+          startISO = cache.me?.created_at;
+        } else {
+          /* Admin view: if a rep filter is set, use that rep's join date.
+             Otherwise use the earliest rep on the team (effective company history). */
+          const repFilter = document.getElementById('rep-rep')?.value;
+          if(repFilter){
+            const profile = cache.reps.find(r => r.rep_id === repFilter);
+            startISO = profile?.created_at;
+          } else {
+            startISO = cache.reps.reduce((min, r) => {
+              if(!r.created_at) return min;
+              return (!min || r.created_at < min) ? r.created_at : min;
+            }, null);
+          }
+        }
+        from = startISO ? iso(new Date(startISO)) : '2000-01-01';
+        to = iso(d);
+        break;
+      }
       default: return;
     }
     document.getElementById('rep-from').value = from;
@@ -1130,6 +1154,15 @@ const reports = {
         el._presetClearBound = true;
       }
     });
+    /* When admin changes rep filter, re-apply the active preset (so "All time" recomputes for the picked rep's join date) */
+    const repSel2 = document.getElementById('rep-rep');
+    if(repSel2 && !repSel2._presetReapplyBound){
+      repSel2.addEventListener('change', () => {
+        const activeBtn = document.querySelector('#rep-presets button.active-preset');
+        if(activeBtn) reports.setRange(activeBtn.dataset.preset);
+      });
+      repSel2._presetReapplyBound = true;
+    }
     const repSel = document.getElementById('rep-rep');
     repSel.innerHTML = '<option value="">All reps</option>' + cache.reps.filter(r=>r.rep_id).map(r=>`<option value="${esc(r.rep_id)}">${esc(r.name||r.email)} (${esc(r.rep_id)})</option>`).join('');
     if(!auth.isAdmin()){ repSel.value = auth.repId() || ''; repSel.disabled = true; } else { repSel.disabled = false; }
