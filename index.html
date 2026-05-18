@@ -316,6 +316,15 @@
       <div class="section-h"><h1>Admin</h1></div>
 
       <div class="card">
+        <div class="section-h" style="margin-bottom:8px">
+          <h2 style="margin:0;flex:1">Messages to reps</h2>
+          <button class="icon-btn primary" onclick="messages.openNew()">+ New message</button>
+        </div>
+        <p class="muted" style="margin:0 0 10px;font-size:13px">Post announcements, promos to push, to-do items, or send a private 1-on-1 message. Shows in the rep's Dashboard → Alerts.</p>
+        <div id="msg-list"></div>
+      </div>
+
+      <div class="card">
         <h2>Promotions</h2>
         <p class="muted" style="margin-top:0">Promotion codes are managed in their own tab — open the Promotions view to edit codes.</p>
         <button class="icon-btn" onclick="nav.go('promos')">Open Promotions</button>

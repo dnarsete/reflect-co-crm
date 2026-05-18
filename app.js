@@ -256,21 +256,46 @@ const dashboard = {
     /* alerts */
     const alertsEl = document.getElementById('alerts');
     const alerts = [];
-    const lowStock = cache.products.filter(p=>p.stock<=ref.lowStock());
-    lowStock.forEach(p=>alerts.push({lvl:'warn', text:`Low stock — ${p.name} (${p.stock} left)`}));
 
+    /* Admin-only: low-stock product alerts. Reps don't see inventory levels. */
+    if(auth.isAdmin()){
+      const lowStock = cache.products.filter(p=>p.stock<=ref.lowStock());
+      lowStock.forEach(p=>alerts.push({lvl:'warn', text:`Low stock — ${p.name} (${p.stock} left)`, html:false}));
+    }
+
+    /* Admin messages: todos, promos, announcements, 1-on-1 messages */
+    try{
+      const mr = await sb.from('rep_messages').select('id,kind,title,body,recipient_rep_id,created_at')
+        .order('created_at',{ascending:false}).limit(10);
+      if(!mr.error){
+        (mr.data||[]).forEach(m=>{
+          const icon = {announcement:'📢', promo:'🏷', todo:'✅', message:'💬'}[m.kind] || '📌';
+          const lvl  = m.kind === 'todo' ? 'warn' : (m.kind === 'promo' ? 'ok' : 'info');
+          const titleHtml = m.title ? `<b>${esc(m.title)}</b> · ` : '';
+          alerts.push({ lvl, html:true, text: `${icon} ${titleHtml}${esc(m.body)}` });
+        });
+      }
+    } catch(_){}
+
+    /* Reorder + new-account alerts (relevant for reps and admin) */
     const myAccts = await accounts.list();
     for(const a of myAccts.slice(0, 30)){
       const last = await orders.lastForAccount(a.id);
       if(last){
         const days = Math.floor((Date.now()-new Date(last.placed_at))/86400000);
-        if(days>=ref.reorderDays()) alerts.push({lvl:'info', text:`${a.business_name||a.account_number} due for reorder (${days}d since last)`});
+        if(days>=ref.reorderDays()) alerts.push({lvl:'info', html:false, text:`${a.business_name||a.account_number} due for reorder (${days}d since last)`});
       } else {
         const days = Math.floor((Date.now()-new Date(a.created_at))/86400000);
-        if(days>14) alerts.push({lvl:'info', text:`${a.business_name||a.account_number} has no orders yet (${days}d old)`});
+        if(days>14) alerts.push({lvl:'info', html:false, text:`${a.business_name||a.account_number} has no orders yet (${days}d old)`});
       }
     }
-    alertsEl.innerHTML = alerts.length ? alerts.slice(0,8).map(a=>`<div class="alert ${a.lvl==='warn'?'warn':''}">${esc(a.text)}</div>`).join('') : '<div class="muted">All clear.</div>';
+    alertsEl.innerHTML = alerts.length
+      ? alerts.slice(0,10).map(a=>{
+          const lvlCls = a.lvl==='warn' ? 'warn' : (a.lvl==='ok' ? 'ok' : '');
+          const content = a.html ? a.text : esc(a.text);
+          return `<div class="alert ${lvlCls}">${content}</div>`;
+        }).join('')
+      : '<div class="muted">All clear.</div>';
   }
 };
 
@@ -1877,6 +1902,101 @@ const forecasts = {
   }
 };
 
+/* ---------- ADMIN MESSAGES (admin → reps) ---------- */
+const messages = {
+  async list(){
+    const { data, error } = await sb.from('rep_messages').select('*').order('created_at',{ascending:false}).limit(100);
+    if(error){ ui.err(error); return []; }
+    return data || [];
+  },
+  async renderAdmin(){
+    const wrap = document.getElementById('msg-list'); if(!wrap) return;
+    const list = await messages.list();
+    if(!list.length){ wrap.innerHTML='<div class="muted">No messages yet. Click "+ New message" to compose one.</div>'; return; }
+    const kindIcon = {announcement:'📢', promo:'🏷', todo:'✅', message:'💬'};
+    wrap.innerHTML = list.map(m=>{
+      const rec = m.recipient_rep_id ? `to ${esc(m.recipient_rep_id)}` : 'broadcast (all reps)';
+      const statusBadge = m.archived
+        ? '<span class="badge">archived</span>'
+        : (m.expires_at && new Date(m.expires_at) < new Date() ? '<span class="badge">expired</span>' : '<span class="badge ok">active</span>');
+      return `<div class="list-item">
+        <div class="grow">
+          <div class="title">${kindIcon[m.kind]||'📌'} ${esc(m.title || m.body.slice(0,60))} <span class="badge info">${esc(m.kind)}</span> ${statusBadge}</div>
+          <div class="meta">${esc(rec)} · ${new Date(m.created_at).toLocaleString()}${m.expires_at?' · expires '+new Date(m.expires_at).toLocaleDateString():''}</div>
+          ${m.title ? `<div style="margin-top:4px;font-size:13px;color:var(--muted)">${esc(m.body)}</div>` : ''}
+        </div>
+        <button class="icon-btn" onclick="messages.toggleArchive('${m.id}', ${!m.archived})">${m.archived?'Restore':'Archive'}</button>
+        <button class="icon-btn danger" onclick="messages.remove('${m.id}')">✕</button>
+      </div>`;
+    }).join('');
+  },
+  openNew(){
+    const repOpts = cache.reps
+      .filter(r=>r.rep_id && !r.disabled)
+      .map(r=>`<option value="${esc(r.rep_id)}">${esc(r.name||r.email)} (${esc(r.rep_id)})</option>`).join('');
+    ui.modal(`
+      <h3>New message</h3>
+      <div class="grid-2">
+        <div><label>Kind</label>
+          <select id="m-kind">
+            <option value="announcement">📢 Announcement</option>
+            <option value="promo">🏷 Promo to push</option>
+            <option value="todo">✅ To-do</option>
+            <option value="message">💬 1-on-1 message</option>
+          </select>
+        </div>
+        <div><label>Send to</label>
+          <select id="m-rep">
+            <option value="">All reps (broadcast)</option>
+            ${repOpts}
+          </select>
+        </div>
+        <div style="grid-column:1/-1"><label>Title (optional)</label><input id="m-title" placeholder="e.g. Q3 push for med spas"/></div>
+        <div style="grid-column:1/-1"><label>Body <span style="color:var(--brand)">*</span></label><textarea id="m-body" rows="4" placeholder="What you want them to see..."></textarea></div>
+        <div><label>Expires (optional)</label><input id="m-expires" type="date"/></div>
+      </div>
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="icon-btn primary" onclick="messages.save()">Send</button>
+        <button class="icon-btn ghost" onclick="ui.closeModal()">Cancel</button>
+      </div>
+    `);
+  },
+  async save(){
+    const get = i => (document.getElementById(i)?.value||'').trim();
+    const body = get('m-body');
+    if(!body){ ui.toast('Message body required'); return; }
+    const userR = await sb.auth.getUser();
+    const exp = get('m-expires');
+    const payload = {
+      sender_id: userR.data.user?.id || null,
+      recipient_rep_id: get('m-rep') || null,
+      kind: get('m-kind') || 'announcement',
+      title: get('m-title') || null,
+      body,
+      expires_at: exp ? new Date(exp + 'T23:59:59').toISOString() : null
+    };
+    const r = await sb.from('rep_messages').insert(payload);
+    if(r.error){ ui.err(r.error); return; }
+    ui.closeModal();
+    ui.toast(payload.recipient_rep_id ? 'Message sent to ' + payload.recipient_rep_id : 'Broadcast sent to all reps');
+    messages.renderAdmin();
+    dashboard.render();
+  },
+  async toggleArchive(id, archived){
+    const r = await sb.from('rep_messages').update({archived}).eq('id', id);
+    if(r.error){ ui.err(r.error); return; }
+    messages.renderAdmin();
+    dashboard.render();
+  },
+  async remove(id){
+    if(!confirm('Delete this message permanently?')) return;
+    const r = await sb.from('rep_messages').delete().eq('id', id);
+    if(r.error){ ui.err(r.error); return; }
+    messages.renderAdmin();
+    dashboard.render();
+  }
+};
+
 /* ---------- ADMIN ---------- */
 const adminPanel = {
   async render(){
@@ -1931,6 +2051,8 @@ const adminPanel = {
     document.getElementById('set-stock').value = ref.lowStock();
     /* audit log */
     auditLog.render();
+    /* messages */
+    messages.renderAdmin();
   },
   async loadInvites(){
     const { data, error } = await sb.from('pending_invites').select('*').order('created_at',{ascending:false});
