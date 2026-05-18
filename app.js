@@ -64,6 +64,16 @@ const auth = {
       errEl.classList.remove('hide');
       return;
     }
+    /* Check if MFA escalation is required */
+    if(await security.needsMFA()){
+      const r = await security.challengeForMFA();
+      if(!r.ok){
+        await sb.auth.signOut();
+        errEl.textContent = 'Two-factor required: ' + (r.error || 'verification failed');
+        errEl.classList.remove('hide');
+        return;
+      }
+    }
     errEl.classList.add('hide');
     await boot();
   },
@@ -123,6 +133,7 @@ const auth = {
     document.getElementById('auth-signup-btn').textContent = 'Create account';
   },
   async logout(){
+    absoluteTimeout.clear();
     await sb.auth.signOut();
     location.reload();
   },
@@ -1902,6 +1913,216 @@ const adminPanel = {
   }
 };
 
+/* ---------- SECURITY: MFA (TOTP + Passkey) ---------- */
+const security = {
+  /* List enrolled factors for current user. Returns { totp: [...], webauthn: [...] } shape varies by SDK version. */
+  async listFactors(){
+    const r = await sb.auth.mfa.listFactors();
+    if(r.error) throw r.error;
+    /* Normalize: combine all factors then split by type */
+    const all = (r.data?.all || r.data?.totp || []).concat(r.data?.phone || []);
+    const verified = all.filter(f => f.status === 'verified');
+    return {
+      raw: r.data,
+      totp: verified.filter(f => f.factor_type === 'totp'),
+      webauthn: verified.filter(f => f.factor_type === 'webauthn'),
+      all: verified,
+      unverified: all.filter(f => f.status === 'unverified')
+    };
+  },
+
+  async enrollTOTP(friendlyName){
+    /* Clean up any unverified factors first (Supabase rejects duplicate enrollment) */
+    const list = await security.listFactors();
+    for(const f of list.unverified){
+      if(f.factor_type === 'totp') await sb.auth.mfa.unenroll({ factorId: f.id });
+    }
+    const r = await sb.auth.mfa.enroll({
+      factorType: 'totp',
+      friendlyName: friendlyName || 'Authenticator app'
+    });
+    if(r.error) throw r.error;
+    return r.data; /* { id, type:'totp', totp: { qr_code, secret, uri } } */
+  },
+
+  async verifyTOTP(factorId, code){
+    const ch = await sb.auth.mfa.challenge({ factorId });
+    if(ch.error) throw ch.error;
+    const v = await sb.auth.mfa.verify({ factorId, challengeId: ch.data.id, code });
+    if(v.error) throw v.error;
+    return v.data;
+  },
+
+  async enrollPasskey(friendlyName){
+    /* Best-effort: requires browser WebAuthn + Supabase WebAuthn factor support */
+    try{
+      const r = await sb.auth.mfa.enroll({
+        factorType: 'webauthn',
+        friendlyName: friendlyName || (navigator.platform || 'This device')
+      });
+      if(r.error) throw r.error;
+      return r.data;
+    } catch(e){
+      throw new Error('Passkeys not yet supported on this Supabase project. Use TOTP instead. Details: ' + (e?.message||e));
+    }
+  },
+
+  async unenroll(factorId){
+    const r = await sb.auth.mfa.unenroll({ factorId });
+    if(r.error) throw r.error;
+  },
+
+  /* Returns whether the current session needs an MFA challenge to escalate */
+  async needsMFA(){
+    const r = await sb.auth.mfa.getAuthenticatorAssuranceLevel();
+    if(r.error) return false;
+    return r.data?.currentLevel === 'aal1' && r.data?.nextLevel === 'aal2';
+  },
+
+  /* Open the Security management modal */
+  async openSettings(){
+    let list;
+    try { list = await security.listFactors(); }
+    catch(e){ ui.err(e); return; }
+
+    const totpRows = list.totp.map(f => `
+      <div class="list-item">
+        <div class="grow"><div class="title">${esc(f.friendly_name||'Authenticator app')}</div>
+          <div class="meta">TOTP · added ${new Date(f.created_at).toLocaleDateString()}</div></div>
+        <button class="icon-btn danger" onclick="security._remove('${f.id}')">Remove</button>
+      </div>`).join('');
+    const pkRows = list.webauthn.map(f => `
+      <div class="list-item">
+        <div class="grow"><div class="title">${esc(f.friendly_name||'Passkey')}</div>
+          <div class="meta">Passkey · added ${new Date(f.created_at).toLocaleDateString()}</div></div>
+        <button class="icon-btn danger" onclick="security._remove('${f.id}')">Remove</button>
+      </div>`).join('');
+
+    ui.modal(`
+      <h3>Security</h3>
+      <p class="muted" style="margin:0 0 12px;font-size:13px">Add a second sign-in factor to protect your account. If you lose access, your admin can disable factors from the Supabase dashboard.</p>
+
+      <div class="card" style="background:var(--panel-2)">
+        <h2>🔑 Authenticator app (TOTP)</h2>
+        <p class="muted" style="font-size:12px;margin:0 0 8px">Recommended. Use Google Authenticator, Authy, 1Password, or any TOTP app.</p>
+        ${totpRows || '<div class="muted">Not enabled.</div>'}
+        <button class="icon-btn primary" style="margin-top:8px" onclick="security._enrollTOTPFlow()">+ Add authenticator</button>
+      </div>
+
+      <div class="card" style="background:var(--panel-2);margin-top:10px">
+        <h2>👆 Passkey (Face ID / Touch ID / Windows Hello)</h2>
+        <p class="muted" style="font-size:12px;margin:0 0 8px">Sign in with biometrics on this device. Phishing-immune.</p>
+        ${pkRows || '<div class="muted">No passkeys enrolled.</div>'}
+        <button class="icon-btn primary" style="margin-top:8px" onclick="security._enrollPasskeyFlow()">+ Add passkey</button>
+      </div>
+
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="icon-btn" onclick="ui.closeModal()">Done</button>
+      </div>
+    `);
+  },
+
+  async _enrollTOTPFlow(){
+    let data;
+    try { data = await security.enrollTOTP(); }
+    catch(e){ ui.err(e); return; }
+    ui.modal(`
+      <h3>Set up authenticator</h3>
+      <ol class="muted" style="font-size:13px;padding-left:18px;margin:0 0 12px">
+        <li>Open your authenticator app (Google Authenticator / Authy / 1Password / etc.)</li>
+        <li>Tap "+" and scan this QR code (or paste the secret if you can't scan)</li>
+        <li>Enter the 6-digit code from the app to confirm</li>
+      </ol>
+      <div style="background:white;border-radius:8px;padding:8px;text-align:center;margin-bottom:8px">
+        <img src="${data.totp.qr_code}" style="width:200px;height:200px"/>
+      </div>
+      <div class="muted" style="font-size:11px;text-align:center;margin-bottom:10px;word-break:break-all">
+        Secret: <code style="font-family:monospace">${esc(data.totp.secret)}</code>
+      </div>
+      <div><label>6-digit code from app</label><input id="mfa-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" autofocus/></div>
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="icon-btn primary" onclick="security._confirmTOTP('${data.id}')">Verify & enable</button>
+        <button class="icon-btn ghost" onclick="security.openSettings()">Cancel</button>
+      </div>
+    `);
+  },
+
+  async _confirmTOTP(factorId){
+    const code = (document.getElementById('mfa-code').value||'').trim();
+    if(!/^\d{6}$/.test(code)){ ui.toast('Enter the 6-digit code'); return; }
+    try { await security.verifyTOTP(factorId, code); }
+    catch(e){ ui.err(e); return; }
+    ui.toast('Two-factor authentication enabled');
+    security.openSettings();
+  },
+
+  async _enrollPasskeyFlow(){
+    try { await security.enrollPasskey(); }
+    catch(e){ ui.err(e); return; }
+    ui.toast('Passkey added');
+    security.openSettings();
+  },
+
+  async _remove(factorId){
+    if(!confirm('Remove this factor? You\'ll be able to sign in without it. (You can re-add later.)')) return;
+    try { await security.unenroll(factorId); }
+    catch(e){ ui.err(e); return; }
+    ui.toast('Removed');
+    security.openSettings();
+  },
+
+  /* Called from auth.login after successful password auth */
+  async challengeForMFA(){
+    const factors = await security.listFactors();
+    const factor = factors.totp[0] || factors.webauthn[0];
+    if(!factor) return { ok:false, error:'MFA required but no factor enrolled. Contact admin.' };
+    if(factor.factor_type === 'webauthn'){
+      try {
+        const ch = await sb.auth.mfa.challenge({ factorId: factor.id });
+        if(ch.error) throw ch.error;
+        const v = await sb.auth.mfa.verify({ factorId: factor.id, challengeId: ch.data.id });
+        if(v.error) throw v.error;
+        return { ok:true };
+      } catch(e){ return { ok:false, error: e?.message||'Passkey failed' }; }
+    }
+    /* TOTP — prompt for code */
+    const code = prompt('Enter the 6-digit code from your authenticator app:');
+    if(!code) return { ok:false, error:'MFA cancelled' };
+    try { await security.verifyTOTP(factor.id, code); return { ok:true }; }
+    catch(e){ return { ok:false, error: e?.message||'Invalid code' }; }
+  }
+};
+
+/* ---------- ABSOLUTE SESSION TIMEOUT ---------- */
+const absoluteTimeout = {
+  MAX_MS: 12 * 60 * 60 * 1000,  /* 12 hours */
+  KEY: 'reflectco.session_started_at',
+  _interval: null,
+  start(){
+    if(absoluteTimeout._interval) return;
+    let started = parseInt(localStorage.getItem(absoluteTimeout.KEY) || '0', 10);
+    if(!started){
+      started = Date.now();
+      localStorage.setItem(absoluteTimeout.KEY, String(started));
+    }
+    absoluteTimeout._interval = setInterval(()=>{
+      if(Date.now() - started > absoluteTimeout.MAX_MS){
+        clearInterval(absoluteTimeout._interval); absoluteTimeout._interval = null;
+        localStorage.removeItem(absoluteTimeout.KEY);
+        alert('Your session has reached the 12-hour maximum. Signing you out for security.');
+        auth.logout();
+      }
+    }, 60_000);
+  },
+  reset(){
+    localStorage.setItem(absoluteTimeout.KEY, String(Date.now()));
+  },
+  clear(){
+    localStorage.removeItem(absoluteTimeout.KEY);
+    if(absoluteTimeout._interval){ clearInterval(absoluteTimeout._interval); absoluteTimeout._interval = null; }
+  }
+};
+
 /* ---------- IDLE AUTO-LOGOUT ---------- */
 const idleLogout = {
   TIMEOUT_MS: 30 * 60 * 1000,
@@ -2001,6 +2222,7 @@ async function boot(){
   document.getElementById('app').classList.remove('hide');
   document.querySelectorAll('.admin-only').forEach(el=>el.classList.toggle('hide', !auth.isAdmin()));
   idleLogout.start();
+  absoluteTimeout.start();
   nav.go('dashboard');
 }
 
