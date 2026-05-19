@@ -2368,6 +2368,12 @@ const security = {
         <button class="icon-btn primary" style="margin-top:8px" onclick="security._enrollPasskeyFlow()">+ Add passkey</button>
       </div>
 
+      <div class="card" style="background:var(--panel-2);margin-top:10px">
+        <h2>🔑 Password</h2>
+        <p class="muted" style="font-size:12px;margin:0 0 8px">Update the password you use to sign in. Requires your current password.</p>
+        <button class="icon-btn primary" onclick="security._changePasswordFlow()">Change password</button>
+      </div>
+
       <div class="row" style="gap:8px;margin-top:12px">
         <button class="icon-btn" onclick="ui.closeModal()">Done</button>
       </div>
@@ -2415,6 +2421,39 @@ const security = {
     security.openSettings();
   },
 
+  async _changePasswordFlow(){
+    ui.modal(`
+      <h3>Change password</h3>
+      <p class="muted" style="font-size:13px;margin:0 0 12px">For security, you'll re-enter your current password to authorize the change.</p>
+      <div style="margin-bottom:10px"><label>Current password</label><input id="pw-current" type="password" autocomplete="current-password" autofocus/></div>
+      <div style="margin-bottom:10px"><label>New password <span class="muted" style="font-size:11px">(12+ characters)</span></label><input id="pw-new" type="password" autocomplete="new-password"/></div>
+      <div style="margin-bottom:10px"><label>Confirm new password</label><input id="pw-confirm" type="password" autocomplete="new-password"/></div>
+      <div id="pw-err" class="alert err hide" style="margin-bottom:8px"></div>
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="icon-btn primary" onclick="security._submitPasswordChange()">Change password</button>
+        <button class="icon-btn ghost" onclick="security.openSettings()">Cancel</button>
+      </div>
+    `);
+  },
+  async _submitPasswordChange(){
+    const errEl = document.getElementById('pw-err');
+    const show = msg => { errEl.textContent = msg; errEl.classList.remove('hide'); };
+    const cur = document.getElementById('pw-current').value;
+    const newPw = document.getElementById('pw-new').value;
+    const confirmPw = document.getElementById('pw-confirm').value;
+    if(!cur || !newPw || !confirmPw){ show('All three fields are required.'); return; }
+    if(newPw !== confirmPw){ show('New password and confirmation do not match.'); return; }
+    if(newPw.length < 12){ show('New password must be at least 12 characters.'); return; }
+    if(newPw === cur){ show('New password must be different from the current one.'); return; }
+    /* Re-authenticate to confirm they're the account holder */
+    const reauth = await sb.auth.signInWithPassword({ email: cache.me.email, password: cur });
+    if(reauth.error){ show('Current password is incorrect.'); return; }
+    /* Update password */
+    const r = await sb.auth.updateUser({ password: newPw });
+    if(r.error){ show(r.error.message); return; }
+    ui.toast('Password changed. You\'ll stay signed in here; you\'ll need the new password next time.');
+    security.openSettings();
+  },
   async _remove(factorId){
     if(!confirm('Remove this factor? You\'ll be able to sign in without it. (You can re-add later.)')) return;
     try { await security.unenroll(factorId); }
