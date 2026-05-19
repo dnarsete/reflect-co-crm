@@ -1262,6 +1262,35 @@ const reports = {
     const rowsT = Object.entries(grp).map(([t,v])=>`<tr><td>${esc(t)}</td><td>${v.orders}</td><td>${v.units}</td><td>${fmt$(v.rev)}</td></tr>`).join('');
     document.getElementById('rep-bytype').innerHTML = rowsT ? `<table><tr><th>Type</th><th>Orders</th><th>Units</th><th>Revenue</th></tr>${rowsT}</table>` : '<div class="muted">No data.</div>';
 
+    /* By rep — admin only */
+    const byRepWrap = document.getElementById('rep-byrep-wrap');
+    if(auth.isAdmin() && byRepWrap){
+      byRepWrap.classList.remove('hide');
+      const byRep = {};
+      list.forEach(o=>{
+        const k = o.rep_id || '(unassigned)';
+        byRep[k] = byRep[k] || { orders:0, units:0, rev:0, comm:0 };
+        byRep[k].orders++;
+        byRep[k].units += (o.items||[]).reduce((s,i)=>s+i.qty,0);
+        byRep[k].rev += Number(o.total||0);
+        const repPct = (cache.reps.find(r=>r.rep_id===o.rep_id)?.commission || 0)/100;
+        byRep[k].comm += (Number(o.total||0) - Number(o.shipping||0) - Number(o.tax||0)) * repPct;
+      });
+      const byRepRows = Object.entries(byRep)
+        .sort((a,b)=>b[1].rev - a[1].rev)
+        .map(([repId, v])=>{
+          const r = cache.reps.find(x=>x.rep_id===repId);
+          const display = r ? `${esc(r.name||r.email)} <span class="muted" style="font-size:11px">(${esc(repId)})</span>` : esc(repId);
+          const avg = v.orders ? v.rev/v.orders : 0;
+          return `<tr><td>${display}</td><td>${v.orders}</td><td>${v.units}</td><td>${fmt$(v.rev)}</td><td>${fmt$(avg)}</td><td>${fmt$(v.comm)}</td></tr>`;
+        }).join('');
+      document.getElementById('rep-byrep').innerHTML = byRepRows
+        ? `<table><tr><th>Rep</th><th>Orders</th><th>Units</th><th>Revenue</th><th>Avg order</th><th>Commission</th></tr>${byRepRows}</table>`
+        : '<div class="muted">No orders in this period.</div>';
+    } else if(byRepWrap){
+      byRepWrap.classList.add('hide');
+    }
+
     /* trend over time (auto-hidden for short ranges) */
     reports.renderTrend(list);
 
