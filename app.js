@@ -82,9 +82,9 @@ const auth = {
     const extras = document.getElementById('signup-extras');
     const email = (document.getElementById('auth-email').value||'').trim().toLowerCase();
     const pass  = (document.getElementById('auth-pass').value||'');
-    if(!email || pass.length < 6){
+    if(!email || pass.length < 10){
       errEl.classList.remove('ok'); errEl.classList.add('err');
-      errEl.textContent = 'Email + a password of at least 6 characters required first.';
+      errEl.textContent = 'Email + a password of at least 10 characters required first.';
       errEl.classList.remove('hide');
       return;
     }
@@ -157,8 +157,8 @@ const auth = {
        Prompt for new password and set it. */
     if(!location.hash.includes('access_token') && !location.hash.includes('type=recovery') && location.hash !== '#reset') return;
     setTimeout(async ()=>{
-      const newp = prompt('Set a new password (at least 6 characters):');
-      if(!newp || newp.length<6){ alert('Password must be at least 6 characters.'); return; }
+      const newp = prompt('Set a new password (at least 10 characters):');
+      if(!newp || newp.length<10){ alert('Password must be at least 10 characters.'); return; }
       const { error } = await sb.auth.updateUser({ password: newp });
       if(error){ alert('Failed: '+error.message); return; }
       alert('Password updated. You are now signed in.');
@@ -2452,7 +2452,7 @@ const security = {
       <p class="muted" style="font-size:13px;margin:0 0 12px">Two-factor verification is required for password changes — protects you from being locked out if your password is leaked.</p>
       <div style="margin-bottom:10px"><label>Current password</label><input id="pw-current" type="password" autocomplete="current-password" autofocus/></div>
       ${factorSection}
-      <div style="margin-bottom:10px"><label>New password <span class="muted" style="font-size:11px">(12+ characters)</span></label><input id="pw-new" type="password" autocomplete="new-password"/></div>
+      <div style="margin-bottom:10px"><label>New password <span class="muted" style="font-size:11px">(10+ characters)</span></label><input id="pw-new" type="password" autocomplete="new-password"/></div>
       <div style="margin-bottom:10px"><label>Confirm new password</label><input id="pw-confirm" type="password" autocomplete="new-password"/></div>
       <div id="pw-err" class="alert err hide" style="margin-bottom:8px"></div>
       <div class="row" style="gap:8px;margin-top:12px">
@@ -2487,7 +2487,7 @@ const security = {
     if(useTotp && !/^\d{6}$/.test(totpCode)){ show('Enter the 6-digit authenticator code.'); return; }
     if(!useTotp && !/^\d{6}$/.test(emailNonce)){ show('Enter the 6-digit code from your email (click "Send code" if you haven\'t).'); return; }
     if(newPw !== confirmPw){ show('New password and confirmation do not match.'); return; }
-    if(newPw.length < 12){ show('New password must be at least 12 characters.'); return; }
+    if(newPw.length < 10){ show('New password must be at least 10 characters.'); return; }
     if(newPw === cur){ show('New password must be different from the current one.'); return; }
 
     /* Step 1: re-authenticate with current password */
