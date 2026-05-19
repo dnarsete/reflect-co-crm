@@ -178,10 +178,10 @@
           <button class="icon-btn" data-preset="month" onclick="reports.setRange('month')">This Month</button>
           <button class="icon-btn" data-preset="quarter" onclick="reports.setRange('quarter')">This Quarter</button>
           <button class="icon-btn" data-preset="ytd" onclick="reports.setRange('ytd')">YTD</button>
-          <button class="icon-btn" data-preset="yoy" onclick="reports.setRange('yoy')">Year over Year</button>
-          <button class="icon-btn" data-preset="lastmonth" onclick="reports.setRange('lastmonth')">Last Month</button>
+          <button class="icon-btn admin-only" data-preset="yoy" onclick="reports.setRange('yoy')">Year over Year</button>
+          <button class="icon-btn admin-only" data-preset="lastmonth" onclick="reports.setRange('lastmonth')">Last Month</button>
           <button class="icon-btn" data-preset="lastquarter" onclick="reports.setRange('lastquarter')">Last Quarter</button>
-          <button class="icon-btn" data-preset="all" onclick="reports.setRange('all')">All time</button>
+          <button class="icon-btn admin-only" data-preset="all" onclick="reports.setRange('all')">All time</button>
         </div>
         <div class="row" style="gap:8px;margin-top:10px">
           <button class="icon-btn primary" onclick="reports.run()">Run report</button>
