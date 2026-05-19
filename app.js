@@ -2422,36 +2422,65 @@ const security = {
   },
 
   async _changePasswordFlow(){
+    /* Detect MFA enrollment so the modal asks for the 2FA code when needed */
+    let factors;
+    try { factors = await security.listFactors(); }
+    catch(e){ ui.err(e); return; }
+    const totp = factors.totp[0] || null;
+    const hasTotp = !!totp;
+
+    const mfaSection = hasTotp ? `
+      <div style="margin-bottom:10px">
+        <label>Authenticator code <span class="muted" style="font-size:11px">(6-digit from your app)</span></label>
+        <input id="pw-mfa-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000"/>
+      </div>` : `
+      <div class="alert" style="font-size:12px;margin-bottom:10px;background:#0c1f2a;border-color:#1e587a;color:#90d3f1">
+        💡 You don't have two-factor auth enabled. Add it from the Security panel for stronger account protection — required to change your password once you enroll.
+      </div>`;
+
     ui.modal(`
       <h3>Change password</h3>
-      <p class="muted" style="font-size:13px;margin:0 0 12px">For security, you'll re-enter your current password to authorize the change.</p>
+      <p class="muted" style="font-size:13px;margin:0 0 12px">For security, you'll re-enter your current password${hasTotp ? ' <b>and a 6-digit code from your authenticator app</b>' : ''} to authorize the change.</p>
       <div style="margin-bottom:10px"><label>Current password</label><input id="pw-current" type="password" autocomplete="current-password" autofocus/></div>
+      ${mfaSection}
       <div style="margin-bottom:10px"><label>New password <span class="muted" style="font-size:11px">(12+ characters)</span></label><input id="pw-new" type="password" autocomplete="new-password"/></div>
       <div style="margin-bottom:10px"><label>Confirm new password</label><input id="pw-confirm" type="password" autocomplete="new-password"/></div>
       <div id="pw-err" class="alert err hide" style="margin-bottom:8px"></div>
       <div class="row" style="gap:8px;margin-top:12px">
-        <button class="icon-btn primary" onclick="security._submitPasswordChange()">Change password</button>
+        <button class="icon-btn primary" onclick="security._submitPasswordChange('${hasTotp ? totp.id : ''}')">Change password</button>
         <button class="icon-btn ghost" onclick="security.openSettings()">Cancel</button>
       </div>
     `);
   },
-  async _submitPasswordChange(){
+  async _submitPasswordChange(totpFactorId){
     const errEl = document.getElementById('pw-err');
     const show = msg => { errEl.textContent = msg; errEl.classList.remove('hide'); };
     const cur = document.getElementById('pw-current').value;
     const newPw = document.getElementById('pw-new').value;
     const confirmPw = document.getElementById('pw-confirm').value;
-    if(!cur || !newPw || !confirmPw){ show('All three fields are required.'); return; }
+    const requireMfa = !!totpFactorId;
+    const mfaCode = requireMfa ? (document.getElementById('pw-mfa-code')?.value||'').trim() : '';
+
+    if(!cur || !newPw || !confirmPw){ show('All required fields must be filled.'); return; }
+    if(requireMfa && !/^\d{6}$/.test(mfaCode)){ show('Enter the 6-digit authenticator code.'); return; }
     if(newPw !== confirmPw){ show('New password and confirmation do not match.'); return; }
     if(newPw.length < 12){ show('New password must be at least 12 characters.'); return; }
     if(newPw === cur){ show('New password must be different from the current one.'); return; }
-    /* Re-authenticate to confirm they're the account holder */
+
+    /* Step 1: re-authenticate with current password */
     const reauth = await sb.auth.signInWithPassword({ email: cache.me.email, password: cur });
     if(reauth.error){ show('Current password is incorrect.'); return; }
-    /* Update password */
+
+    /* Step 2: verify MFA code if enrolled */
+    if(requireMfa){
+      try { await security.verifyTOTP(totpFactorId, mfaCode); }
+      catch(e){ show('Invalid authenticator code. Try again.'); return; }
+    }
+
+    /* Step 3: update the password */
     const r = await sb.auth.updateUser({ password: newPw });
     if(r.error){ show(r.error.message); return; }
-    ui.toast('Password changed. You\'ll stay signed in here; you\'ll need the new password next time.');
+    ui.toast('Password changed. You\'ll stay signed in here; new password required next time.');
     security.openSettings();
   },
   async _remove(factorId){
