@@ -1262,6 +1262,9 @@ const reports = {
     const rowsT = Object.entries(grp).map(([t,v])=>`<tr><td>${esc(t)}</td><td>${v.orders}</td><td>${v.units}</td><td>${fmt$(v.rev)}</td></tr>`).join('');
     document.getElementById('rep-bytype').innerHTML = rowsT ? `<table><tr><th>Type</th><th>Orders</th><th>Units</th><th>Revenue</th></tr>${rowsT}</table>` : '<div class="muted">No data.</div>';
 
+    /* Pipeline & conversion — admin only */
+    await reports.renderPipeline();
+
     /* By rep — admin only */
     const byRepWrap = document.getElementById('rep-byrep-wrap');
     if(auth.isAdmin() && byRepWrap){
@@ -1310,6 +1313,100 @@ const reports = {
     }).join('');
     document.getElementById('rep-detail').innerHTML = rows ? `<table><tr><th>Date</th><th>Order</th><th>Account #</th><th>Account</th><th>Type</th><th>Rep</th><th>Total</th></tr>${rows}</table>` : '<div class="muted">No orders match.</div>';
     reports._lastList = list;
+  },
+  async renderPipeline(){
+    const wrap = document.getElementById('rep-pipeline-wrap'); if(!wrap) return;
+    if(!auth.isAdmin()){ wrap.classList.add('hide'); return; }
+    wrap.classList.remove('hide');
+
+    const fromStr = document.getElementById('rep-from').value;
+    const toStr   = document.getElementById('rep-to').value;
+    if(!fromStr || !toStr) return;
+    const fromIso = fromStr + 'T00:00:00';
+    const toIso   = toStr   + 'T23:59:59';
+    const dayMs = 86400000;
+
+    /* Leads (prospects) created in window */
+    const lq = await sb.from('prospects')
+      .select('id, rep_id, created_at, status, converted_account_id')
+      .gte('created_at', fromIso).lte('created_at', toIso);
+    const leads = lq.error ? [] : (lq.data || []);
+
+    /* Accounts created in window */
+    const aq = await sb.from('accounts')
+      .select('id, rep_id, created_at')
+      .gte('created_at', fromIso).lte('created_at', toIso);
+    const accts = aq.error ? [] : (aq.data || []);
+    const acctById = {}; accts.forEach(a => acctById[a.id] = a);
+
+    /* For time-to-close, we need converted prospects whose linked account exists.
+       Pull all converted prospects (any time) so we can compute close times even
+       if the prospect was created before the window. */
+    const cq = await sb.from('prospects')
+      .select('id, rep_id, created_at, converted_account_id')
+      .not('converted_account_id', 'is', null);
+    const allConverted = cq.error ? [] : (cq.data || []);
+
+    /* Fetch the linked accounts for those converted prospects to know close date */
+    const linkedIds = [...new Set(allConverted.map(p => p.converted_account_id).filter(Boolean))];
+    let linkedAccts = {};
+    if(linkedIds.length){
+      const la = await sb.from('accounts').select('id, created_at').in('id', linkedIds);
+      (la.data || []).forEach(a => linkedAccts[a.id] = a);
+    }
+
+    /* Closed-in-window = converted prospects where the linked account was created in window */
+    const closedInWindow = allConverted.filter(p => {
+      const a = linkedAccts[p.converted_account_id];
+      return a && a.created_at >= fromIso && a.created_at <= toIso;
+    });
+
+    /* Conversion rate scoping: of leads CREATED in window, how many ever converted? */
+    const leadsCreatedConverted = leads.filter(l => l.converted_account_id);
+    const conversionRate = leads.length ? (leadsCreatedConverted.length / leads.length * 100) : 0;
+
+    /* Avg time-to-close: across all closed-in-window deals */
+    let ttcDays = null;
+    if(closedInWindow.length){
+      const total = closedInWindow.reduce((s,p) => {
+        const start = new Date(p.created_at).getTime();
+        const end = new Date(linkedAccts[p.converted_account_id].created_at).getTime();
+        return s + Math.max(0, (end - start) / dayMs);
+      }, 0);
+      ttcDays = total / closedInWindow.length;
+    }
+
+    document.getElementById('pl-leads').textContent = leads.length;
+    document.getElementById('pl-accts').textContent = accts.length;
+    document.getElementById('pl-rate').textContent = leads.length ? conversionRate.toFixed(1)+'%' : '—';
+    document.getElementById('pl-ttc').textContent = ttcDays === null ? '—' : ttcDays.toFixed(1)+' days';
+
+    /* By-rep breakdown */
+    const byRep = {};
+    leads.forEach(l => {
+      const k = l.rep_id || '(unassigned)';
+      byRep[k] = byRep[k] || { leads:0, closed:0, totalDays:0, closedCount:0 };
+      byRep[k].leads++;
+      if(l.converted_account_id) byRep[k].closed++;
+    });
+    closedInWindow.forEach(p => {
+      const k = p.rep_id || '(unassigned)';
+      byRep[k] = byRep[k] || { leads:0, closed:0, totalDays:0, closedCount:0 };
+      const a = linkedAccts[p.converted_account_id];
+      const days = Math.max(0, (new Date(a.created_at) - new Date(p.created_at)) / dayMs);
+      byRep[k].totalDays += days;
+      byRep[k].closedCount++;
+    });
+    const rows = Object.entries(byRep).sort((a,b)=>b[1].closed-a[1].closed).map(([repId, v]) => {
+      const r = cache.reps.find(x => x.rep_id === repId);
+      const name = r ? `${esc(r.name||r.email)} <span class="muted" style="font-size:11px">(${esc(repId)})</span>` : esc(repId);
+      const rate = v.leads ? (v.closed/v.leads*100).toFixed(1)+'%' : '—';
+      const avgTtc = v.closedCount ? (v.totalDays/v.closedCount).toFixed(1)+'d' : '—';
+      return `<tr><td>${name}</td><td>${v.leads}</td><td>${v.closed}</td><td>${rate}</td><td>${avgTtc}</td></tr>`;
+    }).join('');
+    document.getElementById('pl-byrep').innerHTML = rows
+      ? `<table><tr><th>Rep</th><th>Leads created</th><th>Closed</th><th>Conv. %</th><th>Avg time to close</th></tr>${rows}</table>`
+      : '<div class="muted">No prospect activity in this range.</div>';
   },
   async renderYoY(currentList){
     const card = document.getElementById('rep-yoy-card');
@@ -1693,6 +1790,36 @@ const prospects = {
     const { data, error } = await sb.from('prospects').insert(payload).select().single();
     if(error){ ui.err(error); return null; }
     return data;
+  },
+  /* Convert a prospect to a real account. Creates the account, links it back, marks converted. */
+  async convertToAccount(prospectId){
+    const pr = await sb.from('prospects').select('*').eq('id', prospectId).single();
+    if(pr.error){ ui.err(pr.error); return null; }
+    const p = pr.data;
+    if(p.status === 'converted'){ ui.toast('Already converted to ' + (p.converted_account_id || 'an account')); return null; }
+    if(!confirm(`Convert "${p.name}" to a real account?\n\nThis creates an account with the prospect's info, then links them so reports can measure time-to-close.`)) return null;
+    const userId = (await sb.auth.getUser()).data.user.id;
+    /* Create the account from prospect fields */
+    const acctPayload = {
+      business_name: p.name,
+      billing_name: p.primary_contact || null,
+      email: p.email || null,
+      cell: p.phone || null,
+      business_address: p.city ? [p.city, p.state].filter(Boolean).join(', ') : null,
+      type: p.account_type || 'Other',
+      rep_id: p.rep_id || auth.repId(),
+      created_by: userId
+    };
+    const ar = await sb.from('accounts').insert(acctPayload).select().single();
+    if(ar.error){ ui.err(ar.error); return null; }
+    /* Mark prospect converted with the new account ID */
+    const upd = await sb.from('prospects').update({
+      status: 'converted',
+      converted_account_id: ar.data.id
+    }).eq('id', prospectId);
+    if(upd.error){ ui.err(upd.error); return null; }
+    ui.toast(`Converted to ${ar.data.account_number}`);
+    return ar.data;
   }
 };
 
@@ -1836,8 +1963,9 @@ const forecasts = {
             <optgroup label="Existing accounts">${accOpts}</optgroup>
             <optgroup label="Prospects">${prosOpts}</optgroup>
           </select>
-          <div style="margin-top:6px">
+          <div class="row" style="margin-top:6px;gap:6px">
             <button type="button" class="icon-btn ghost" onclick="forecasts.addProspectInline()">+ Add new prospect</button>
+            <button type="button" class="icon-btn ghost" onclick="forecasts.convertSelectedProspect()">→ Convert to account</button>
           </div>
         </div>
         <div><label>Primary contact</label><input id="f-contact" value="${esc(fc.primary_contact)}"/></div>
@@ -1869,6 +1997,28 @@ const forecasts = {
     /* set initial target dropdown value */
     if(fc.account_id) document.getElementById('f-target').value = 'acc:'+fc.account_id;
     else if(fc.prospect_id) document.getElementById('f-target').value = 'pros:'+fc.prospect_id;
+  },
+  async convertSelectedProspect(){
+    const tgt = document.getElementById('f-target')?.value || '';
+    if(!tgt.startsWith('pros:')){
+      ui.toast('Pick a 🌱 Prospect from the dropdown first to convert.');
+      return;
+    }
+    const prospectId = tgt.slice(5);
+    const newAccount = await prospects.convertToAccount(prospectId);
+    if(!newAccount) return;
+    /* Re-point the forecast at the new account so this forecast is now tied to the account */
+    const tgtSel = document.getElementById('f-target');
+    const optGroups = tgtSel.querySelectorAll('optgroup');
+    const accGroup = optGroups[0]; /* 'Existing accounts' is first */
+    const newOpt = document.createElement('option');
+    newOpt.value = 'acc:' + newAccount.id;
+    newOpt.textContent = '📒 ' + newAccount.account_number + ' — ' + newAccount.business_name;
+    accGroup.appendChild(newOpt);
+    /* Remove the now-converted prospect option */
+    const oldOpt = tgtSel.querySelector(`option[value="pros:${prospectId}"]`);
+    if(oldOpt) oldOpt.remove();
+    tgtSel.value = 'acc:' + newAccount.id;
   },
   async addProspectInline(){
     const name = prompt('Prospect (business) name:'); if(!name) return;
