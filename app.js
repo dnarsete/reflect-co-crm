@@ -1265,6 +1265,9 @@ const reports = {
     /* Pipeline & conversion — admin only */
     await reports.renderPipeline();
 
+    /* Leaderboard — admin only */
+    await reports.renderLeaderboard(list);
+
     /* By rep — admin only */
     const byRepWrap = document.getElementById('rep-byrep-wrap');
     if(auth.isAdmin() && byRepWrap){
@@ -1313,6 +1316,98 @@ const reports = {
     }).join('');
     document.getElementById('rep-detail').innerHTML = rows ? `<table><tr><th>Date</th><th>Order</th><th>Account #</th><th>Account</th><th>Type</th><th>Rep</th><th>Total</th></tr>${rows}</table>` : '<div class="muted">No orders match.</div>';
     reports._lastList = list;
+  },
+  async renderLeaderboard(orderList){
+    const wrap = document.getElementById('rep-leaderboard-wrap');
+    const tbl  = document.getElementById('rep-leaderboard');
+    if(!wrap || !tbl) return;
+    if(!auth.isAdmin()){ wrap.classList.add('hide'); return; }
+    wrap.classList.remove('hide');
+
+    const fromStr = document.getElementById('rep-from').value;
+    const toStr   = document.getElementById('rep-to').value;
+    if(!fromStr || !toStr){ tbl.innerHTML='<div class="muted">Pick a range first.</div>'; return; }
+    const fromIso = fromStr + 'T00:00:00';
+    const toIso   = toStr   + 'T23:59:59';
+
+    /* Aggregate from the already-loaded order list */
+    const repStats = {};
+    (orderList || []).forEach(o => {
+      const k = o.rep_id || '(unassigned)';
+      repStats[k] = repStats[k] || { rep_id:k, revenue:0, orders:0, comm:0 };
+      const sub = (o.items||[]).reduce((s,i)=>s+i.qty*i.price,0);
+      const repPct = (cache.reps.find(r=>r.rep_id===k)?.commission || 0)/100;
+      repStats[k].revenue += Number(o.total||0);
+      repStats[k].orders++;
+      repStats[k].comm += (Number(o.total||0) - Number(o.shipping||0) - Number(o.tax||0)) * repPct;
+    });
+
+    /* Leads + conversions in same range for close-rate ranking */
+    const pq = await sb.from('prospects')
+      .select('rep_id, converted_account_id')
+      .gte('created_at', fromIso).lte('created_at', toIso);
+    (pq.data || []).forEach(p => {
+      const k = p.rep_id || '(unassigned)';
+      repStats[k] = repStats[k] || { rep_id:k, revenue:0, orders:0, comm:0 };
+      repStats[k].leads = (repStats[k].leads||0) + 1;
+      if(p.converted_account_id) repStats[k].closed = (repStats[k].closed||0) + 1;
+    });
+
+    const reps = Object.values(repStats).map(r => {
+      const profile = cache.reps.find(p => p.rep_id === r.rep_id);
+      r.name = profile ? (profile.name || profile.email) : r.rep_id;
+      r.avgDeal = r.orders ? r.revenue / r.orders : 0;
+      r.closeRate = r.leads ? (r.closed||0) / r.leads * 100 : null;
+      return r;
+    });
+
+    if(!reps.length){ tbl.innerHTML='<div class="muted">No activity in this period.</div>'; return; }
+
+    /* Standard competition ranking (1, 2, 2, 4). Treat missing values as worst rank. */
+    const rankBy = (key, descending = true) => {
+      const sorted = [...reps].sort((a,b)=>{
+        const av = a[key] == null ? -Infinity : a[key];
+        const bv = b[key] == null ? -Infinity : b[key];
+        return descending ? bv - av : av - bv;
+      });
+      let lastVal = null, lastRank = 0;
+      sorted.forEach((r, idx) => {
+        const v = r[key] == null ? -Infinity : r[key];
+        const rank = (v === lastVal) ? lastRank : (idx + 1);
+        r[`rank_${key}`] = rank;
+        lastVal = v; lastRank = rank;
+      });
+    };
+    rankBy('revenue');
+    rankBy('orders');
+    rankBy('avgDeal');
+    rankBy('closeRate');
+
+    const N = reps.length;
+    reps.forEach(r => {
+      /* If a rep had no leads, give them the worst rank in close rate so it doesn't tank their overall score unfairly — use N */
+      const closeRank = r.closeRate == null ? N : r.rank_closeRate;
+      r.overall = r.rank_revenue + r.rank_orders + r.rank_avgDeal + closeRank;
+    });
+    reps.sort((a,b)=> a.overall - b.overall || b.revenue - a.revenue);
+
+    const medal = pos => pos === 1 ? '🥇' : pos === 2 ? '🥈' : pos === 3 ? '🥉' : `#${pos}`;
+    const dimRank = r => `<span class="muted" style="font-size:11px">#${r}</span>`;
+    const rows = reps.map((r, idx) => `
+      <tr>
+        <td><b>${medal(idx+1)}</b> ${esc(r.name)} <span class="muted" style="font-size:11px">(${esc(r.rep_id)})</span></td>
+        <td>${fmt$(r.revenue)} ${dimRank(r.rank_revenue)}</td>
+        <td>${r.orders} ${dimRank(r.rank_orders)}</td>
+        <td>${fmt$(r.avgDeal)} ${dimRank(r.rank_avgDeal)}</td>
+        <td>${r.closeRate == null ? '—' : (r.closeRate.toFixed(0) + '% ' + dimRank(r.rank_closeRate))}</td>
+        <td>${fmt$(r.comm)}</td>
+      </tr>
+    `).join('');
+
+    tbl.innerHTML = `<table>
+      <tr><th>Rep</th><th>Revenue</th><th>Orders</th><th>Avg deal</th><th>Close rate</th><th>Commission</th></tr>
+      ${rows}
+    </table>`;
   },
   async renderPipeline(){
     const wrap = document.getElementById('rep-pipeline-wrap'); if(!wrap) return;
