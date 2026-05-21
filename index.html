@@ -315,6 +315,45 @@
       </div>
     </section>
 
+    <!-- Reps (admin-only management view) -->
+    <section id="view-reps" class="view hide">
+      <div class="section-h">
+        <h1>Rep profiles</h1>
+        <button class="icon-btn primary" onclick="adminPanel.openRepModal(null)">+ Add rep</button>
+      </div>
+
+      <div class="card">
+        <div class="kpi">
+          <div class="tile"><div class="lbl">Total reps</div><div class="val" id="reps-stat-total">0</div></div>
+          <div class="tile"><div class="lbl">Active</div><div class="val" id="reps-stat-active">0</div></div>
+          <div class="tile"><div class="lbl">Disabled</div><div class="val" id="reps-stat-disabled">0</div></div>
+          <div class="tile"><div class="lbl">Pending invites</div><div class="val" id="reps-stat-pending">0</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="row" style="gap:8px;margin-bottom:8px">
+          <input id="reps-search" placeholder="Search by name, email, rep ID, city…" oninput="adminPanel.renderRepsAndInvites()" style="flex:1"/>
+          <select id="reps-filter" onchange="adminPanel.renderRepsAndInvites()" style="max-width:160px">
+            <option value="all">All</option>
+            <option value="active">Active only</option>
+            <option value="disabled">Disabled only</option>
+            <option value="admin">Admins only</option>
+            <option value="rep">Reps only</option>
+          </select>
+        </div>
+        <h2 style="margin:8px 0">Reps</h2>
+        <p class="muted" style="font-size:12px;margin:0 0 8px">Click <b>Edit</b> to manage contact info, commission %, territory, role, and status.</p>
+        <div id="rep-list"></div>
+      </div>
+
+      <div class="card">
+        <h2>Pending invites</h2>
+        <p class="muted" style="font-size:13px;margin:0 0 8px">Reps you've invited but who haven't signed up yet. Their pre-set rep ID, role, commission, and territory will apply automatically when they sign up.</p>
+        <div id="invite-list"></div>
+      </div>
+    </section>
+
     <!-- Customer Service -->
     <section id="view-cs" class="view hide">
       <div class="section-h">
@@ -353,14 +392,11 @@
         <button class="icon-btn" onclick="nav.go('promos')">Open Promotions</button>
       </div>
 
+      <!-- Reps + Pending Invites moved to their own tab (👥 Reps in bottom nav) -->
       <div class="card">
-        <div class="section-h" style="margin-bottom:8px">
-          <h2 style="margin:0;flex:1">Reps</h2>
-          <button class="icon-btn primary" onclick="adminPanel.openRepModal(null)">+ Add rep</button>
-        </div>
-        <div id="rep-list"></div>
-        <h3 style="margin:14px 0 6px 0;font-size:14px;color:var(--muted)">Pending invites</h3>
-        <div id="invite-list"></div>
+        <h2>Rep profiles</h2>
+        <p class="muted" style="margin:0 0 8px;font-size:13px">Manage rep contact info, commissions, territories, and access in the dedicated Reps tab.</p>
+        <button class="icon-btn" onclick="nav.go('reps')">Open Reps tab</button>
       </div>
 
       <div class="card">
@@ -440,6 +476,7 @@
     <button class="nav-btn" data-view="forecast" onclick="nav.go('forecast')"><span class="ico">🔮</span>Forecast</button>
     <button class="nav-btn" data-view="reports" onclick="nav.go('reports')"><span class="ico">📊</span>Reports</button>
     <button class="nav-btn" data-view="profile" onclick="nav.go('profile')"><span class="ico">👤</span>Profile</button>
+    <button class="nav-btn admin-only hide" data-view="reps" onclick="nav.go('reps')"><span class="ico">👥</span>Reps</button>
     <button class="nav-btn" data-view="cs" onclick="nav.go('cs')"><span class="ico">💬</span>Help</button>
     <button class="nav-btn admin-only hide" data-view="admin" onclick="nav.go('admin')"><span class="ico">⚙</span>Admin</button>
   </footer>

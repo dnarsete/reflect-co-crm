@@ -227,6 +227,7 @@ const nav = {
     if(view==='reports')   reports.init();
     if(view==='forecast')  forecasts.render();
     if(view==='profile')   profile.render();
+    if(view==='reps')      adminPanel.renderRepsAndInvites();
     if(view==='cs')        cs.init();
     if(view==='admin')     adminPanel.render();
   }
@@ -2296,10 +2297,37 @@ const messages = {
 
 /* ---------- ADMIN ---------- */
 const adminPanel = {
-  async render(){
+  async renderRepsAndInvites(){
     await profiles.loadReps();
     const me = cache.me;
-    document.getElementById('rep-list').innerHTML = cache.reps.length ? cache.reps.map(r=>{
+
+    /* Read search + filter (only present in the Reps view; safe defaults for admin view) */
+    const search = (document.getElementById('reps-search')?.value || '').toLowerCase().trim();
+    const filter = document.getElementById('reps-filter')?.value || 'all';
+
+    const allReps = cache.reps || [];
+    const filtered = allReps.filter(r => {
+      if(filter === 'active'   && r.disabled) return false;
+      if(filter === 'disabled' && !r.disabled) return false;
+      if(filter === 'admin'    && r.role !== 'admin') return false;
+      if(filter === 'rep'      && r.role !== 'rep') return false;
+      if(!search) return true;
+      const hay = [r.name, r.email, r.rep_id, r.cell, r.city, r.state, r.zip, (r.territory||[]).join(' ')]
+        .filter(Boolean).join(' ').toLowerCase();
+      return hay.includes(search);
+    });
+
+    /* Stats (always reflect ALL reps, not the filtered subset) */
+    const totalEl = document.getElementById('reps-stat-total');
+    if(totalEl){
+      const active = allReps.filter(r=>!r.disabled).length;
+      const disabled = allReps.filter(r=>r.disabled).length;
+      totalEl.textContent = allReps.length;
+      document.getElementById('reps-stat-active').textContent = active;
+      document.getElementById('reps-stat-disabled').textContent = disabled;
+    }
+
+    document.getElementById('rep-list').innerHTML = filtered.length ? filtered.map(r=>{
       const disabled = !!r.disabled;
       const isSelf = me && r.id === me.id;
       return `<div class="list-item" style="${disabled?'opacity:0.6':''}">
@@ -2319,12 +2347,14 @@ const adminPanel = {
           ? `<button class="icon-btn" onclick="adminPanel.enableRep('${r.id}')">Enable</button>`
           : `<button class="icon-btn danger" onclick="adminPanel.disableRep('${r.id}')">Disable</button>`)}
       </div>`;
-    }).join('') : '<div class="muted">No reps yet.</div>';
+    }).join('') : `<div class="muted">${search||filter!=='all' ? 'No reps match the search/filter.' : 'No reps yet.'}</div>`;
 
     /* pending invites */
     const inviteWrap = document.getElementById('invite-list');
     if(inviteWrap){
       const invites = await adminPanel.loadInvites();
+      const pendingStatEl = document.getElementById('reps-stat-pending');
+      if(pendingStatEl) pendingStatEl.textContent = invites.length;
       inviteWrap.innerHTML = invites.length ? invites.map(i=>`
         <div class="list-item">
           <div class="grow">
@@ -2335,6 +2365,11 @@ const adminPanel = {
           <button class="icon-btn danger" onclick="adminPanel.cancelInvite('${esc(i.email).replace(/'/g,'&#39;')}')">Cancel</button>
         </div>`).join('') : '<div class="muted" style="font-size:13px">No pending invites. New reps you add via "+ Add rep" appear here until they sign up.</div>';
     }
+  },
+  async render(){
+    /* Admin tab no longer renders reps directly (moved to Reps tab),
+       but other modules (messages, etc.) rely on the rep cache. */
+    await profiles.loadReps();
 
     /* types */
     document.getElementById('type-list').innerHTML =
