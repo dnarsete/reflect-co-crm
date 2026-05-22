@@ -522,13 +522,6 @@ const orders = {
     if(error){ ui.err(error); return []; }
     return data || [];
   },
-  async countFinalizedSince(repId, sinceISO){
-    let q = sb.from('orders').select('*', { count:'exact', head:true }).eq('status','finalized').gte('placed_at', sinceISO);
-    if(repId) q = q.eq('rep_id', repId);
-    const { count, error } = await q;
-    if(error){ return 0; }
-    return count || 0;
-  },
   async lastForAccount(accountId){
     const { data, error } = await sb.from('orders').select('*').eq('account_id', accountId).order('placed_at',{ascending:false}).limit(1);
     if(error){ return null; }
@@ -879,22 +872,6 @@ const orders = {
     if(!(d.items||[]).length){ ui.toast('Add at least one item'); return; }
     const cardMethods = ['Visa','Mastercard','Amex'];
     if(cardMethods.includes(d.payment.method) && !d.payment.signature){ ui.toast('Card payment requires an authorization signature. Tap "Get signature".'); return; }
-
-    /* Daily-order gate — admin override code required when exceeding limit */
-    if(!auth.isAdmin()){
-      const maxPerDay = Number(cache.settings.max_orders_per_day ?? 10);
-      const todayStart = new Date(); todayStart.setHours(0,0,0,0);
-      const todayCount = await orders.countFinalizedSince(d.rep_id, todayStart.toISOString());
-      if(todayCount >= maxPerDay){
-        const code = prompt(`You've reached today's order limit (${maxPerDay} finalized orders).\n\nEnter the admin override code to proceed, or contact your admin.`);
-        if(!code) return;
-        const r = await sb.rpc('verify_admin_secret', { p_key: 'order_override', p_value: code });
-        if(r.error || !r.data){
-          ui.toast('Invalid override code. Contact your admin.');
-          return;
-        }
-      }
-    }
 
     const sub = d.items.reduce((s,i)=>s+i.qty*i.price,0);
     const discPct = sub>0 ? (Number(d.discount)/sub*100) : 0;
@@ -2459,8 +2436,6 @@ const adminPanel = {
     document.getElementById('set-disc').value = ref.highDiscPct();
     document.getElementById('set-reorder').value = ref.reorderDays();
     document.getElementById('set-stock').value = ref.lowStock();
-    const maxEl = document.getElementById('set-maxorders');
-    if(maxEl) maxEl.value = Number(cache.settings.max_orders_per_day ?? 10);
     /* audit log */
     auditLog.render();
     /* messages */
@@ -2634,20 +2609,11 @@ const adminPanel = {
       { key:'tax_label_default', value: document.getElementById('set-taxlbl').value },
       { key:'high_discount_alert_pct', value: Number(document.getElementById('set-disc').value||0) },
       { key:'reorder_due_days', value: Number(document.getElementById('set-reorder').value||0) },
-      { key:'low_stock_threshold', value: Number(document.getElementById('set-stock').value||0) },
-      { key:'max_orders_per_day', value: parseInt(document.getElementById('set-maxorders').value||'10',10) }
+      { key:'low_stock_threshold', value: Number(document.getElementById('set-stock').value||0) }
     ];
     for(const r of upserts){
       const q = await sb.from('settings').upsert({ key:r.key, value:r.value, updated_at:new Date().toISOString() });
       if(q.error){ ui.err(q.error); return; }
-    }
-    /* Override code — only update if a value was typed */
-    const codeEl = document.getElementById('set-override');
-    const code = (codeEl?.value||'').trim();
-    if(code){
-      const cq = await sb.from('admin_secrets').upsert({ key:'order_override', value:code, updated_at:new Date().toISOString() });
-      if(cq.error){ ui.err(cq.error); return; }
-      codeEl.value = '';
     }
     await ref.loadAll();
     ui.toast('Settings saved');

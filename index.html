@@ -420,13 +420,6 @@
           <div><label>Reorder-due (days)</label><input id="set-reorder" type="number" step="1"/></div>
           <div><label>Stock low threshold</label><input id="set-stock" type="number" step="1"/></div>
         </div>
-        <div class="grid-2" style="margin-top:10px">
-          <div><label>Max orders per rep per day</label><input id="set-maxorders" type="number" step="1" min="1"/></div>
-          <div>
-            <label>Order override code <span class="muted" style="font-size:11px">(reps enter this when over limit)</span></label>
-            <input id="set-override" type="password" placeholder="(unchanged — type to update)" autocomplete="off"/>
-          </div>
-        </div>
         <div class="row" style="gap:8px;margin-top:10px">
           <button class="icon-btn primary" onclick="adminPanel.saveSettings()">Save settings</button>
         </div>
