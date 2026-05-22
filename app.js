@@ -2476,7 +2476,7 @@ const adminPanel = {
   async openRepModal(id){
     const r = id ? cache.reps.find(x=>x.id===id) : null;
     const isNew = !r;
-    const prof = r || { email:'', name:'', rep_id:'', role:'rep', commission:10, territory:[], cell:'', company:'', street:'', city:'', state:'', zip:'' };
+    const prof = r || { email:'', name:'', rep_id:'', role:'rep', commission:20, territory:[], cell:'', company:'', street:'', city:'', state:'', zip:'' };
     ui.modal(`
       <h3>${isNew?'Add rep':'Edit '+esc(prof.name||prof.email)}</h3>
       ${isNew ? '<p class="muted" style="font-size:13px;margin:0 0 12px">If this email has already signed up, this updates their profile. If not, the settings are saved as a pending invite and applied automatically when they sign up.</p>' : ''}
@@ -2494,7 +2494,7 @@ const adminPanel = {
             <option value="admin" ${prof.role==='admin'?'selected':''}>admin</option>
           </select>
         </div>
-        <div><label>Commission %</label><input id="r-comm" type="number" step="0.1" value="${prof.commission ?? 10}"/></div>
+        <div><label>Commission %</label><input id="r-comm" type="number" step="0.1" value="${prof.commission ?? 20}"/></div>
         <div><label>Territory (comma-separated)</label><input id="r-terr" value="${esc((prof.territory||[]).join(', '))}" placeholder="Denver Metro, Boulder, Colorado Springs"/></div>
         <div style="grid-column:1/-1"><label>Street address</label><input id="r-street" value="${esc(prof.street||'')}"/></div>
         <div><label>City</label><input id="r-city" value="${esc(prof.city||'')}"/></div>
@@ -2523,7 +2523,7 @@ const adminPanel = {
             <option value="admin" ${inv.role==='admin'?'selected':''}>admin</option>
           </select>
         </div>
-        <div><label>Commission %</label><input id="r-comm" type="number" step="0.1" value="${inv.commission ?? 10}"/></div>
+        <div><label>Commission %</label><input id="r-comm" type="number" step="0.1" value="${inv.commission ?? 20}"/></div>
         <div><label>Territory (comma-separated)</label><input id="r-terr" value="${esc((inv.territory||[]).join(', '))}" placeholder="Denver Metro, Boulder, Colorado Springs"/></div>
       </div>
       <div class="row" style="gap:8px;margin-top:12px">
