@@ -2139,11 +2139,11 @@ const forecasts = {
     const get = i=>document.getElementById(i).value;
     const target = get('f-target');
     if(!target){ ui.toast('Pick an account or add a prospect.'); return; }
-    const [kind, ref] = target.split(':');
+    const [kind, refId] = target.split(':');
     const payload = {
       rep_id: auth.repId(),
-      account_id: kind==='acc' ? ref : null,
-      prospect_id: kind==='pros' ? ref : null,
+      account_id: kind==='acc' ? refId : null,
+      prospect_id: kind==='pros' ? refId : null,
       period_month: get('f-period'),
       primary_contact: get('f-contact'),
       account_type: get('f-type'),
