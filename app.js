@@ -2200,6 +2200,84 @@ const forecasts = {
   }
 };
 
+/* ---------- SHOPIFY INTEGRATION (admin) ---------- */
+const shopify = {
+  mode(){ return window.REFLECT_CONFIG?.SHOPIFY_MODE || 'off'; },
+  async call(action, payload){
+    const session = await sb.auth.getSession();
+    const token = session.data.session?.access_token;
+    if(!token) throw new Error('Not signed in');
+    const res = await fetch(window.REFLECT_CONFIG.SHOPIFY_SYNC_URL, {
+      method:'POST',
+      headers:{
+        'Authorization':'Bearer '+token,
+        'Content-Type':'application/json',
+        'apikey': window.REFLECT_CONFIG.SUPABASE_KEY
+      },
+      body: JSON.stringify({ action, payload: payload||{} })
+    });
+    const body = await res.json();
+    if(!res.ok || body.error) throw new Error(body.error || ('HTTP '+res.status));
+    return body;
+  },
+  async render(){
+    const statusEl = document.getElementById('shopify-status');
+    const actionsEl = document.getElementById('shopify-actions');
+    const logEl = document.getElementById('shopify-log');
+    if(!statusEl) return;
+
+    if(shopify.mode() !== 'live'){
+      statusEl.innerHTML = '<div class="alert">⚙️ Shopify integration is built but <b>not activated</b>. To turn it on: run <code>shopify-prep.sql</code>, deploy the Edge Functions, set the SHOPIFY_* secrets, then set <code>SHOPIFY_MODE: \'live\'</code> in config.js. Full steps in SHOPIFY_SETUP.md.</div>';
+      if(actionsEl) actionsEl.classList.add('hide');
+      if(logEl) logEl.innerHTML = '';
+      return;
+    }
+    if(actionsEl) actionsEl.classList.remove('hide');
+
+    const connected = cache.settings.shopify_connected === true;
+    const store = cache.settings.shopify_store_url || '';
+    const lastSync = cache.settings.shopify_last_product_sync;
+    const count = cache.settings.shopify_product_count || 0;
+    statusEl.innerHTML = connected
+      ? `<div class="alert ok">✓ Connected to <b>${esc(store)}</b>. ${count} products synced${lastSync?' · last sync '+new Date(lastSync).toLocaleString():''}.</div>`
+      : '<div class="alert warn">Not yet synced. Click "Test connection" then "Sync products now".</div>';
+
+    /* recent sync log */
+    const { data } = await sb.from('shopify_sync_log').select('*').order('at',{ascending:false}).limit(8);
+    if(logEl){
+      logEl.innerHTML = (data && data.length)
+        ? `<h3 style="margin:12px 0 6px;font-size:13px;color:var(--muted)">Recent activity</h3>` + data.map(r=>{
+            const badge = r.status==='success' ? 'ok' : 'err';
+            return `<div class="list-item"><div class="grow">
+              <div class="title"><span class="badge ${badge}">${esc(r.status)}</span> ${esc(r.action)}</div>
+              <div class="meta">${new Date(r.at).toLocaleString()}${r.detail?' · '+esc(JSON.stringify(r.detail).slice(0,120)):''}</div>
+            </div></div>`;
+          }).join('')
+        : '';
+    }
+  },
+  async testConnection(){
+    ui.busy(true);
+    try{
+      const r = await shopify.call('test_connection');
+      ui.toast('Connected: ' + (r.shop?.name || 'Shopify store'));
+    }catch(e){ ui.err(e); }
+    ui.busy(false);
+    shopify.render();
+  },
+  async syncProducts(){
+    if(!confirm('Pull products + inventory from Shopify? This updates the CRM product catalog and stock levels.')) return;
+    ui.busy(true);
+    try{
+      const r = await shopify.call('pull_products');
+      await ref.loadAll();
+      ui.toast(`Synced ${r.upserted} products from Shopify.`);
+    }catch(e){ ui.err(e); }
+    ui.busy(false);
+    shopify.render();
+  }
+};
+
 /* ---------- ADMIN MESSAGES (admin → reps) ---------- */
 const messages = {
   async list(){
@@ -2387,6 +2465,8 @@ const adminPanel = {
     auditLog.render();
     /* messages */
     messages.renderAdmin();
+    /* shopify */
+    shopify.render();
   },
   async loadInvites(){
     const { data, error } = await sb.from('pending_invites').select('*').order('created_at',{ascending:false});

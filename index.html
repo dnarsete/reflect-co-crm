@@ -433,6 +433,16 @@
       </div>
 
       <div class="card">
+        <h2>Shopify integration</h2>
+        <div id="shopify-status"></div>
+        <div id="shopify-actions" class="row hide" style="gap:8px;margin-top:8px">
+          <button class="icon-btn" onclick="shopify.testConnection()">Test connection</button>
+          <button class="icon-btn primary" onclick="shopify.syncProducts()">Sync products now</button>
+        </div>
+        <div id="shopify-log"></div>
+      </div>
+
+      <div class="card">
         <h2>Audit log</h2>
         <p class="muted" style="margin-top:0;font-size:13px">Every insert / update / delete on accounts, orders, forecasts, notes, profiles, products, and promotions is logged. Shows the 100 most recent actions matching the filters.</p>
         <div class="row" style="gap:8px;margin-bottom:8px">

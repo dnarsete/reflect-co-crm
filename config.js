@@ -10,5 +10,13 @@ window.REFLECT_CONFIG = {
                 Requires: Anthropic API key set as a Supabase secret AND the
                 Edge Function deployed. See supabase/functions/ai-assistant/. */
   AI_MODE: 'off',
-  AI_FUNCTION_URL: 'https://clzpkjssxvmgvgloxehk.supabase.co/functions/v1/ai-assistant'
+  AI_FUNCTION_URL: 'https://clzpkjssxvmgvgloxehk.supabase.co/functions/v1/ai-assistant',
+
+  /* Shopify integration:
+       'off'  — Shopify card shows "not activated"; nothing calls Shopify
+       'live' — Admin can test the connection and sync products
+     Requires: shopify-prep.sql run, the shopify-sync Edge Function
+     deployed, and SHOPIFY_* secrets set. See SHOPIFY_SETUP.md. */
+  SHOPIFY_MODE: 'off',
+  SHOPIFY_SYNC_URL: 'https://clzpkjssxvmgvgloxehk.supabase.co/functions/v1/shopify-sync'
 };
