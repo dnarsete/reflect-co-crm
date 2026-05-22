@@ -2552,7 +2552,7 @@ const adminPanel = {
     if(!isNew){
       const q = await sb.from('profiles').update(payload).eq('id', id);
       if(q.error){ ui.err(q.error); return; }
-      ui.closeModal(); ui.toast('Saved'); adminPanel.render();
+      ui.closeModal(); ui.toast('Saved'); adminPanel.renderRepsAndInvites();
       return;
     }
     if(!email){ ui.toast('Email required'); return; }
@@ -2561,7 +2561,7 @@ const adminPanel = {
     if(ex.data){
       const q = await sb.from('profiles').update(payload).eq('id', ex.data.id);
       if(q.error){ ui.err(q.error); return; }
-      ui.closeModal(); ui.toast('Existing user — profile updated.'); adminPanel.render();
+      ui.closeModal(); ui.toast('Existing user — profile updated.'); adminPanel.renderRepsAndInvites();
       return;
     }
     /* Upsert pending invite */
@@ -2572,7 +2572,7 @@ const adminPanel = {
     if(q.error){ ui.err(q.error); return; }
     ui.closeModal();
     ui.toast(`Invite saved. Tell ${email} to sign up at the CRM URL.`);
-    adminPanel.render();
+    adminPanel.renderRepsAndInvites();
   },
   async saveInvite(email){
     const get = i => document.getElementById(i).value;
@@ -2586,24 +2586,24 @@ const adminPanel = {
     };
     const q = await sb.from('pending_invites').upsert(payload);
     if(q.error){ ui.err(q.error); return; }
-    ui.closeModal(); ui.toast('Invite updated'); adminPanel.render();
+    ui.closeModal(); ui.toast('Invite updated'); adminPanel.renderRepsAndInvites();
   },
   async cancelInvite(email){
     if(!confirm(`Cancel invite for ${email}?`)) return;
     const q = await sb.from('pending_invites').delete().eq('email', email);
     if(q.error){ ui.err(q.error); return; }
-    ui.toast('Invite cancelled'); adminPanel.render();
+    ui.toast('Invite cancelled'); adminPanel.renderRepsAndInvites();
   },
   async disableRep(id){
     if(!confirm('Disable this rep? They will not be able to sign in, but their data stays for history.')) return;
     const q = await sb.from('profiles').update({ disabled: true }).eq('id', id);
     if(q.error){ ui.err(q.error); return; }
-    ui.toast('Disabled'); adminPanel.render();
+    ui.toast('Disabled'); adminPanel.renderRepsAndInvites();
   },
   async enableRep(id){
     const q = await sb.from('profiles').update({ disabled: false }).eq('id', id);
     if(q.error){ ui.err(q.error); return; }
-    ui.toast('Re-enabled'); adminPanel.render();
+    ui.toast('Re-enabled'); adminPanel.renderRepsAndInvites();
   },
   async resetRepPassword(email){
     if(!confirm(`Send password reset email to ${email}?`)) return;
