@@ -5,10 +5,25 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
 <title>The Reflect Co — Rep CRM</title>
 <meta name="description" content="Mobile-first sales-rep CRM for The Reflect Co. Accounts, orders, promotions, reports, and an internal assistant — all in the browser." />
-<meta name="theme-color" content="#0f1419" />
+<meta name="theme-color" content="#0d2945" />
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" type="image/png" href="icon.png" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Reflect CRM" />
 <link rel="stylesheet" href="styles.css" />
 <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
 <script src="config.js"></script>
+<script>
+  /* Register service worker for offline shell + PWA install support. */
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW failed', err));
+    });
+  }
+</script>
 </head>
 <body>
 
