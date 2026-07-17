@@ -258,6 +258,19 @@ const dashboard = {
     const alertsEl = document.getElementById('alerts');
     const alerts = [];
 
+    /* Admin-only: MFA enrollment nudge. Persistent until MFA is enrolled. */
+    if(auth.isAdmin()){
+      try{
+        const factors = await security.listFactors();
+        if(!factors.all.length){
+          alerts.push({
+            lvl:'warn', html:true,
+            text:`🔐 <b>Two-factor authentication is required for admin accounts.</b> Tap <a href="#" onclick="security.openSettings();return false" style="color:var(--brand);text-decoration:underline">🔒 Security</a> to enroll (~60 sec).`
+          });
+        }
+      } catch(_){}
+    }
+
     /* Admin-only: low-stock product alerts. Reps don't see inventory levels. */
     if(auth.isAdmin()){
       const lowStock = cache.products.filter(p=>p.stock<=ref.lowStock());
@@ -2546,7 +2559,33 @@ const adminPanel = {
     });
     if(q.error){ ui.err(q.error); return; }
     ui.closeModal();
-    ui.toast(`Invite saved. Tell ${email} to sign up at the CRM URL.`);
+
+    /* Send an official invite email if enabled */
+    if(window.REFLECT_CONFIG?.INVITE_EMAILS === 'live'){
+      try{
+        const session = await sb.auth.getSession();
+        const token = session.data.session?.access_token;
+        const res = await fetch(window.REFLECT_CONFIG.INVITE_FUNCTION_URL, {
+          method:'POST',
+          headers:{
+            'Authorization': 'Bearer ' + token,
+            'Content-Type': 'application/json',
+            'apikey': window.REFLECT_CONFIG.SUPABASE_KEY
+          },
+          body: JSON.stringify({ email })
+        });
+        const data = await res.json();
+        if(!res.ok || data.error){
+          ui.toast(`Invite saved but email failed: ${data.error || 'HTTP '+res.status}. Tell ${email} to sign up at the CRM URL.`);
+        } else {
+          ui.toast(`Invite email sent to ${email}. They'll get a link to set their password.`);
+        }
+      } catch(e){
+        ui.toast(`Invite saved but email couldn't send. Tell ${email} to sign up at the CRM URL.`);
+      }
+    } else {
+      ui.toast(`Invite saved. Tell ${email} to sign up at the CRM URL. (Enable INVITE_EMAILS in config.js to auto-email.)`);
+    }
     adminPanel.renderRepsAndInvites();
   },
   async saveInvite(email){

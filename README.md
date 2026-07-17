@@ -1,91 +1,96 @@
 # The Reflect Co — Rep CRM
 
-A mobile-first, self-contained customer-relationship & sales-rep portal for [thereflectco.com](https://thereflectco.com).
-Built as a static HTML/CSS/JS app — no build step, no server, no dependencies. Drop it on any host (or open the file directly) and it runs.
+Mobile-first sales-rep CRM for [thereflectco.com](https://thereflectco.com). Built with vanilla HTML/CSS/JS + Supabase (Postgres + Auth) + Supabase Edge Functions. No build step, no bundler. Hosted on GitHub Pages.
 
-Data persists in the browser via `localStorage`. The intent is for this UI to sit on top of **Shopify** (which remains the source of truth for orders, inventory, and payments) in production.
+Live: **https://dnarsete.github.io/reflect-co-crm/**
+
+---
+
+## Stack
+
+| Layer | Service | Purpose |
+|---|---|---|
+| Frontend hosting | GitHub Pages | Serves `index.html`, `styles.css`, `app.js`, `config.js` |
+| Database + Auth | Supabase (Postgres) | Real shared data, Row-Level Security, JWT sessions |
+| Serverless functions | Supabase Edge Functions (Deno) | Shopify sync, AI assistant, invite emails |
+| Commerce backend | Shopify (Phase 3) | Live products, inventory, payments, tax, fulfillment |
+| AI | Anthropic Claude API (dormant until enabled) | Real assistant answering questions from your data |
 
 ## Features
 
-- **Mobile-first** layout with large tap targets and a bottom nav (works great as a PWA shell).
-- **Roles**: Rep and Admin sign in the same way; views adjust automatically.
-- **Accounts** — auto-generated `ACC-####` numbers, account-type dropdown (Dermatologist, Medical Spa, Boutique, Hotel, Retail Store, Salon, Other), billing + business addresses, rep assignment, sales-tax license (with state), opt in/out, call/visit notes log, timestamps.
-- **Orders** — reps cannot manually discount; only via promo code. Default shipping ($30). Default tax (Colorado + Denver County, ~8.81%) auto-waived when a sales-tax license is on file. Order # is generated on finalize. Card payments require an e-signature on file. Methods: Visa / MC / Amex / Apple Pay / Venmo / PayPal / ACH. Invoice view with print-to-PDF.
-- **Promotions** — code-based with four kinds: `percent`, `shipping` (free), `bonus` (extra product), `access` (seminars/trainings). Minimum-units gating for volume tiers.
-- **Reports & KPIs** — date range, rep, account #, order #, account-type filters; by-type breakdown; commission computed per rep; **CSV export**; one-click "last month w/ commission" report.
-- **Customer Service** — in-app rule-based assistant that looks up accounts, orders, promos, tax, and reorder-due. Footer fallback (1-800 / email / mailing address). Production should plug into the [Claude API](https://docs.anthropic.com) here.
-- **Admin** — rep CRUD with free-form territory tags (e.g. "Denver Metro, Boulder"), account-type management, system settings (shipping/tax/discount alert/reorder window/low-stock threshold), full demo-data reset.
-- **Alerts** — low-stock and reorder-due tiles on the dashboard; high-discount orders prompt before finalizing.
+- **Real auth** (Supabase). Email + password, MFA (TOTP + Passkey), password reset via email, 12-hour absolute session + 30-min idle timeout.
+- **Roles**: admin sees everything; reps see only their own accounts / orders / forecasts / prospects (enforced by Row-Level Security at the database).
+- **Accounts** — auto-generated `ACC-####` numbers, account-type dropdown, billing + business addresses, rep assignment, tax-exempt toggle with sales-tax license, 24-hour note edit window (DB-enforced).
+- **Orders** — reps cannot manually discount; only via promo code. Default shipping ($30). Default tax (Colorado + Denver County, ~8.81%). Order # generated on finalize. Card payments require an in-app signature (canvas pad). Watermarked invoice.
+- **Prospects → Accounts** — lead capture and one-click conversion to a real customer account.
+- **Promotions** — code-based with four kinds: percent off, free shipping, bonus product, access perks. Volume gates via `min_qty`.
+- **Forecasts** — reps log expected sales by month linked to accounts or prospects. Admin sees a team rollup (revenue, weighted pipeline, cases needed).
+- **Reports & KPIs** — time-preset filters (Today / This Week / This Month / This Quarter / YTD / Last Quarter, plus admin extras). Revenue trend by day/week/month. By-rep breakdown. Leaderboard (🥇🥈🥉) across revenue, orders, avg deal, close rate. CSV export (admin only, watermarked and audit-logged).
+- **Rep management** (👥 Reps tab, admin) — full CRUD on rep profiles with contact info, commission %, territory, disable/enable, password reset. Pending invites with pre-set data applied on signup.
+- **Messages** — admin can broadcast announcements, promos, todos, or 1-on-1 messages that appear in the rep's dashboard.
+- **Audit log** — every insert / update / delete on all key tables, admin-only readable.
+- **Approval gate** — uninvited signups land disabled; invited signups land active with pre-set rep ID, role, commission, territory.
 
-## Quick start
-
-```bash
-git clone https://github.com/<you>/reflect-co-crm.git
-cd reflect-co-crm
-open index.html        # macOS — or just double-click it
-```
-
-Or serve it locally (any static server works):
-
-```bash
-# Python 3
-python3 -m http.server 8000
-# Node
-npx serve .
-```
-
-Then visit <http://localhost:8000>.
-
-### Demo accounts
-
-| Role  | Email                       | Password |
-| ----- | --------------------------- | -------- |
-| Admin | admin@thereflectco.com      | admin    |
-| Rep   | rep@thereflectco.com        | rep      |
-
-You can also tap **Use Rep demo** / **Use Admin demo** on the sign-in screen.
-If sign-in misbehaves (stale localStorage), click **Reset local data** in the "Demo accounts" disclosure.
-
-## Deploying
-
-This is a static site — three files. Anywhere that serves static assets will work.
-
-- **GitHub Pages**: push the repo, enable Pages from the `main` branch / root.
-- **Netlify / Vercel / Cloudflare Pages**: drag-and-drop the folder, or connect the repo.
-- **S3 / any CDN**: upload the three files.
-
-## Project structure
+## Project layout
 
 ```
 reflect-co-crm/
-├── index.html        # Markup + view templates
-├── styles.css        # All styling (dark theme, mobile-first)
-├── app.js            # SPA logic, localStorage persistence, seed data
+├── index.html                              # Markup + view templates
+├── styles.css                              # Dark theme, mobile-first
+├── app.js                                  # SPA logic; all Supabase queries
+├── config.js                               # Supabase URL, publishable key, feature flags
 ├── README.md
 ├── LICENSE
-└── .gitignore
+├── BUSINESS_RULES.md                       # Rules encoded in DB / code / config
+├── AI_SETUP.md                             # Activation guide for the AI assistant
+├── SHOPIFY_SETUP.md                        # Activation guide for Shopify integration
+├── docs/
+│   ├── BUSINESS_RULES.docx                 # Downloadable Word version
+│   └── BUSINESS_RULES.html                 # Print-friendly HTML
+└── supabase/
+    ├── schema.sql                          # Base tables + RLS + triggers
+    ├── *.sql                               # Sequential migrations (run in order)
+    └── functions/
+        ├── ai-assistant/                   # Claude tool-calling Edge Function
+        ├── shopify-sync/                   # Shopify admin API proxy
+        ├── shopify-webhook/                # Shopify webhook receiver
+        └── invite-rep/                     # Auto-invite emails for new reps
 ```
 
-## Where to plug in production systems
+## Migration order
 
-This repo is a UX/UX-logic prototype. Production wiring points:
+Apply `supabase/*.sql` in this order (all idempotent):
 
-- **Shopify Admin API** — source of truth for products, inventory, orders, fulfillments, customers. Replace the `db.products` / `db.orders` reads with API calls.
-- **Shopify Payments / tokenized vault** — payment capture. The CRM intentionally does **not** store card details.
-- **Shopify Tax or Avalara** — multi-jurisdiction sales tax. The current static tax rate is a placeholder.
-- **Claude API** — replace the rule-based assistant in `cs.answer()` with a real LLM call. Use prompt caching to keep latency / cost down.
-- **Auth** — replace the localStorage user list with SSO / Shopify customer accounts or a small auth backend.
-- **Lead routing** — wire the rep `territory` ZIP list into your web-form intake to auto-assign new leads.
+1. `schema.sql`
+2. `fix-recursion.sql`
+3. `forecasts.sql`
+4. `tax-exempt.sql`
+5. `account-notes.sql`
+6. `rep-mgmt.sql`
+7. `rep-contact.sql`
+8. `audit-and-approval.sql`
+9. `profile-fields.sql`
+10. `email-sync.sql`
+11. `messages.sql`
+12. `export-logging.sql`
+13. `shopify-prep.sql`
+14. `live-prep.sql`
 
-## Roadmap
+## Feature flags (config.js)
 
-- License-file upload (Shopify Files API)
-- Geolocation check-in for visits
-- Voice-to-text notes (Web Speech API)
-- Real-time sync + offline queue
-- Push notifications for reorder alerts
-- Apple Pay / Pay Sheet integration
-- Real AI assistant via Claude API
+| Flag | Values | Effect |
+|---|---|---|
+| `AI_MODE` | `'off'` / `'live'` | Help tab uses the AI Edge Function (needs Anthropic API key) |
+| `SHOPIFY_MODE` | `'off'` / `'live'` | Admin can sync products from Shopify (needs Shopify Custom App token) |
+| `INVITE_EMAILS` | `'off'` / `'live'` | Admin adding a rep triggers an official invite email (needs invite-rep Edge Function deployed) |
+
+## Business rules
+
+See [BUSINESS_RULES.md](BUSINESS_RULES.md) for the full list of what the CRM enforces and where each rule lives (database / app code / configuration).
+
+## Deployment
+
+Any GitHub push to `main` auto-deploys via GitHub Pages (~60 seconds). Supabase Edge Functions deploy separately via the Supabase Dashboard (paste the TypeScript from `supabase/functions/<name>/index.ts`) or via the Supabase CLI.
 
 ## License
 

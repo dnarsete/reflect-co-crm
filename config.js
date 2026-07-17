@@ -18,5 +18,11 @@ window.REFLECT_CONFIG = {
      Requires: shopify-prep.sql run, the shopify-sync Edge Function
      deployed, and SHOPIFY_* secrets set. See SHOPIFY_SETUP.md. */
   SHOPIFY_MODE: 'off',
-  SHOPIFY_SYNC_URL: 'https://clzpkjssxvmgvgloxehk.supabase.co/functions/v1/shopify-sync'
+  SHOPIFY_SYNC_URL: 'https://clzpkjssxvmgvgloxehk.supabase.co/functions/v1/shopify-sync',
+
+  /* Auto-send invite emails when admin adds a new rep. Requires the
+     'invite-rep' Supabase Edge Function to be deployed. When 'off',
+     the admin has to manually tell the rep to sign up at the URL. */
+  INVITE_EMAILS: 'off',
+  INVITE_FUNCTION_URL: 'https://clzpkjssxvmgvgloxehk.supabase.co/functions/v1/invite-rep'
 };
