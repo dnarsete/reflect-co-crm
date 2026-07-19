@@ -16,6 +16,14 @@ const todayISO = () => new Date().toISOString().slice(0,10);
 const startOfMonth = () => { const d=new Date(); return new Date(d.getFullYear(),d.getMonth(),1).toISOString().slice(0,10) };
 const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
+/* Return a signature data URL only if it's a valid inline image; empty string otherwise.
+   Prevents XSS via an attacker-controlled orders.payment.signature (see security audit). */
+const safeSignature = s => (typeof s === 'string' && /^data:image\/(png|jpe?g);base64,[A-Za-z0-9+/=]+$/.test(s)) ? s : '';
+
+/* Whitelist Shopify invoice URLs before rendering them or opening them.
+   Blocks javascript:, data:, and cross-origin URLs an attacker could store on the order. */
+const safeShopifyUrl = u => (typeof u === 'string' && /^https:\/\/([a-z0-9-]+\.)*(myshopify\.com|shopify\.com)\//i.test(u)) ? u : '';
+
 /* In-memory caches (populated on login, refreshed on demand) */
 const cache = {
   me: null,            // profiles row for the current user
@@ -82,9 +90,16 @@ const auth = {
     const extras = document.getElementById('signup-extras');
     const email = (document.getElementById('auth-email').value||'').trim().toLowerCase();
     const pass  = (document.getElementById('auth-pass').value||'');
-    if(!email || pass.length < 10){
+    if(!email){
       errEl.classList.remove('ok'); errEl.classList.add('err');
-      errEl.textContent = 'Email + a password of at least 10 characters required first.';
+      errEl.textContent = 'Email is required.';
+      errEl.classList.remove('hide');
+      return;
+    }
+    const strength = auth.passwordStrength(pass);
+    if(!strength.ok){
+      errEl.classList.remove('ok'); errEl.classList.add('err');
+      errEl.textContent = strength.msg;
       errEl.classList.remove('hide');
       return;
     }
@@ -154,17 +169,56 @@ const auth = {
   },
   async applyRecoveryFlow(){
     /* After clicking the email link, Supabase puts a recovery token in the URL hash.
-       Prompt for new password and set it. */
+       Render an in-page modal (never window.prompt — masked input + strength check + confirm). */
     if(!location.hash.includes('access_token') && !location.hash.includes('type=recovery') && location.hash !== '#reset') return;
-    setTimeout(async ()=>{
-      const newp = prompt('Set a new password (at least 10 characters):');
-      if(!newp || newp.length<10){ alert('Password must be at least 10 characters.'); return; }
-      const { error } = await sb.auth.updateUser({ password: newp });
-      if(error){ alert('Failed: '+error.message); return; }
-      alert('Password updated. You are now signed in.');
-      history.replaceState(null, '', location.pathname);
-      location.reload();
+    setTimeout(()=>{
+      ui.modal(`
+        <h3>Set a new password</h3>
+        <p class="muted" style="font-size:13px;margin:0 0 12px">Choose a strong password — at least 14 characters, or 10+ with letters, numbers, and a symbol.</p>
+        <div id="pwr-err" class="alert err hide" style="margin-bottom:10px"></div>
+        <div style="margin-bottom:10px">
+          <label>New password</label>
+          <input id="pwr-new" type="password" autocomplete="new-password" autocapitalize="none" spellcheck="false"/>
+        </div>
+        <div style="margin-bottom:10px">
+          <label>Confirm password</label>
+          <input id="pwr-conf" type="password" autocomplete="new-password" autocapitalize="none" spellcheck="false"/>
+        </div>
+        <div class="row" style="gap:8px">
+          <button class="icon-btn primary" onclick="auth.submitRecovery()">Set password</button>
+        </div>
+      `);
+      setTimeout(()=>document.getElementById('pwr-new')?.focus(), 50);
     }, 200);
+  },
+  async submitRecovery(){
+    const errEl = document.getElementById('pwr-err');
+    const show = (m)=>{ errEl.textContent = m; errEl.classList.remove('hide'); };
+    const p1 = document.getElementById('pwr-new').value || '';
+    const p2 = document.getElementById('pwr-conf').value || '';
+    if(p1 !== p2){ show('Passwords do not match.'); return; }
+    const check = auth.passwordStrength(p1);
+    if(!check.ok){ show(check.msg); return; }
+    ui.busy(true);
+    const { error } = await sb.auth.updateUser({ password: p1 });
+    ui.busy(false);
+    if(error){ show('Failed: '+error.message); return; }
+    ui.closeModal();
+    alert('Password updated. You are now signed in.');
+    history.replaceState(null, '', location.pathname);
+    location.reload();
+  },
+  /* Password policy: min 14 chars, or 10+ with ≥3 of {upper, lower, digit, symbol}.
+     Also rejects the top few common patterns. Server-side breach checking is done
+     by Supabase Auth (see HARDENING.md for the dashboard toggle). */
+  passwordStrength(pw){
+    pw = String(pw||'');
+    if(pw.length < 10) return { ok:false, msg:'Password must be at least 10 characters.' };
+    if(pw.length >= 14) return { ok:true };
+    const classes = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/].filter(r => r.test(pw)).length;
+    if(classes < 3) return { ok:false, msg:'Short passwords need 3 of: lowercase, uppercase, number, symbol. Or use 14+ characters.' };
+    if(/^password|^123456|^qwerty|^letmein|^admin/i.test(pw)) return { ok:false, msg:'That password is too common. Pick something less predictable.' };
+    return { ok:true };
   },
   user(){ return cache.me; },
   isAdmin(){ return !!cache.me && cache.me.role === 'admin'; },
@@ -180,9 +234,32 @@ const profiles = {
     return data;
   },
   async loadReps(){
-    const { data, error } = await sb.from('profiles').select('*').order('name');
+    /* reps_public() is a SECURITY DEFINER RPC that returns only id, rep_id, name,
+       email, role, disabled, territory — PII (cell, address, tax_id, commission)
+       is restricted to self + admin by RLS on the profiles table itself. */
+    const { data, error } = await sb.rpc('reps_public');
     if(error) throw error;
     cache.reps = data || [];
+    /* Admins also fetch the full rows so commission math and management views work. */
+    if(cache.me && cache.me.role === 'admin'){
+      const full = await sb.from('profiles').select('*').order('name');
+      cache.repsFull = full.data || [];
+    } else {
+      cache.repsFull = [];
+    }
+  },
+  /* Commission % lookup. Only admins ever see other reps' commissions;
+     a rep can only look up their own (which comes from cache.me). */
+  commissionFor(repId){
+    if(!repId) return 0;
+    if(cache.repsFull && cache.repsFull.length){
+      const f = cache.repsFull.find(r=>r.rep_id===repId);
+      if(f && typeof f.commission === 'number') return f.commission;
+    }
+    if(cache.me && cache.me.rep_id === repId && typeof cache.me.commission === 'number'){
+      return cache.me.commission;
+    }
+    return 0;
   }
 };
 
@@ -246,7 +323,7 @@ const dashboard = {
     ]);
     const rev = (mtdOrders||[]).reduce((s,o)=>s+Number(o.total||0),0);
     const comm = (mtdOrders||[]).reduce((s,o)=>{
-      const repPct = (cache.reps.find(r=>r.rep_id===o.rep_id)?.commission || 0)/100;
+      const repPct = profiles.commissionFor(o.rep_id)/100;
       return s + (Number(o.total||0) - Number(o.shipping||0) - Number(o.tax||0)) * repPct;
     }, 0);
     document.getElementById('kpi-accounts').textContent = accCount;
@@ -569,10 +646,11 @@ const orders = {
       if(o.shopify_status==='paid'){ shopBadge = ' <span class="badge ok">Shopify: paid</span>'; }
       else if(o.shopify_status==='fulfilled'){ shopBadge = ' <span class="badge ok">Shopify: fulfilled</span>'; }
       else if(o.shopify_draft_order_id){ shopBadge = ' <span class="badge info">Shopify: draft sent</span>'; }
+      const invUrl = safeShopifyUrl(o.shopify_invoice_url);
       return `<div class="list-item">
         <div class="grow">
           <div class="title">${esc(o.order_number||'(draft)')} <span class="badge ${status}">${esc(o.status)}</span>${shopBadge}</div>
-          <div class="meta">${esc(a?.business_name||'—')} · ${new Date(o.placed_at).toLocaleDateString()} · ${fmt$(o.total)}${o.shopify_invoice_url?` · <a href="${esc(o.shopify_invoice_url)}" target="_blank" rel="noopener">Invoice link</a>`:''}</div>
+          <div class="meta">${esc(a?.business_name||'—')} · ${new Date(o.placed_at).toLocaleDateString()} · ${fmt$(o.total)}${invUrl?` · <a href="${esc(invUrl)}" target="_blank" rel="noopener">Invoice link</a>`:''}</div>
         </div>
         <button class="icon-btn" onclick="orders.open('${o.id}')">Open</button>
       </div>`;
@@ -702,7 +780,7 @@ const orders = {
   },
   renderSig(){
     const wrap = document.getElementById('o-sig-wrap'); if(!wrap) return;
-    const sig = orders._draft.payment?.signature;
+    const sig = safeSignature(orders._draft.payment?.signature);
     if(sig){
       const when = orders._draft.payment.signed_at ? new Date(orders._draft.payment.signed_at).toLocaleString() : '';
       wrap.innerHTML = `
@@ -940,9 +1018,10 @@ const orders = {
         ? 'Order already linked to Shopify draft.'
         : `Shopify draft created${r.invoice_url ? '. Invoice link ready.' : '.'}`;
       ui.toast(msg);
-      if(r.invoice_url){
+      const safeUrl = safeShopifyUrl(r.invoice_url);
+      if(safeUrl){
         if(confirm(msg + '\n\nOpen the Shopify invoice link now?')){
-          window.open(r.invoice_url, '_blank');
+          window.open(safeUrl, '_blank', 'noopener');
         }
       }
       orders.render();
@@ -1063,11 +1142,11 @@ const invoice = {
         <div style="font-size:18px;margin-top:4px"><b>Total: ${fmt$(o.total)}</b></div>
       </div>
       <div class="muted" style="font-size:12px;margin-top:8px">Payment: ${esc(o.payment?.method||'')} ${o.payment?.last4?'····'+esc(o.payment.last4):''}<br>Tracking will be emailed to ${esc(acc.email||'the account')} when shipped.</div>
-      ${o.payment?.signature ? `
+      ${safeSignature(o.payment?.signature) ? `
         <div style="margin-top:10px">
           <div class="muted" style="font-size:11px;margin-bottom:4px">Authorization signature</div>
           <div style="background:white;border-radius:6px;padding:4px;max-width:320px">
-            <img src="${o.payment.signature}" style="display:block;width:100%;max-height:80px;object-fit:contain"/>
+            <img src="${safeSignature(o.payment.signature)}" style="display:block;width:100%;max-height:80px;object-fit:contain"/>
           </div>
           <div class="muted" style="font-size:11px;margin-top:2px">Signed ${o.payment.signed_at ? new Date(o.payment.signed_at).toLocaleString() : ''}</div>
         </div>` : ''}
@@ -1276,7 +1355,7 @@ const reports = {
     const list = await reports.filter();
     const rev = list.reduce((s,o)=>s+Number(o.total||0),0);
     const comm = list.reduce((s,o)=>{
-      const repPct = (cache.reps.find(r=>r.rep_id===o.rep_id)?.commission || 0)/100;
+      const repPct = profiles.commissionFor(o.rep_id)/100;
       return s + (Number(o.total||0) - Number(o.shipping||0) - Number(o.tax||0)) * repPct;
     }, 0);
     document.getElementById('rep-k-orders').textContent = list.length;
@@ -1312,7 +1391,7 @@ const reports = {
         byRep[k].orders++;
         byRep[k].units += (o.items||[]).reduce((s,i)=>s+i.qty,0);
         byRep[k].rev += Number(o.total||0);
-        const repPct = (cache.reps.find(r=>r.rep_id===o.rep_id)?.commission || 0)/100;
+        const repPct = profiles.commissionFor(o.rep_id)/100;
         byRep[k].comm += (Number(o.total||0) - Number(o.shipping||0) - Number(o.tax||0)) * repPct;
       });
       const byRepRows = Object.entries(byRep)
@@ -1369,7 +1448,7 @@ const reports = {
       const k = o.rep_id || '(unassigned)';
       repStats[k] = repStats[k] || { rep_id:k, revenue:0, orders:0, comm:0 };
       const sub = (o.items||[]).reduce((s,i)=>s+i.qty*i.price,0);
-      const repPct = (cache.reps.find(r=>r.rep_id===k)?.commission || 0)/100;
+      const repPct = profiles.commissionFor(k)/100;
       repStats[k].revenue += Number(o.total||0);
       repStats[k].orders++;
       repStats[k].comm += (Number(o.total||0) - Number(o.shipping||0) - Number(o.tax||0)) * repPct;
@@ -1561,14 +1640,14 @@ const reports = {
     const priorRev = priorRows.reduce((s,o)=>s+Number(o.total||0),0);
     const priorOrders = priorRows.length;
     const priorComm = priorRows.reduce((s,o)=>{
-      const repPct = (cache.reps.find(rr=>rr.rep_id===o.rep_id)?.commission || 0)/100;
+      const repPct = profiles.commissionFor(o.rep_id)/100;
       return s + (Number(o.total||0) - Number(o.shipping||0) - Number(o.tax||0)) * repPct;
     }, 0);
 
     const curRev = currentList.reduce((s,o)=>s+Number(o.total||0),0);
     const curOrders = currentList.length;
     const curComm = currentList.reduce((s,o)=>{
-      const repPct = (cache.reps.find(rr=>rr.rep_id===o.rep_id)?.commission || 0)/100;
+      const repPct = profiles.commissionFor(o.rep_id)/100;
       return s + (Number(o.total||0) - Number(o.shipping||0) - Number(o.tax||0)) * repPct;
     }, 0);
 
@@ -1699,7 +1778,7 @@ const reports = {
     ];
     list.forEach(o=>{
       const sub = (o.items||[]).reduce((s,i)=>s+i.qty*i.price,0);
-      const repPct = (cache.reps.find(r=>r.rep_id===o.rep_id)?.commission||0)/100;
+      const repPct = profiles.commissionFor(o.rep_id)/100;
       const comm = (Number(o.total)-Number(o.shipping)-Number(o.tax))*repPct;
       rows.push([
         o.placed_at.slice(0,10), o.order_number||'',
@@ -2415,7 +2494,8 @@ const adminPanel = {
     const search = (document.getElementById('reps-search')?.value || '').toLowerCase().trim();
     const filter = document.getElementById('reps-filter')?.value || 'all';
 
-    const allReps = cache.reps || [];
+    /* Admin needs full rows (cell/address/commission) — reps_public doesn't include those. */
+    const allReps = (cache.repsFull && cache.repsFull.length) ? cache.repsFull : (cache.reps || []);
     const filtered = allReps.filter(r => {
       if(filter === 'active'   && r.disabled) return false;
       if(filter === 'disabled' && !r.disabled) return false;
@@ -2504,7 +2584,10 @@ const adminPanel = {
     return data || [];
   },
   async openRepModal(id){
-    const r = id ? cache.reps.find(x=>x.id===id) : null;
+    /* Admin edit needs the full profile (address, cell, commission, tax_id).
+       cache.reps is the reps_public view (public columns only); use cache.repsFull. */
+    const full = (cache.repsFull && cache.repsFull.length) ? cache.repsFull : cache.reps;
+    const r = id ? full.find(x=>x.id===id) : null;
     const isNew = !r;
     const prof = r || { email:'', name:'', rep_id:'', role:'rep', commission:20, territory:[], cell:'', company:'', street:'', city:'', state:'', zip:'' };
     ui.modal(`
@@ -2923,7 +3006,8 @@ const security = {
     if(useTotp && !/^\d{6}$/.test(totpCode)){ show('Enter the 6-digit authenticator code.'); return; }
     if(!useTotp && !/^\d{6}$/.test(emailNonce)){ show('Enter the 6-digit code from your email (click "Send code" if you haven\'t).'); return; }
     if(newPw !== confirmPw){ show('New password and confirmation do not match.'); return; }
-    if(newPw.length < 10){ show('New password must be at least 10 characters.'); return; }
+    const strength = auth.passwordStrength(newPw);
+    if(!strength.ok){ show(strength.msg); return; }
     if(newPw === cur){ show('New password must be different from the current one.'); return; }
 
     /* Step 1: re-authenticate with current password */

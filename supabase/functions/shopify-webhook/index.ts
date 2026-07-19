@@ -77,10 +77,13 @@ async function verifyHmac(body: string, headerHmac: string, secret: string): Pro
   );
   const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
   const computed = btoa(String.fromCharCode(...new Uint8Array(sig)));
-  /* constant-time-ish compare */
-  if (computed.length !== headerHmac.length) return false;
-  let diff = 0;
-  for (let i = 0; i < computed.length; i++) diff |= computed.charCodeAt(i) ^ headerHmac.charCodeAt(i);
+  /* Constant-time compare — no length-based short-circuit. Fold the length delta
+     into the diff so mismatched lengths never bypass the loop. */
+  const n = Math.max(computed.length, headerHmac.length);
+  let diff = computed.length ^ headerHmac.length;
+  for (let i = 0; i < n; i++) {
+    diff |= (computed.charCodeAt(i) || 0) ^ (headerHmac.charCodeAt(i) || 0);
+  }
   return diff === 0;
 }
 

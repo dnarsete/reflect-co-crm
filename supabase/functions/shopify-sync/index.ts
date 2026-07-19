@@ -23,14 +23,34 @@ const SUPABASE_URL    = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_ANON   = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 const SERVICE_KEY     = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
-const cors = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Content-Type": "application/json",
-};
+/* CORS allow-list: production CRM origin + localhost for dev. Add to ALLOWED_ORIGINS
+   env var (comma-separated) if you host the CRM under an additional origin. */
+const DEFAULT_ORIGINS = [
+  "https://dnarsete.github.io",
+  "http://localhost:5173",
+  "http://localhost:3000",
+];
+const ALLOWED_ORIGINS = new Set(
+  (Deno.env.get("ALLOWED_ORIGINS") ?? "").split(",").map(s => s.trim()).filter(Boolean).concat(DEFAULT_ORIGINS)
+);
+
+function corsHeaders(req: Request): HeadersInit {
+  const origin = req.headers.get("Origin") || "";
+  const allowed = ALLOWED_ORIGINS.has(origin) ? origin : "null";
+  return {
+    "Access-Control-Allow-Origin": allowed,
+    "Vary": "Origin",
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Content-Type": "application/json",
+  };
+}
 
 serve(async (req: Request): Promise<Response> => {
+  const cors = corsHeaders(req);
+  const json = (obj: any, status = 200) =>
+    new Response(JSON.stringify(obj), { status, headers: cors });
+
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return json({ error: "POST only" }, 405);
 
@@ -82,10 +102,6 @@ serve(async (req: Request): Promise<Response> => {
 });
 
 /* ------------------------- helpers ------------------------- */
-
-function json(obj: any, status = 200) {
-  return new Response(JSON.stringify(obj), { status, headers: cors });
-}
 
 function storeHost() {
   return SHOPIFY_STORE.replace(/^https?:\/\//, "").replace(/\/+$/, "");

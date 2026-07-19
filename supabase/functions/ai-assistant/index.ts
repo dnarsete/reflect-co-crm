@@ -15,14 +15,33 @@ const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 const MODEL = Deno.env.get("ANTHROPIC_MODEL") ?? "claude-haiku-4-5-20251001"; // cheap default; swap to claude-sonnet-4-6 for higher quality
 const MAX_TURNS = 10;
 
-const cors = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Content-Type": "application/json",
-};
+const DEFAULT_ORIGINS = [
+  "https://dnarsete.github.io",
+  "https://thereflectco.com",
+  "http://localhost:5173",
+  "http://localhost:3000",
+];
+const ALLOWED_ORIGINS = new Set(
+  (Deno.env.get("ALLOWED_ORIGINS") ?? "").split(",").map(s => s.trim()).filter(Boolean).concat(DEFAULT_ORIGINS)
+);
+
+function corsHeaders(req: Request): HeadersInit {
+  const origin = req.headers.get("Origin") || "";
+  const allowed = ALLOWED_ORIGINS.has(origin) ? origin : "null";
+  return {
+    "Access-Control-Allow-Origin": allowed,
+    "Vary": "Origin",
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Content-Type": "application/json",
+  };
+}
 
 serve(async (req: Request): Promise<Response> => {
+  const cors = corsHeaders(req);
+  const json = (obj: any, status = 200) =>
+    new Response(JSON.stringify(obj), { status, headers: cors });
+
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
@@ -124,10 +143,6 @@ serve(async (req: Request): Promise<Response> => {
 });
 
 /* ----------------- Helpers ----------------- */
-
-function json(obj: any, status = 200) {
-  return new Response(JSON.stringify(obj), { status, headers: cors });
-}
 
 async function callClaude(system: any, tools: any[], messages: any[]) {
   try {
