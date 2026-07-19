@@ -236,8 +236,14 @@ const profiles = {
   async loadReps(){
     /* reps_public() is a SECURITY DEFINER RPC that returns only id, rep_id, name,
        email, role, disabled, territory — PII (cell, address, tax_id, commission)
-       is restricted to self + admin by RLS on the profiles table itself. */
-    const { data, error } = await sb.rpc('reps_public');
+       is restricted to self + admin by RLS on the profiles table itself.
+       Falls back to the base table if the RPC hasn't been created yet
+       (i.e. supabase/security-hardening.sql not yet run — see HARDENING.md). */
+    let { data, error } = await sb.rpc('reps_public');
+    if(error && /does not exist|not found|schema cache/i.test(error.message||'')){
+      const q = await sb.from('profiles').select('id, rep_id, name, email, role, disabled, territory').order('name');
+      data = q.data; error = q.error;
+    }
     if(error) throw error;
     cache.reps = data || [];
     /* Admins also fetch the full rows so commission math and management views work. */
