@@ -2,6 +2,24 @@
 
 The Shopify integration is **fully built and dormant**. The CRM doesn't touch Shopify until you complete the steps below. Zero cost, zero risk while dormant.
 
+## Your current situation (Pause and Build plan, $9/mo)
+
+Shopify **Pause and Build** cannot process payments — no card charging, no checkout, no Shopify Payments. Everything else works: catalog, customers, draft orders, webhooks, API access. All prep work below can be done today; the only step that requires an upgrade is **collecting money via the invoice link**.
+
+**What works on Pause and Build:**
+- Test connection (step 7.1)
+- Sync products from Shopify → CRM (step 7.2)
+- Push CRM accounts → Shopify customers (auto on account save)
+- Create Shopify draft orders from CRM orders (auto on order finalize)
+- Webhook events (inventory / product updates)
+
+**What requires upgrading to Basic Shopify ($39/mo) or higher:**
+- Sending a working "pay this invoice" link that actually accepts a card
+- `orders/paid` webhook firing (needs a real payment)
+- Fulfillment / tracking updates
+
+Recommended: complete steps 1-6 on Pause and Build so activation is one flag flip when you upgrade.
+
 ## What's already in the codebase
 
 - `supabase/shopify-prep.sql` — schema: linkage columns on products/accounts/orders, sync log, settings
@@ -94,6 +112,11 @@ Use the same `SHOPIFY_WEBHOOK_SECRET` value for signing.
 ### 6. Flip the flag
 
 In `config.js`: `SHOPIFY_MODE: 'off'` → `'live'`. Commit + push. Site updates in ~60s.
+
+Once flipped:
+- **Creating a new account** in the CRM automatically pushes it as a Shopify customer.
+- **Finalizing an order** automatically creates a Shopify draft order and stores an invoice link on the order. You'll see a "Shopify: draft sent" badge in the order list, and an "Invoice link" you can send to the customer (once your plan can accept payment).
+- **Manual retry** — if a push fails (Shopify down, missing linkage), open the order and click **Push to Shopify**.
 
 ### 7. Verify
 

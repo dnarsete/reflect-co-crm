@@ -517,6 +517,12 @@ const accounts = {
       q = await sb.from('accounts').update(payload).eq('id', id).select().single();
     }
     if(q.error){ ui.err(q.error); return; }
+    /* If Shopify integration is live, mirror the account as a Shopify customer.
+       Non-blocking — CRM save is authoritative. Errors just log. */
+    if(isNew && shopify.mode() === 'live'){
+      try { await shopify.call('push_account', { account_id: q.data.id }); }
+      catch(e){ console.warn('shopify push_account failed:', e); }
+    }
     ui.closeModal(); ui.toast(isNew?'Account created':'Saved'); accounts.render(); dashboard.render();
   },
   async remove(id){
@@ -559,10 +565,14 @@ const orders = {
     wrap.innerHTML = list.map(o=>{
       const a = acctMap[o.account_id];
       const status = o.status==='finalized' ? 'ok' : (o.status==='draft' ? 'warn':'info');
+      let shopBadge = '';
+      if(o.shopify_status==='paid'){ shopBadge = ' <span class="badge ok">Shopify: paid</span>'; }
+      else if(o.shopify_status==='fulfilled'){ shopBadge = ' <span class="badge ok">Shopify: fulfilled</span>'; }
+      else if(o.shopify_draft_order_id){ shopBadge = ' <span class="badge info">Shopify: draft sent</span>'; }
       return `<div class="list-item">
         <div class="grow">
-          <div class="title">${esc(o.order_number||'(draft)')} <span class="badge ${status}">${esc(o.status)}</span></div>
-          <div class="meta">${esc(a?.business_name||'—')} · ${new Date(o.placed_at).toLocaleDateString()} · ${fmt$(o.total)}</div>
+          <div class="title">${esc(o.order_number||'(draft)')} <span class="badge ${status}">${esc(o.status)}</span>${shopBadge}</div>
+          <div class="meta">${esc(a?.business_name||'—')} · ${new Date(o.placed_at).toLocaleDateString()} · ${fmt$(o.total)}${o.shopify_invoice_url?` · <a href="${esc(o.shopify_invoice_url)}" target="_blank" rel="noopener">Invoice link</a>`:''}</div>
         </div>
         <button class="icon-btn" onclick="orders.open('${o.id}')">Open</button>
       </div>`;
@@ -677,6 +687,7 @@ const orders = {
       <div class="row" style="gap:8px;margin-top:6px">
         <button class="icon-btn" onclick="orders.saveDraft('${orders._draft.id||''}', ${isNew})">Save draft</button>
         <button class="icon-btn primary" onclick="orders.finalize('${orders._draft.id||''}', ${isNew})">Finalize & invoice</button>
+        ${!isNew && shopify.mode()==='live'?`<button class="icon-btn" onclick="orders.pushToShopify('${orders._draft.id}')">Push to Shopify</button>`:''}
         ${!isNew?`<button class="icon-btn danger" onclick="orders.remove('${orders._draft.id}')">Delete</button>`:''}
         <button class="icon-btn ghost" onclick="ui.closeModal()">Close</button>
       </div>
@@ -903,9 +914,40 @@ const orders = {
     }
     if(q.error){ ui.err(q.error); return; }
     await orders.syncTaxToAccount(d);
+    /* Push to Shopify if integration is live. Failure doesn't block the CRM order — it's flagged for retry via shopify.pushOrder(). */
+    if(shopify.mode() === 'live'){
+      try {
+        const sr = await shopify.call('create_draft_order', { order_id: q.data.id });
+        if(sr.invoice_url){
+          q.data.shopify_invoice_url = sr.invoice_url;
+        }
+        ui.toast('Order finalized + Shopify draft created. Invoice link ready.');
+      } catch(e){
+        ui.toast('Order finalized but Shopify push failed. Use "Push to Shopify" on the order to retry.');
+        console.warn('shopify push failed:', e);
+      }
+    }
     ui.closeModal();
     invoice.show(q.data);
     dashboard.render(); orders.render();
+  },
+  async pushToShopify(id){
+    if(shopify.mode() !== 'live'){ ui.toast('Shopify integration is off. Enable it in config.js first.'); return; }
+    ui.busy(true);
+    try {
+      const r = await shopify.call('create_draft_order', { order_id: id });
+      const msg = r.already_linked
+        ? 'Order already linked to Shopify draft.'
+        : `Shopify draft created${r.invoice_url ? '. Invoice link ready.' : '.'}`;
+      ui.toast(msg);
+      if(r.invoice_url){
+        if(confirm(msg + '\n\nOpen the Shopify invoice link now?')){
+          window.open(r.invoice_url, '_blank');
+        }
+      }
+      orders.render();
+    } catch(e){ ui.err(e); }
+    ui.busy(false);
   },
   async remove(id){
     if(!confirm('Delete this order?')) return;
