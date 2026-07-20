@@ -25,9 +25,12 @@ Frontend fixes (5, 8, 9, 10, 11, 12) go live automatically after the git push. B
 
 ---
 
-## Step 1 — Run the SQL migration (~30 seconds)
+## Step 1 — Run the SQL migrations (~30 seconds)
 
-Supabase Dashboard → **SQL Editor** → paste the contents of `supabase/security-hardening.sql` → **Run**.
+Supabase Dashboard → **SQL Editor** → paste and Run in this order:
+
+1. `supabase/security-hardening.sql` — all the fixes below (idempotent, safe to re-run)
+2. `supabase/materials.sql` — creates the private "materials" storage bucket and RLS (needed if you want the Marketing Materials tab to work)
 
 The file is idempotent — safe to run any number of times. It handles:
 - Trigger blocking rep self-elevation

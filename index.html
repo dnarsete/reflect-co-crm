@@ -380,6 +380,24 @@
       </div>
     </section>
 
+    <!-- Marketing Materials -->
+    <section id="view-materials" class="view hide">
+      <div class="section-h">
+        <h1>Marketing Materials</h1>
+        <button class="icon-btn primary admin-only hide" onclick="materials.openUpload()">+ Upload</button>
+      </div>
+      <div class="card">
+        <div class="row" style="gap:8px;margin-bottom:8px">
+          <input id="mat-search" placeholder="Search by name or category…" oninput="materials.render()" style="flex:1"/>
+          <select id="mat-cat-filter" onchange="materials.render()" style="max-width:200px">
+            <option value="">All categories</option>
+          </select>
+        </div>
+        <p class="muted" style="margin:0 0 10px;font-size:13px">Product sheets, sell sheets, brand assets, order forms. Click any file to download. Admin uploads only.</p>
+        <div id="mat-list"></div>
+      </div>
+    </section>
+
     <!-- Customer Service -->
     <section id="view-cs" class="view hide">
       <div class="section-h">
@@ -452,6 +470,15 @@
       </div>
 
       <div class="card">
+        <div class="section-h" style="margin-bottom:8px">
+          <h2 style="margin:0;flex:1">Products &amp; pricing</h2>
+          <button class="icon-btn primary" onclick="productsAdmin.openNew()">+ Add product</button>
+        </div>
+        <p class="muted" style="margin:0 0 10px;font-size:13px">Wholesale catalog. Changes here update every rep's order picker immediately. When Shopify sync is live, use Shopify as the source of truth and pull with "Sync products now" — do not edit here.</p>
+        <div id="products-list" class="table-wrap"></div>
+      </div>
+
+      <div class="card">
         <h2>Shopify integration</h2>
         <div id="shopify-status"></div>
         <div id="shopify-actions" class="row hide" style="gap:8px;margin-top:8px">
@@ -506,6 +533,7 @@
     <button class="nav-btn" data-view="reports" onclick="nav.go('reports')"><span class="ico">📊</span>Reports</button>
     <button class="nav-btn" data-view="profile" onclick="nav.go('profile')"><span class="ico">👤</span>Profile</button>
     <button class="nav-btn admin-only hide" data-view="reps" onclick="nav.go('reps')"><span class="ico">👥</span>Reps</button>
+    <button class="nav-btn" data-view="materials" onclick="nav.go('materials')"><span class="ico">📎</span>Materials</button>
     <button class="nav-btn" data-view="cs" onclick="nav.go('cs')"><span class="ico">💬</span>Help</button>
     <button class="nav-btn admin-only hide" data-view="admin" onclick="nav.go('admin')"><span class="ico">⚙</span>Admin</button>
   </footer>

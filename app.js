@@ -320,6 +320,7 @@ const nav = {
     if(view==='forecast')  forecasts.render();
     if(view==='profile')   profile.render();
     if(view==='reps')      adminPanel.renderRepsAndInvites();
+    if(view==='materials') materials.render();
     if(view==='cs')        cs.init();
     if(view==='admin')     adminPanel.render();
   }
@@ -1822,6 +1823,156 @@ const reports = {
 };
 
 /* ---------- CUSTOMER SERVICE (rule-based OR live AI via Edge Function) ---------- */
+/* ---------- MARKETING MATERIALS (Supabase Storage) ---------- */
+const materials = {
+  BUCKET: 'materials',
+  CATEGORIES: ['Product Sheets', 'Sell Sheets', 'Brand Assets', 'Order Forms', 'Training', 'Other'],
+  _files: [],
+
+  /* Load all files across every category folder. Signed download URLs are
+     generated on click, not up-front, so this stays fast even at 100+ files. */
+  async loadAll(){
+    const all = [];
+    for(const cat of materials.CATEGORIES){
+      const { data, error } = await sb.storage.from(materials.BUCKET).list(cat, {
+        limit: 500, sortBy: { column: 'name', order: 'asc' }
+      });
+      if(error){ continue; }
+      (data||[]).filter(f => f.name && f.name !== '.emptyFolderPlaceholder')
+        .forEach(f => all.push({ ...f, category: cat, path: `${cat}/${f.name}` }));
+    }
+    materials._files = all;
+  },
+
+  async render(){
+    const wrap = document.getElementById('mat-list'); if(!wrap) return;
+    /* Populate the category filter once */
+    const catSel = document.getElementById('mat-cat-filter');
+    if(catSel && catSel.options.length <= 1){
+      catSel.innerHTML = '<option value="">All categories</option>' +
+        materials.CATEGORIES.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+    }
+    wrap.innerHTML = '<div class="muted">Loading…</div>';
+    try { await materials.loadAll(); }
+    catch(e){ wrap.innerHTML = `<div class="alert err">Load failed: ${esc(e.message||e)}</div>`; return; }
+
+    const q = (document.getElementById('mat-search')?.value||'').toLowerCase().trim();
+    const catF = document.getElementById('mat-cat-filter')?.value || '';
+    const filtered = materials._files.filter(f => {
+      if(catF && f.category !== catF) return false;
+      if(!q) return true;
+      return (f.name+' '+f.category).toLowerCase().includes(q);
+    });
+    if(!filtered.length){
+      wrap.innerHTML = `<div class="muted">${materials._files.length===0 ? 'No materials uploaded yet.' : 'No materials match the search / filter.'}</div>`;
+      return;
+    }
+    /* Group by category for display */
+    const groups = {};
+    filtered.forEach(f => { (groups[f.category] = groups[f.category]||[]).push(f); });
+    wrap.innerHTML = Object.keys(groups).sort().map(cat => `
+      <div style="margin-bottom:14px">
+        <h3 style="margin:0 0 6px 0;font-size:14px;color:var(--muted)">${esc(cat)}</h3>
+        ${groups[cat].map(f => {
+          const ext = (f.name.split('.').pop()||'').toLowerCase();
+          const icon = ({pdf:'📄',png:'🖼',jpg:'🖼',jpeg:'🖼',gif:'🖼',mp4:'🎬',mov:'🎬',doc:'📃',docx:'📃',xls:'📊',xlsx:'📊',ppt:'📽',pptx:'📽',zip:'🗜'}[ext] || '📎');
+          const kb = f.metadata?.size ? (f.metadata.size < 1024*1024 ? (f.metadata.size/1024).toFixed(0)+' KB' : (f.metadata.size/1024/1024).toFixed(1)+' MB') : '';
+          const when = f.created_at ? new Date(f.created_at).toLocaleDateString() : '';
+          return `<div class="list-item">
+            <div class="grow">
+              <div class="title">${icon} ${esc(f.name)}</div>
+              <div class="meta">${esc(cat)}${kb?' · '+esc(kb):''}${when?' · uploaded '+esc(when):''}</div>
+            </div>
+            <button class="icon-btn" onclick="materials.download('${esc(f.path).replace(/'/g,'&#39;')}')">Download</button>
+            ${auth.isAdmin()?`<button class="icon-btn danger" onclick="materials.remove('${esc(f.path).replace(/'/g,'&#39;')}')">Delete</button>`:''}
+          </div>`;
+        }).join('')}
+      </div>
+    `).join('');
+  },
+
+  openUpload(){
+    if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
+    ui.modal(`
+      <h3>Upload marketing material</h3>
+      <p class="muted" style="font-size:13px;margin:0 0 12px">PDFs, images, videos, docs. Max 50 MB per file.</p>
+      <div class="grid-2">
+        <div style="grid-column:1/-1">
+          <label>File <span style="color:var(--brand)">*</span></label>
+          <input id="mat-file" type="file" accept=".pdf,.png,.jpg,.jpeg,.gif,.mp4,.mov,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.zip"/>
+        </div>
+        <div>
+          <label>Category <span style="color:var(--brand)">*</span></label>
+          <select id="mat-cat">
+            ${materials.CATEGORIES.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label>Rename to (optional)</label>
+          <input id="mat-name" placeholder="Leave blank to keep original filename"/>
+        </div>
+      </div>
+      <div id="mat-err" class="alert err hide" style="margin-top:10px"></div>
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="icon-btn primary" onclick="materials.submitUpload()">Upload</button>
+        <button class="icon-btn ghost" onclick="ui.closeModal()">Cancel</button>
+      </div>
+    `);
+  },
+
+  async submitUpload(){
+    const errEl = document.getElementById('mat-err');
+    const show = m => { errEl.textContent = m; errEl.classList.remove('hide'); };
+    const fileInput = document.getElementById('mat-file');
+    const file = fileInput?.files?.[0];
+    if(!file){ show('Pick a file first.'); return; }
+    if(file.size > 50 * 1024 * 1024){ show('File is larger than 50 MB. Compress it or split it.'); return; }
+    const cat = document.getElementById('mat-cat').value;
+    const renameTo = (document.getElementById('mat-name').value||'').trim();
+    /* Sanitize filename — strip risky chars, keep the extension */
+    const rawName = renameTo || file.name;
+    const safeName = rawName.replace(/[^\w.\- ]+/g, '_').replace(/\s+/g, '_');
+    const path = `${cat}/${safeName}`;
+
+    ui.busy(true);
+    const { error } = await sb.storage.from(materials.BUCKET).upload(path, file, {
+      cacheControl: '3600',
+      upsert: true,
+      contentType: file.type || 'application/octet-stream'
+    });
+    ui.busy(false);
+    if(error){ show('Upload failed: '+error.message); return; }
+    ui.closeModal();
+    ui.toast('Uploaded');
+    materials.render();
+  },
+
+  async download(path){
+    /* Signed URL good for 5 minutes — long enough to click through, short enough
+       to avoid leaked link reuse. */
+    const { data, error } = await sb.storage.from(materials.BUCKET).createSignedUrl(path, 300);
+    if(error){ ui.err(error); return; }
+    /* Use an anchor with target=_blank so browsers open PDFs/images inline and
+       download binaries — matches expected behavior. */
+    const a = document.createElement('a');
+    a.href = data.signedUrl;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  },
+
+  async remove(path){
+    if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
+    if(!confirm(`Delete "${path.split('/').pop()}"? Reps will no longer be able to download it.`)) return;
+    const { error } = await sb.storage.from(materials.BUCKET).remove([path]);
+    if(error){ ui.err(error); return; }
+    ui.toast('Deleted');
+    materials.render();
+  }
+};
+
 const cs = {
   _history: [],
   _modeBadge(){
@@ -2586,6 +2737,8 @@ const adminPanel = {
     document.getElementById('set-disc').value = ref.highDiscPct();
     document.getElementById('set-reorder').value = ref.reorderDays();
     document.getElementById('set-stock').value = ref.lowStock();
+    /* products */
+    productsAdmin.render();
     /* audit log */
     auditLog.render();
     /* messages */
@@ -3132,6 +3285,99 @@ const idleLogout = {
   _sign_out(){
     alert('You have been signed out due to inactivity.');
     auth.logout();
+  }
+};
+
+/* ---------- PRODUCTS ADMIN (pricing, stock, active) ---------- */
+const productsAdmin = {
+  async render(){
+    const wrap = document.getElementById('products-list'); if(!wrap) return;
+    /* Read fresh from DB rather than trusting a stale cache */
+    const { data, error } = await sb.from('products').select('*').order('name');
+    if(error){ wrap.innerHTML = `<div class="alert err">${esc(error.message)}</div>`; return; }
+    cache.products = data || [];
+    if(!cache.products.length){
+      wrap.innerHTML = '<div class="muted">No products yet. Click "+ Add product".</div>';
+      return;
+    }
+    wrap.innerHTML = `<table>
+      <tr><th>SKU</th><th>Name</th><th>Price</th><th>Stock</th><th>Active</th><th></th></tr>
+      ${cache.products.map(p=>`
+        <tr>
+          <td class="nowrap"><b>${esc(p.sku)}</b></td>
+          <td>${esc(p.name)}</td>
+          <td>${fmt$(p.price)}</td>
+          <td>${p.stock}</td>
+          <td>${p.active ? '<span class="badge ok">yes</span>' : '<span class="badge">no</span>'}</td>
+          <td class="nowrap">
+            <button class="icon-btn" onclick="productsAdmin.openEdit('${esc(p.sku).replace(/'/g,'&#39;')}')">Edit</button>
+            <button class="icon-btn danger" onclick="productsAdmin.remove('${esc(p.sku).replace(/'/g,'&#39;')}')">Delete</button>
+          </td>
+        </tr>`).join('')}
+    </table>`;
+  },
+  openNew(){ productsAdmin.openModal(null); },
+  openEdit(sku){ productsAdmin.openModal(sku); },
+  openModal(sku){
+    const p = sku ? cache.products.find(x=>x.sku===sku) : null;
+    const isNew = !p;
+    const cur = p || { sku:'', name:'', price:0, stock:0, active:true };
+    ui.modal(`
+      <h3>${isNew ? 'Add product' : 'Edit '+esc(cur.sku)}</h3>
+      ${isNew ? '<p class="muted" style="font-size:13px;margin:0 0 12px">SKU is permanent. Use uppercase with dashes, e.g. <b>APPOSE-LIPTX-C24</b>.</p>' : ''}
+      <div class="grid-2">
+        <div><label>SKU ${isNew?'<span style="color:var(--brand)">*</span>':''}</label>
+          <input id="pr-sku" value="${esc(cur.sku)}" ${isNew?'':'disabled style="opacity:0.6"'} autocapitalize="characters" placeholder="APPOSE-LIPTX-C24"/></div>
+        <div><label>Name <span style="color:var(--brand)">*</span></label>
+          <input id="pr-name" value="${esc(cur.name)}" placeholder="Appose Lip TX — Case of 24"/></div>
+        <div><label>Wholesale price ($)</label>
+          <input id="pr-price" type="number" step="0.01" min="0" value="${cur.price}"/></div>
+        <div><label>Stock (units)</label>
+          <input id="pr-stock" type="number" step="1" min="0" value="${cur.stock}"/></div>
+        <div style="grid-column:1/-1">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input id="pr-active" type="checkbox" ${cur.active?'checked':''} style="width:auto"/>
+            <span>Active — appears in rep order picker</span>
+          </label>
+        </div>
+      </div>
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="icon-btn primary" onclick="productsAdmin.save('${esc(cur.sku).replace(/'/g,'&#39;')}', ${isNew})">Save</button>
+        <button class="icon-btn ghost" onclick="ui.closeModal()">Cancel</button>
+      </div>
+    `);
+    setTimeout(()=>document.getElementById(isNew?'pr-sku':'pr-name')?.focus(), 50);
+  },
+  async save(oldSku, isNew){
+    const sku = (document.getElementById('pr-sku').value||'').trim().toUpperCase();
+    const name = (document.getElementById('pr-name').value||'').trim();
+    const price = Number(document.getElementById('pr-price').value||0);
+    const stock = parseInt(document.getElementById('pr-stock').value||0, 10);
+    const active = document.getElementById('pr-active').checked;
+    if(!sku){ ui.toast('SKU is required.'); return; }
+    if(!name){ ui.toast('Name is required.'); return; }
+    if(price < 0 || !isFinite(price)){ ui.toast('Price must be a non-negative number.'); return; }
+    if(stock < 0 || !Number.isFinite(stock)){ ui.toast('Stock must be a non-negative whole number.'); return; }
+    let q;
+    if(isNew){
+      q = await sb.from('products').insert({sku, name, price, stock, active}).select().single();
+    } else {
+      q = await sb.from('products').update({name, price, stock, active}).eq('sku', oldSku).select().single();
+    }
+    if(q.error){ ui.err(q.error); return; }
+    ui.closeModal();
+    ui.toast(isNew?'Product added':'Product saved');
+    /* Refresh both the admin table and the shared product cache (used by order line-item picker) */
+    await productsAdmin.render();
+    await ref.loadAll();
+  },
+  async remove(sku){
+    if(!confirm(`Delete ${sku}? It won't disappear from historical orders, but reps won't be able to add it to new orders.`)) return;
+    const q = await sb.from('products').delete().eq('sku', sku);
+    if(q.error){ ui.err(q.error); return; }
+    ui.toast('Product deleted');
+    await productsAdmin.render();
+    await ref.loadAll();
   }
 };
 
