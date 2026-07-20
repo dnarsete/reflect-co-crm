@@ -3300,21 +3300,26 @@ const productsAdmin = {
       wrap.innerHTML = '<div class="muted">No products yet. Click "+ Add product".</div>';
       return;
     }
-    /* Inline-editable table: price / stock / active save on change or blur.
-       Name still uses the modal (rarely changed). */
+    /* Stock is authoritative in Shopify when the integration is live —
+       lock the local field and route the admin to Shopify. Everything else
+       stays inline-editable. Clicking the SKU opens the full modal. */
+    const shopLive = (typeof shopify !== 'undefined' && shopify.mode && shopify.mode() === 'live');
     wrap.innerHTML = `<table>
-      <tr><th>SKU</th><th>Name</th><th>Price ($)</th><th>Stock</th><th>Active</th><th></th></tr>
+      <tr><th>SKU</th><th>Name</th><th>Price ($)</th><th>Stock${shopLive?' <span class="muted" style="font-weight:400">(Shopify)</span>':''}</th><th>Active</th><th></th></tr>
       ${cache.products.map(p=>{
         const skuAttr = esc(p.sku).replace(/'/g,'&#39;');
+        const stockCell = shopLive
+          ? `<span class="muted" title="Stock is managed in Shopify — edits here are ignored" style="cursor:not-allowed">${p.stock}</span>`
+          : `<input type="number" step="1" min="0" value="${p.stock}" style="width:90px"
+                onchange="productsAdmin.setField('${skuAttr}','stock',this.value,this)"
+                onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}"/>`;
         return `<tr data-sku="${esc(p.sku)}">
-          <td class="nowrap"><b>${esc(p.sku)}</b></td>
+          <td class="nowrap"><a href="#" onclick="event.preventDefault();productsAdmin.openEdit('${skuAttr}')" style="color:var(--brand);text-decoration:underline;font-weight:600" title="Open full editor">${esc(p.sku)}</a></td>
           <td>${esc(p.name)}</td>
           <td><input type="number" step="0.01" min="0" value="${p.price}" style="width:100px"
                 onchange="productsAdmin.setField('${skuAttr}','price',this.value,this)"
                 onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}"/></td>
-          <td><input type="number" step="1" min="0" value="${p.stock}" style="width:90px"
-                onchange="productsAdmin.setField('${skuAttr}','stock',this.value,this)"
-                onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}"/></td>
+          <td>${stockCell}</td>
           <td><label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer">
                 <input type="checkbox" ${p.active?'checked':''} style="width:auto"
                   onchange="productsAdmin.setField('${skuAttr}','active',this.checked,this)"/>
@@ -3327,7 +3332,7 @@ const productsAdmin = {
         </tr>`;
       }).join('')}
     </table>
-    <p class="muted" style="font-size:12px;margin-top:8px">💡 Quick change: click any Price / Stock cell and type, then Enter to save. Full edit (rename, all fields at once): click <b>Edit</b>.</p>`;
+    <p class="muted" style="font-size:12px;margin-top:8px">💡 Click the <b>SKU</b> or the <b>Edit</b> button for the full popup. Quick tweaks: click any Price ${shopLive?'':'/ Stock '}cell and type, then Enter.${shopLive?' <br>📦 Stock is read-only here — Shopify is the source of truth. Change stock in Shopify admin and the webhook updates this table.':''}</p>`;
   },
 
   /* Inline field save. Validates client-side, then persists. Visual feedback on the cell. */
@@ -3337,6 +3342,11 @@ const productsAdmin = {
       value = Number(rawValue);
       if(!isFinite(value) || value < 0){ ui.toast('Price must be ≥ 0.'); productsAdmin.render(); return; }
     } else if(field === 'stock'){
+      if(typeof shopify !== 'undefined' && shopify.mode && shopify.mode() === 'live'){
+        ui.toast('Stock is managed in Shopify. Update it there — the webhook syncs it back automatically.');
+        productsAdmin.render();
+        return;
+      }
       value = parseInt(rawValue, 10);
       if(!Number.isFinite(value) || value < 0){ ui.toast('Stock must be a whole number ≥ 0.'); productsAdmin.render(); return; }
     } else if(field === 'active'){
@@ -3366,6 +3376,11 @@ const productsAdmin = {
     const p = sku ? cache.products.find(x=>x.sku===sku) : null;
     const isNew = !p;
     const cur = p || { sku:'', name:'', price:0, stock:0, active:true };
+    const shopLive = (typeof shopify !== 'undefined' && shopify.mode && shopify.mode() === 'live');
+    /* When Shopify is live, stock is managed there — lock the field so
+       an accidental change here doesn't get overwritten by the next
+       inventory_levels/update webhook. */
+    const stockLocked = shopLive && !isNew;
     ui.modal(`
       <h3>${isNew ? 'Add product' : 'Edit '+esc(cur.sku)}</h3>
       <p class="muted" style="font-size:13px;margin:0 0 12px">${isNew ? 'SKU is permanent. Use uppercase with dashes, e.g. <b>APPOSE-LIPTX-C24</b>.' : 'Edit any field, then Save. SKU cannot be changed.'}</p>
@@ -3377,8 +3392,8 @@ const productsAdmin = {
           <input id="pr-name" value="${esc(cur.name)}" placeholder="Appose Lip TX — Case of 24"/></div>
         <div><label>Wholesale price ($)</label>
           <input id="pr-price" type="number" step="0.01" min="0" value="${cur.price}"/></div>
-        <div><label>Stock (units)</label>
-          <input id="pr-stock" type="number" step="1" min="0" value="${cur.stock}"/></div>
+        <div><label>Stock (units)${stockLocked?' <span class="muted" style="font-weight:400">— managed in Shopify</span>':''}</label>
+          <input id="pr-stock" type="number" step="1" min="0" value="${cur.stock}" ${stockLocked?'disabled style="opacity:0.6" title="Change stock in Shopify — the webhook syncs it here"':''}/></div>
         <div style="grid-column:1/-1">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
             <input id="pr-active" type="checkbox" ${cur.active?'checked':''} style="width:auto"/>
@@ -3412,10 +3427,14 @@ const productsAdmin = {
 
     let q;
     setBusy(true);
+    const shopLive = (typeof shopify !== 'undefined' && shopify.mode && shopify.mode() === 'live');
     if(isNew){
       q = await sb.from('products').insert({sku, name, price, stock, active}).select().single();
     } else {
-      q = await sb.from('products').update({name, price, stock, active}).eq('sku', oldSku).select().single();
+      /* Drop stock from the update when Shopify is live — Shopify is authoritative,
+         and the CRM stock value would be overwritten by the next webhook anyway. */
+      const patch = shopLive ? {name, price, active} : {name, price, stock, active};
+      q = await sb.from('products').update(patch).eq('sku', oldSku).select().single();
     }
     setBusy(false);
     if(q.error){ showErr(q.error.message || 'Save failed.'); return; }
