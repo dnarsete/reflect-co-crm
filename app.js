@@ -3300,22 +3300,66 @@ const productsAdmin = {
       wrap.innerHTML = '<div class="muted">No products yet. Click "+ Add product".</div>';
       return;
     }
+    /* Inline-editable table: price / stock / active save on change or blur.
+       Name still uses the modal (rarely changed). */
     wrap.innerHTML = `<table>
-      <tr><th>SKU</th><th>Name</th><th>Price</th><th>Stock</th><th>Active</th><th></th></tr>
-      ${cache.products.map(p=>`
-        <tr>
+      <tr><th>SKU</th><th>Name</th><th>Price ($)</th><th>Stock</th><th>Active</th><th></th></tr>
+      ${cache.products.map(p=>{
+        const skuAttr = esc(p.sku).replace(/'/g,'&#39;');
+        return `<tr data-sku="${esc(p.sku)}">
           <td class="nowrap"><b>${esc(p.sku)}</b></td>
           <td>${esc(p.name)}</td>
-          <td>${fmt$(p.price)}</td>
-          <td>${p.stock}</td>
-          <td>${p.active ? '<span class="badge ok">yes</span>' : '<span class="badge">no</span>'}</td>
+          <td><input type="number" step="0.01" min="0" value="${p.price}" style="width:100px"
+                onchange="productsAdmin.setField('${skuAttr}','price',this.value,this)"
+                onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}"/></td>
+          <td><input type="number" step="1" min="0" value="${p.stock}" style="width:90px"
+                onchange="productsAdmin.setField('${skuAttr}','stock',this.value,this)"
+                onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}"/></td>
+          <td><label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer">
+                <input type="checkbox" ${p.active?'checked':''} style="width:auto"
+                  onchange="productsAdmin.setField('${skuAttr}','active',this.checked,this)"/>
+                <span class="muted" style="font-size:12px">${p.active?'yes':'no'}</span>
+              </label></td>
           <td class="nowrap">
-            <button class="icon-btn" onclick="productsAdmin.openEdit('${esc(p.sku).replace(/'/g,'&#39;')}')">Edit</button>
-            <button class="icon-btn danger" onclick="productsAdmin.remove('${esc(p.sku).replace(/'/g,'&#39;')}')">Delete</button>
+            <button class="icon-btn" onclick="productsAdmin.openEdit('${skuAttr}')">Rename</button>
+            <button class="icon-btn danger" onclick="productsAdmin.remove('${skuAttr}')">Delete</button>
           </td>
-        </tr>`).join('')}
-    </table>`;
+        </tr>`;
+      }).join('')}
+    </table>
+    <p class="muted" style="font-size:12px;margin-top:8px">💡 Type in any Price / Stock cell — press Enter or click away to save. The checkbox saves on toggle.</p>`;
   },
+
+  /* Inline field save. Validates client-side, then persists. Visual feedback on the cell. */
+  async setField(sku, field, rawValue, inputEl){
+    let value = rawValue;
+    if(field === 'price'){
+      value = Number(rawValue);
+      if(!isFinite(value) || value < 0){ ui.toast('Price must be ≥ 0.'); productsAdmin.render(); return; }
+    } else if(field === 'stock'){
+      value = parseInt(rawValue, 10);
+      if(!Number.isFinite(value) || value < 0){ ui.toast('Stock must be a whole number ≥ 0.'); productsAdmin.render(); return; }
+    } else if(field === 'active'){
+      value = !!rawValue;
+    }
+    const orig = inputEl?.style.background;
+    if(inputEl) inputEl.style.background = 'rgba(250,200,80,0.15)';
+    const { error } = await sb.from('products').update({ [field]: value }).eq('sku', sku);
+    if(error){
+      if(inputEl){ inputEl.style.background = 'rgba(220,80,80,0.25)'; setTimeout(()=>inputEl.style.background = orig||'', 2500); }
+      ui.err(error);
+      return;
+    }
+    if(inputEl){
+      inputEl.style.background = 'rgba(80,200,120,0.20)';
+      setTimeout(()=>inputEl.style.background = orig||'', 900);
+    }
+    ui.toast(`${field==='price'?'Price':field==='stock'?'Stock':'Active'} updated for ${sku}`);
+    /* Refresh cache so the order picker sees new values */
+    cache.products = cache.products.map(p => p.sku === sku ? { ...p, [field]: value } : p);
+    await ref.loadAll();
+  },
+
   openNew(){ productsAdmin.openModal(null); },
   openEdit(sku){ productsAdmin.openModal(sku); },
   openModal(sku){
@@ -3323,13 +3367,15 @@ const productsAdmin = {
     const isNew = !p;
     const cur = p || { sku:'', name:'', price:0, stock:0, active:true };
     ui.modal(`
-      <h3>${isNew ? 'Add product' : 'Edit '+esc(cur.sku)}</h3>
-      ${isNew ? '<p class="muted" style="font-size:13px;margin:0 0 12px">SKU is permanent. Use uppercase with dashes, e.g. <b>APPOSE-LIPTX-C24</b>.</p>' : ''}
+      <h3>${isNew ? 'Add product' : 'Rename '+esc(cur.sku)}</h3>
+      ${isNew ? '<p class="muted" style="font-size:13px;margin:0 0 12px">SKU is permanent. Use uppercase with dashes, e.g. <b>APPOSE-LIPTX-C24</b>.</p>' : '<p class="muted" style="font-size:13px;margin:0 0 12px">Rename this product. Price / stock / active are edited inline in the table.</p>'}
+      <div id="pr-err" class="alert err hide" style="margin-bottom:10px"></div>
       <div class="grid-2">
         <div><label>SKU ${isNew?'<span style="color:var(--brand)">*</span>':''}</label>
           <input id="pr-sku" value="${esc(cur.sku)}" ${isNew?'':'disabled style="opacity:0.6"'} autocapitalize="characters" placeholder="APPOSE-LIPTX-C24"/></div>
         <div><label>Name <span style="color:var(--brand)">*</span></label>
           <input id="pr-name" value="${esc(cur.name)}" placeholder="Appose Lip TX — Case of 24"/></div>
+        ${isNew ? `
         <div><label>Wholesale price ($)</label>
           <input id="pr-price" type="number" step="0.01" min="0" value="${cur.price}"/></div>
         <div><label>Stock (units)</label>
@@ -3339,35 +3385,44 @@ const productsAdmin = {
             <input id="pr-active" type="checkbox" ${cur.active?'checked':''} style="width:auto"/>
             <span>Active — appears in rep order picker</span>
           </label>
-        </div>
+        </div>` : ''}
       </div>
       <div class="row" style="gap:8px;margin-top:12px">
-        <button class="icon-btn primary" onclick="productsAdmin.save('${esc(cur.sku).replace(/'/g,'&#39;')}', ${isNew})">Save</button>
+        <button id="pr-save-btn" class="icon-btn primary" onclick="productsAdmin.save('${esc(cur.sku).replace(/'/g,'&#39;')}', ${isNew})">Save</button>
         <button class="icon-btn ghost" onclick="ui.closeModal()">Cancel</button>
       </div>
     `);
     setTimeout(()=>document.getElementById(isNew?'pr-sku':'pr-name')?.focus(), 50);
   },
   async save(oldSku, isNew){
+    const errEl = document.getElementById('pr-err');
+    const showErr = m => { errEl.textContent = m; errEl.classList.remove('hide'); };
+    const btn = document.getElementById('pr-save-btn');
+    const setBusy = on => { if(btn){ btn.disabled = on; btn.textContent = on ? 'Saving…' : 'Save'; } };
+    errEl?.classList.add('hide');
+
     const sku = (document.getElementById('pr-sku').value||'').trim().toUpperCase();
     const name = (document.getElementById('pr-name').value||'').trim();
-    const price = Number(document.getElementById('pr-price').value||0);
-    const stock = parseInt(document.getElementById('pr-stock').value||0, 10);
-    const active = document.getElementById('pr-active').checked;
-    if(!sku){ ui.toast('SKU is required.'); return; }
-    if(!name){ ui.toast('Name is required.'); return; }
-    if(price < 0 || !isFinite(price)){ ui.toast('Price must be a non-negative number.'); return; }
-    if(stock < 0 || !Number.isFinite(stock)){ ui.toast('Stock must be a non-negative whole number.'); return; }
+    if(!sku){ showErr('SKU is required.'); return; }
+    if(!name){ showErr('Name is required.'); return; }
+
     let q;
+    setBusy(true);
     if(isNew){
+      const price = Number(document.getElementById('pr-price').value||0);
+      const stock = parseInt(document.getElementById('pr-stock').value||0, 10);
+      const active = document.getElementById('pr-active').checked;
+      if(price < 0 || !isFinite(price)){ setBusy(false); showErr('Price must be a non-negative number.'); return; }
+      if(stock < 0 || !Number.isFinite(stock)){ setBusy(false); showErr('Stock must be a non-negative whole number.'); return; }
       q = await sb.from('products').insert({sku, name, price, stock, active}).select().single();
     } else {
-      q = await sb.from('products').update({name, price, stock, active}).eq('sku', oldSku).select().single();
+      /* Renaming only touches name here; price/stock/active are inline-edited. */
+      q = await sb.from('products').update({name}).eq('sku', oldSku).select().single();
     }
-    if(q.error){ ui.err(q.error); return; }
+    setBusy(false);
+    if(q.error){ showErr(q.error.message || 'Save failed.'); return; }
     ui.closeModal();
-    ui.toast(isNew?'Product added':'Product saved');
-    /* Refresh both the admin table and the shared product cache (used by order line-item picker) */
+    ui.toast(isNew?'Product added':'Renamed');
     await productsAdmin.render();
     await ref.loadAll();
   },
