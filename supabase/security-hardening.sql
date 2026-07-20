@@ -163,8 +163,10 @@ do $$ begin
 exception when duplicate_object then null; end $$;
 
 /* SECURITY DEFINER function (not a view) so it always bypasses RLS on the base
-   table regardless of PG's per-version view-invoker default. Returns only the
-   columns safe to share across the team. */
+   table regardless of PG's per-version view-invoker default.
+
+   Reps get only their own row — zero visibility into other reps.
+   Admins get everyone (needed for rep management, reports, messaging). */
 create or replace function public.reps_public()
 returns table(
   id uuid,
@@ -182,6 +184,7 @@ set search_path = public
 as $$
   select id, rep_id, name, email, role, disabled, territory
     from public.profiles
+    where public.is_admin() or id = auth.uid()
     order by name;
 $$;
 

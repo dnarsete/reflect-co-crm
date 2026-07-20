@@ -234,14 +234,23 @@ const profiles = {
     return data;
   },
   async loadReps(){
-    /* reps_public() is a SECURITY DEFINER RPC that returns only id, rep_id, name,
-       email, role, disabled, territory — PII (cell, address, tax_id, commission)
-       is restricted to self + admin by RLS on the profiles table itself.
-       Falls back to the base table if the RPC hasn't been created yet
-       (i.e. supabase/security-hardening.sql not yet run — see HARDENING.md). */
+    /* reps_public() is a SECURITY DEFINER RPC that returns:
+         - the caller's own row (for reps — zero visibility into other reps)
+         - all rows (for admins — needed for rep management, reports, messaging).
+       PII columns (cell, address, tax_id, commission) are never in this result;
+       admins can get those via loadReps → cache.repsFull below.
+
+       Falls back to a self-only query if the RPC hasn't been created yet
+       (i.e. supabase/security-hardening.sql not yet run — see HARDENING.md).
+       The fallback preserves the "reps see only themselves" behavior so the
+       lockdown is effective even before the SQL migration is run. */
     let { data, error } = await sb.rpc('reps_public');
     if(error && /does not exist|not found|schema cache/i.test(error.message||'')){
-      const q = await sb.from('profiles').select('id, rep_id, name, email, role, disabled, territory').order('name');
+      const uid = (await sb.auth.getUser()).data.user?.id;
+      const isAdmin = !!(cache.me && cache.me.role === 'admin');
+      const q = isAdmin
+        ? await sb.from('profiles').select('id, rep_id, name, email, role, disabled, territory').order('name')
+        : await sb.from('profiles').select('id, rep_id, name, email, role, disabled, territory').eq('id', uid);
       data = q.data; error = q.error;
     }
     if(error) throw error;
