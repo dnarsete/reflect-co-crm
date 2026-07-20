@@ -39,17 +39,28 @@ declare
   current_role text;
   current_rep text;
   rec_id text;
+  rec_json jsonb;
 begin
   if auth.uid() is not null then
     select email, role, rep_id into current_email, current_role, current_rep
       from public.profiles where id = auth.uid();
   end if;
 
+  /* Pull whichever of id / sku / code / key is the primary key on this table.
+     Going through jsonb avoids direct column access that fails on tables
+     without an `id` column (e.g. products.sku, promotions could have code). */
   if tg_op = 'DELETE' then
-    rec_id := coalesce(old.id::text, '');
+    rec_json := to_jsonb(old);
   else
-    rec_id := coalesce(new.id::text, '');
+    rec_json := to_jsonb(new);
   end if;
+  rec_id := coalesce(
+    rec_json->>'id',
+    rec_json->>'sku',
+    rec_json->>'code',
+    rec_json->>'key',
+    ''
+  );
 
   insert into public.audit_log (
     user_id, user_email, user_role, rep_id, action, table_name, record_id, old_data, new_data
