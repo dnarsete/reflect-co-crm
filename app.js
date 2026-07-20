@@ -3321,13 +3321,13 @@ const productsAdmin = {
                 <span class="muted" style="font-size:12px">${p.active?'yes':'no'}</span>
               </label></td>
           <td class="nowrap">
-            <button class="icon-btn" onclick="productsAdmin.openEdit('${skuAttr}')">Rename</button>
+            <button class="icon-btn" onclick="productsAdmin.openEdit('${skuAttr}')">Edit</button>
             <button class="icon-btn danger" onclick="productsAdmin.remove('${skuAttr}')">Delete</button>
           </td>
         </tr>`;
       }).join('')}
     </table>
-    <p class="muted" style="font-size:12px;margin-top:8px">💡 Type in any Price / Stock cell — press Enter or click away to save. The checkbox saves on toggle.</p>`;
+    <p class="muted" style="font-size:12px;margin-top:8px">💡 Quick change: click any Price / Stock cell and type, then Enter to save. Full edit (rename, all fields at once): click <b>Edit</b>.</p>`;
   },
 
   /* Inline field save. Validates client-side, then persists. Visual feedback on the cell. */
@@ -3367,15 +3367,14 @@ const productsAdmin = {
     const isNew = !p;
     const cur = p || { sku:'', name:'', price:0, stock:0, active:true };
     ui.modal(`
-      <h3>${isNew ? 'Add product' : 'Rename '+esc(cur.sku)}</h3>
-      ${isNew ? '<p class="muted" style="font-size:13px;margin:0 0 12px">SKU is permanent. Use uppercase with dashes, e.g. <b>APPOSE-LIPTX-C24</b>.</p>' : '<p class="muted" style="font-size:13px;margin:0 0 12px">Rename this product. Price / stock / active are edited inline in the table.</p>'}
+      <h3>${isNew ? 'Add product' : 'Edit '+esc(cur.sku)}</h3>
+      <p class="muted" style="font-size:13px;margin:0 0 12px">${isNew ? 'SKU is permanent. Use uppercase with dashes, e.g. <b>APPOSE-LIPTX-C24</b>.' : 'Edit any field, then Save. SKU cannot be changed.'}</p>
       <div id="pr-err" class="alert err hide" style="margin-bottom:10px"></div>
       <div class="grid-2">
         <div><label>SKU ${isNew?'<span style="color:var(--brand)">*</span>':''}</label>
           <input id="pr-sku" value="${esc(cur.sku)}" ${isNew?'':'disabled style="opacity:0.6"'} autocapitalize="characters" placeholder="APPOSE-LIPTX-C24"/></div>
         <div><label>Name <span style="color:var(--brand)">*</span></label>
           <input id="pr-name" value="${esc(cur.name)}" placeholder="Appose Lip TX — Case of 24"/></div>
-        ${isNew ? `
         <div><label>Wholesale price ($)</label>
           <input id="pr-price" type="number" step="0.01" min="0" value="${cur.price}"/></div>
         <div><label>Stock (units)</label>
@@ -3385,7 +3384,7 @@ const productsAdmin = {
             <input id="pr-active" type="checkbox" ${cur.active?'checked':''} style="width:auto"/>
             <span>Active — appears in rep order picker</span>
           </label>
-        </div>` : ''}
+        </div>
       </div>
       <div class="row" style="gap:8px;margin-top:12px">
         <button id="pr-save-btn" class="icon-btn primary" onclick="productsAdmin.save('${esc(cur.sku).replace(/'/g,'&#39;')}', ${isNew})">Save</button>
@@ -3403,26 +3402,25 @@ const productsAdmin = {
 
     const sku = (document.getElementById('pr-sku').value||'').trim().toUpperCase();
     const name = (document.getElementById('pr-name').value||'').trim();
+    const price = Number(document.getElementById('pr-price').value||0);
+    const stock = parseInt(document.getElementById('pr-stock').value||0, 10);
+    const active = document.getElementById('pr-active').checked;
     if(!sku){ showErr('SKU is required.'); return; }
     if(!name){ showErr('Name is required.'); return; }
+    if(price < 0 || !isFinite(price)){ showErr('Price must be a non-negative number.'); return; }
+    if(stock < 0 || !Number.isFinite(stock)){ showErr('Stock must be a non-negative whole number.'); return; }
 
     let q;
     setBusy(true);
     if(isNew){
-      const price = Number(document.getElementById('pr-price').value||0);
-      const stock = parseInt(document.getElementById('pr-stock').value||0, 10);
-      const active = document.getElementById('pr-active').checked;
-      if(price < 0 || !isFinite(price)){ setBusy(false); showErr('Price must be a non-negative number.'); return; }
-      if(stock < 0 || !Number.isFinite(stock)){ setBusy(false); showErr('Stock must be a non-negative whole number.'); return; }
       q = await sb.from('products').insert({sku, name, price, stock, active}).select().single();
     } else {
-      /* Renaming only touches name here; price/stock/active are inline-edited. */
-      q = await sb.from('products').update({name}).eq('sku', oldSku).select().single();
+      q = await sb.from('products').update({name, price, stock, active}).eq('sku', oldSku).select().single();
     }
     setBusy(false);
     if(q.error){ showErr(q.error.message || 'Save failed.'); return; }
     ui.closeModal();
-    ui.toast(isNew?'Product added':'Renamed');
+    ui.toast(isNew?'Product added':'Product saved');
     await productsAdmin.render();
     await ref.loadAll();
   },
