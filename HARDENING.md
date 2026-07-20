@@ -33,7 +33,7 @@ The file is idempotent — safe to run any number of times. It handles:
 - Trigger blocking rep self-elevation
 - Trigger recomputing order totals server-side from `products.price`
 - Dropping the world-writable `counters` policy
-- Restricting `profiles` reads to self+admin; new `reps_public()` RPC for dropdowns
+- Restricting `profiles` reads to self+admin; new `reps_public()` RPC — reps get only their own row, admins get all
 - Trigger + CHECK constraint validating `payment.signature` data URLs
 - CHECK constraint restricting `shopify_invoice_url` to `*.myshopify.com` / `checkout.shopify.com`
 - Hashing existing `admin_secrets` values with bcrypt, rate-limiting `verify_admin_secret`, adding `set_admin_secret()` for rotation
