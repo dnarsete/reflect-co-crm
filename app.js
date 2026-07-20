@@ -283,7 +283,10 @@ const ref = {
   async loadAll(){
     const [t,p,pr,s] = await Promise.all([
       sb.from('account_types').select('*').order('sort_order'),
-      sb.from('products').select('*').order('name'),
+      /* Exclude soft-deleted rows from the shared product cache used by the
+         order picker, dashboard, etc. Admin sees deleted rows through the
+         Trash section in the products admin. */
+      sb.from('products').select('*').is('deleted_at', null).order('name'),
       sb.from('promotions').select('*').order('code'),
       sb.from('settings').select('*')
     ]);
@@ -3292,8 +3295,9 @@ const idleLogout = {
 const productsAdmin = {
   async render(){
     const wrap = document.getElementById('products-list'); if(!wrap) return;
-    /* Read fresh from DB rather than trusting a stale cache */
-    const { data, error } = await sb.from('products').select('*').order('name');
+    /* Read fresh from DB rather than trusting a stale cache.
+       Filter out soft-deleted rows — those show in the Trash section below. */
+    const { data, error } = await sb.from('products').select('*').is('deleted_at', null).order('name');
     if(error){ wrap.innerHTML = `<div class="alert err">${esc(error.message)}</div>`; return; }
     cache.products = data || [];
     if(!cache.products.length){
@@ -3333,6 +3337,51 @@ const productsAdmin = {
       }).join('')}
     </table>
     <p class="muted" style="font-size:12px;margin-top:8px">💡 Click the <b>SKU</b> or the <b>Edit</b> button for the full popup. Quick tweaks: click any Price ${shopLive?'':'/ Stock '}cell and type, then Enter.${shopLive?' <br>📦 Stock is read-only here — Shopify is the source of truth. Change stock in Shopify admin and the webhook updates this table.':''}</p>`;
+    /* Render the trash panel too */
+    await productsAdmin.renderTrash();
+  },
+
+  /* Deleted-products list. Auto-purges anything past the 45-day window on open. */
+  async renderTrash(){
+    const wrap = document.getElementById('products-trash'); if(!wrap) return;
+    /* Silently purge anything past its retention window before rendering */
+    try { await sb.rpc('purge_expired_products'); } catch(e){ /* soft-delete migration may not be run yet */ }
+    const { data, error } = await sb.from('products').select('*').not('deleted_at', 'is', null).order('deleted_at', {ascending: false});
+    if(error){
+      /* deleted_at column missing? => migration not run yet — hide the section cleanly */
+      if(/deleted_at/i.test(error.message||'')){
+        wrap.innerHTML = '<div class="muted" style="font-size:12px">Run <code>supabase/products-trash.sql</code> in Supabase to enable the 45-day trash.</div>';
+        return;
+      }
+      wrap.innerHTML = `<div class="alert err">${esc(error.message)}</div>`;
+      return;
+    }
+    const items = data || [];
+    if(!items.length){
+      wrap.innerHTML = '<div class="muted" style="font-size:13px">Trash is empty. Deleted products stay here for 45 days before being purged permanently.</div>';
+      return;
+    }
+    const TRASH_DAYS = 45;
+    wrap.innerHTML = `<table>
+      <tr><th>SKU</th><th>Name</th><th>Deleted</th><th>Purges in</th><th></th></tr>
+      ${items.map(p=>{
+        const skuAttr = esc(p.sku).replace(/'/g,'&#39;');
+        const deletedAt = new Date(p.deleted_at);
+        const daysLeft = Math.max(0, TRASH_DAYS - Math.floor((Date.now() - deletedAt.getTime())/86400000));
+        const urgent = daysLeft <= 7;
+        return `<tr>
+          <td class="nowrap"><b>${esc(p.sku)}</b></td>
+          <td>${esc(p.name)}</td>
+          <td class="muted" style="font-size:12px">${deletedAt.toLocaleDateString()}</td>
+          <td><span class="badge ${urgent?'err':''}">${daysLeft} day${daysLeft===1?'':'s'}</span></td>
+          <td class="nowrap">
+            <button class="icon-btn" onclick="productsAdmin.restore('${skuAttr}')">Restore</button>
+            <button class="icon-btn danger" onclick="productsAdmin.purgeNow('${skuAttr}')">Delete now</button>
+          </td>
+        </tr>`;
+      }).join('')}
+    </table>
+    <p class="muted" style="font-size:12px;margin-top:8px">💡 Restore brings the product back and reactivates it in the rep order picker. <b>Delete now</b> is permanent — the SKU is gone from the products table (historical orders keep the reference).</p>`;
   },
 
   /* Inline field save. Validates client-side, then persists. Visual feedback on the cell. */
@@ -3444,10 +3493,41 @@ const productsAdmin = {
     await ref.loadAll();
   },
   async remove(sku){
-    if(!confirm(`Delete ${sku}? It won't disappear from historical orders, but reps won't be able to add it to new orders.`)) return;
-    const q = await sb.from('products').delete().eq('sku', sku);
-    if(q.error){ ui.err(q.error); return; }
-    ui.toast('Product deleted');
+    if(!confirm(`Move ${sku} to trash?\n\nReps will no longer see it in the order picker. It stays in the trash for 45 days — you can restore any time in Admin → Products & pricing → Trash. After 45 days it is permanently deleted.`)) return;
+    /* Soft delete via RPC. Falls back to a plain update if the RPC isn't
+       deployed yet (before supabase/products-trash.sql has been run). */
+    let { error } = await sb.rpc('soft_delete_product', { p_sku: sku });
+    if(error && /does not exist|not found|schema cache/i.test(error.message||'')){
+      const upd = await sb.from('products').update({ deleted_at: new Date().toISOString(), active: false }).eq('sku', sku);
+      error = upd.error;
+    }
+    if(error){ ui.err(error); return; }
+    ui.toast(`${sku} moved to trash — 45 days to restore`);
+    await productsAdmin.render();
+    await ref.loadAll();
+  },
+
+  async restore(sku){
+    let { error } = await sb.rpc('restore_product', { p_sku: sku });
+    if(error && /does not exist|not found|schema cache/i.test(error.message||'')){
+      const upd = await sb.from('products').update({ deleted_at: null }).eq('sku', sku);
+      error = upd.error;
+    }
+    if(error){ ui.err(error); return; }
+    ui.toast(`${sku} restored`);
+    await productsAdmin.render();
+    await ref.loadAll();
+  },
+
+  async purgeNow(sku){
+    if(!confirm(`Permanently delete ${sku}?\n\nThis cannot be undone. Historical orders keep the SKU reference but this product row will be gone.`)) return;
+    let { error } = await sb.rpc('purge_product', { p_sku: sku });
+    if(error && /does not exist|not found|schema cache/i.test(error.message||'')){
+      const del = await sb.from('products').delete().eq('sku', sku);
+      error = del.error;
+    }
+    if(error){ ui.err(error); return; }
+    ui.toast(`${sku} permanently deleted`);
     await productsAdmin.render();
     await ref.loadAll();
   }
