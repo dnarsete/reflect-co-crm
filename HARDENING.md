@@ -31,7 +31,7 @@ Supabase Dashboard → **SQL Editor** → paste and Run in this order:
 
 1. `supabase/security-hardening.sql` — all the fixes below (idempotent, safe to re-run)
 2. `supabase/materials.sql` — creates the private "materials" storage bucket and RLS (needed if you want the Marketing Materials tab to work)
-3. `supabase/products-trash.sql` — enables the 45-day product trash (soft-delete + restore + auto-purge)
+3. `supabase/trash-system.sql` — enables the two-tier product trash: 45 days in the visible bin → 45 more days in a hidden archive → permanent purge (supersedes the earlier products-trash.sql)
 
 The file is idempotent — safe to run any number of times. It handles:
 - Trigger blocking rep self-elevation

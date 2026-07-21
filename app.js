@@ -283,10 +283,10 @@ const ref = {
   async loadAll(){
     const [t,p,pr,s] = await Promise.all([
       sb.from('account_types').select('*').order('sort_order'),
-      /* Exclude soft-deleted rows from the shared product cache used by the
-         order picker, dashboard, etc. Admin sees deleted rows through the
-         Trash section in the products admin. */
-      sb.from('products').select('*').is('deleted_at', null).order('name'),
+      /* Exclude anything soft-deleted or archived from the shared product
+         cache used by the order picker, dashboard, etc. Admin sees these
+         rows through the Trash / Archive section in the products admin. */
+      sb.from('products').select('*').is('deleted_at', null).is('archived_at', null).order('name'),
       sb.from('promotions').select('*').order('code'),
       sb.from('settings').select('*')
     ]);
@@ -3296,8 +3296,9 @@ const productsAdmin = {
   async render(){
     const wrap = document.getElementById('products-list'); if(!wrap) return;
     /* Read fresh from DB rather than trusting a stale cache.
-       Filter out soft-deleted rows — those show in the Trash section below. */
-    const { data, error } = await sb.from('products').select('*').is('deleted_at', null).order('name');
+       Filter out soft-deleted AND archived rows — those show in the
+       Trash / Archive section below. */
+    const { data, error } = await sb.from('products').select('*').is('deleted_at', null).is('archived_at', null).order('name');
     if(error){ wrap.innerHTML = `<div class="alert err">${esc(error.message)}</div>`; return; }
     cache.products = data || [];
     if(!cache.products.length){
@@ -3341,47 +3342,105 @@ const productsAdmin = {
     await productsAdmin.renderTrash();
   },
 
-  /* Deleted-products list. Auto-purges anything past the 45-day window on open. */
+  /* Two-tier trash UI:
+       Tier 1 (Trash bin, visible): deleted_at set, archived_at is null
+                                    — 45 days, restorable
+       Tier 2 (Archive, hidden by default): archived_at set
+                                    — 45 more days on Supabase, still restorable
+     Runs the SQL lifecycle first so expired rows move on / get purged. */
   async renderTrash(){
     const wrap = document.getElementById('products-trash'); if(!wrap) return;
-    /* Silently purge anything past its retention window before rendering */
-    try { await sb.rpc('purge_expired_products'); } catch(e){ /* soft-delete migration may not be run yet */ }
-    const { data, error } = await sb.from('products').select('*').not('deleted_at', 'is', null).order('deleted_at', {ascending: false});
+
+    /* Ask the DB to advance the lifecycle: expired trash → archive,
+       expired archive → purged. Silent no-op if migration isn't run. */
+    let lifecycleErr = null;
+    try {
+      const r = await sb.rpc('run_products_lifecycle');
+      if(r.error) lifecycleErr = r.error;
+    } catch(e){ lifecycleErr = e; }
+
+    /* Pull every non-live row in one go, then split client-side. */
+    const { data, error } = await sb.from('products')
+      .select('*')
+      .not('deleted_at', 'is', null)
+      .order('deleted_at', {ascending: false});
     if(error){
-      /* deleted_at column missing? => migration not run yet — hide the section cleanly */
-      if(/deleted_at/i.test(error.message||'')){
-        wrap.innerHTML = '<div class="muted" style="font-size:12px">Run <code>supabase/products-trash.sql</code> in Supabase to enable the 45-day trash.</div>';
+      if(/deleted_at|archived_at/i.test(error.message||'')){
+        wrap.innerHTML = '<div class="muted" style="font-size:12px">Run <code>supabase/trash-system.sql</code> in Supabase → SQL Editor to enable the trash + archive system.</div>';
         return;
       }
       wrap.innerHTML = `<div class="alert err">${esc(error.message)}</div>`;
       return;
     }
-    const items = data || [];
-    if(!items.length){
-      wrap.innerHTML = '<div class="muted" style="font-size:13px">Trash is empty. Deleted products stay here for 45 days before being purged permanently.</div>';
-      return;
+    const all = data || [];
+    const TRASH_DAYS = 45, ARCHIVE_DAYS = 45;
+    const trash   = all.filter(p => !p.archived_at);
+    const archive = all.filter(p =>  p.archived_at);
+
+    const rowHtml = (p, opts) => {
+      const skuAttr = esc(p.sku).replace(/'/g,'&#39;');
+      const stampDate = new Date(opts.from);
+      const daysLeft = Math.max(0, opts.window - Math.floor((Date.now() - stampDate.getTime())/86400000));
+      const urgent = daysLeft <= 7;
+      return `<tr>
+        <td class="nowrap"><b>${esc(p.sku)}</b></td>
+        <td>${esc(p.name)}</td>
+        <td class="muted" style="font-size:12px">${stampDate.toLocaleDateString()}</td>
+        <td><span class="badge ${urgent?'err':''}">${daysLeft} day${daysLeft===1?'':'s'}</span></td>
+        <td class="nowrap">
+          <button class="icon-btn" onclick="productsAdmin.restore('${skuAttr}')">Restore</button>
+          <button class="icon-btn danger" onclick="productsAdmin.purgeNow('${skuAttr}')">Delete now</button>
+        </td>
+      </tr>`;
+    };
+
+    /* --- Trash bin --- */
+    let html = '';
+    if(!trash.length){
+      html += '<div class="muted" style="font-size:13px">Trash is empty. Deleted products stay here for 45 days, then move to the hidden archive for another 45 days before being purged permanently.</div>';
+    } else {
+      html += `<div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
+        <span class="muted" style="font-size:12px">${trash.length} item${trash.length===1?'':'s'} in the bin — visible until they age out (45 days) or you empty the bin.</span>
+        <button class="icon-btn danger" onclick="productsAdmin.emptyTrash()">Empty bin</button>
+      </div>
+      <table>
+        <tr><th>SKU</th><th>Name</th><th>Deleted</th><th>Moves to archive in</th><th></th></tr>
+        ${trash.map(p => rowHtml(p, {from: p.deleted_at, window: TRASH_DAYS})).join('')}
+      </table>`;
     }
-    const TRASH_DAYS = 45;
-    wrap.innerHTML = `<table>
-      <tr><th>SKU</th><th>Name</th><th>Deleted</th><th>Purges in</th><th></th></tr>
-      ${items.map(p=>{
-        const skuAttr = esc(p.sku).replace(/'/g,'&#39;');
-        const deletedAt = new Date(p.deleted_at);
-        const daysLeft = Math.max(0, TRASH_DAYS - Math.floor((Date.now() - deletedAt.getTime())/86400000));
-        const urgent = daysLeft <= 7;
-        return `<tr>
-          <td class="nowrap"><b>${esc(p.sku)}</b></td>
-          <td>${esc(p.name)}</td>
-          <td class="muted" style="font-size:12px">${deletedAt.toLocaleDateString()}</td>
-          <td><span class="badge ${urgent?'err':''}">${daysLeft} day${daysLeft===1?'':'s'}</span></td>
-          <td class="nowrap">
-            <button class="icon-btn" onclick="productsAdmin.restore('${skuAttr}')">Restore</button>
-            <button class="icon-btn danger" onclick="productsAdmin.purgeNow('${skuAttr}')">Delete now</button>
-          </td>
-        </tr>`;
-      }).join('')}
-    </table>
-    <p class="muted" style="font-size:12px;margin-top:8px">💡 Restore brings the product back and reactivates it in the rep order picker. <b>Delete now</b> is permanent — the SKU is gone from the products table (historical orders keep the reference).</p>`;
+
+    /* --- Archive (hidden by default) --- */
+    if(archive.length){
+      html += `<details style="margin-top:14px">
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)">📦 Archive — ${archive.length} item${archive.length===1?'':'s'} kept on Supabase, invisible to reps (click to view)</summary>
+        <div style="margin-top:8px">
+          <p class="muted" style="font-size:12px;margin:0 0 8px">These items left the visible bin (aged out or you clicked Empty bin). They stay on the Supabase database for 45 days in case you need them back, then are purged permanently.</p>
+          <table>
+            <tr><th>SKU</th><th>Name</th><th>Archived</th><th>Purges in</th><th></th></tr>
+            ${archive.map(p => rowHtml(p, {from: p.archived_at, window: ARCHIVE_DAYS})).join('')}
+          </table>
+        </div>
+      </details>`;
+    }
+
+    if(lifecycleErr && !/does not exist|not found|schema cache/i.test(lifecycleErr.message||'')){
+      html += `<div class="alert err" style="margin-top:10px">Lifecycle RPC error: ${esc(lifecycleErr.message||'unknown')}</div>`;
+    }
+
+    wrap.innerHTML = html;
+  },
+
+  async emptyTrash(){
+    if(!confirm('Empty the trash bin now?\n\nEvery item currently in the bin moves to the hidden archive. Reps still cannot see them. You have 45 more days to restore from the archive before they are permanently purged.')) return;
+    let { data, error } = await sb.rpc('empty_products_trash');
+    if(error && /does not exist|not found|schema cache/i.test(error.message||'')){
+      const upd = await sb.from('products').update({ archived_at: new Date().toISOString() }).is('archived_at', null).not('deleted_at', 'is', null);
+      error = upd.error;
+      data = upd.count;
+    }
+    if(error){ ui.err(error); return; }
+    ui.toast(`Bin emptied${typeof data === 'number' ? ` (${data} moved to archive)` : ''}`);
+    await productsAdmin.render();
   },
 
   /* Inline field save. Validates client-side, then persists. Visual feedback on the cell. */
