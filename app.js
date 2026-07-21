@@ -281,12 +281,23 @@ const profiles = {
 /* ---------- DATA: reference (types, products, promos, settings) ---------- */
 const ref = {
   async loadAll(){
+    /* Products query tries the strict "live only" filter first (deleted_at
+       IS NULL AND archived_at IS NULL). If the DB doesn't have those columns
+       yet — because supabase/trash-system.sql (or products-trash.sql) hasn't
+       been run — fall back to a plain select so the app still boots. */
+    const productsQ = async () => {
+      let r = await sb.from('products').select('*').is('deleted_at', null).is('archived_at', null).order('name');
+      if(r.error && /archived_at/i.test(r.error.message||'')){
+        r = await sb.from('products').select('*').is('deleted_at', null).order('name');
+      }
+      if(r.error && /deleted_at/i.test(r.error.message||'')){
+        r = await sb.from('products').select('*').order('name');
+      }
+      return r;
+    };
     const [t,p,pr,s] = await Promise.all([
       sb.from('account_types').select('*').order('sort_order'),
-      /* Exclude anything soft-deleted or archived from the shared product
-         cache used by the order picker, dashboard, etc. Admin sees these
-         rows through the Trash / Archive section in the products admin. */
-      sb.from('products').select('*').is('deleted_at', null).is('archived_at', null).order('name'),
+      productsQ(),
       sb.from('promotions').select('*').order('code'),
       sb.from('settings').select('*')
     ]);
@@ -3297,8 +3308,15 @@ const productsAdmin = {
     const wrap = document.getElementById('products-list'); if(!wrap) return;
     /* Read fresh from DB rather than trusting a stale cache.
        Filter out soft-deleted AND archived rows — those show in the
-       Trash / Archive section below. */
-    const { data, error } = await sb.from('products').select('*').is('deleted_at', null).is('archived_at', null).order('name');
+       Trash / Archive section below. Fall back gracefully when the
+       trash-system migration isn't run yet. */
+    let { data, error } = await sb.from('products').select('*').is('deleted_at', null).is('archived_at', null).order('name');
+    if(error && /archived_at/i.test(error.message||'')){
+      ({ data, error } = await sb.from('products').select('*').is('deleted_at', null).order('name'));
+    }
+    if(error && /deleted_at/i.test(error.message||'')){
+      ({ data, error } = await sb.from('products').select('*').order('name'));
+    }
     if(error){ wrap.innerHTML = `<div class="alert err">${esc(error.message)}</div>`; return; }
     cache.products = data || [];
     if(!cache.products.length){
