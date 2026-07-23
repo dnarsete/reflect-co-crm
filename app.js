@@ -2547,40 +2547,74 @@ const shopify = {
         : '';
     }
   },
+  /* Persistent inline result — replaces the transient toast so admins
+     can read the full error/success message at their own pace. Includes
+     the timestamp so repeated clicks are distinguishable. */
+  showResult(kind, text){
+    const el = document.getElementById('shopify-status'); if(!el) return;
+    const cls = kind === 'ok' ? 'ok' : (kind === 'warn' ? 'warn' : 'err');
+    const icon = kind === 'ok' ? '✓' : (kind === 'warn' ? '⚠' : '✕');
+    const time = new Date().toLocaleTimeString();
+    /* pre wrap preserves line breaks in longer error messages */
+    el.innerHTML = `<div class="alert ${cls}" style="white-space:pre-wrap;font-size:13px"><b>${icon} ${time}</b>\n${esc(text)}</div>`;
+  },
   async testConnection(){
     ui.busy(true);
+    shopify.showResult('warn', 'Testing connection to Shopify…');
     try{
       const r = await shopify.call('test_connection');
-      ui.toast('Connected: ' + (r.shop?.name || 'Shopify store'));
-    }catch(e){ ui.err(e); }
+      const shop = r.shop || {};
+      const lines = [
+        `Connected to ${shop.name || 'Shopify store'}`,
+        shop.domain ? `Domain: ${shop.domain}` : null,
+        shop.currency ? `Currency: ${shop.currency}` : null,
+        shop.plan ? `Plan: ${shop.plan}` : null,
+        r.api_version ? `Shopify API version: ${r.api_version}` : null,
+        r.auth_mode ? `Auth mode: ${r.auth_mode}` : null,
+      ].filter(Boolean).join('\n');
+      shopify.showResult('ok', lines);
+    }catch(e){
+      shopify.showResult('err', 'Test connection failed:\n' + (e?.message || String(e)));
+      console.error(e);
+    }
     ui.busy(false);
-    shopify.render();
   },
   async syncProducts(){
     if(!confirm('Pull products + inventory from Shopify? This updates the CRM product catalog and stock levels.')) return;
     ui.busy(true);
+    shopify.showResult('warn', 'Syncing products from Shopify…');
     try{
       const r = await shopify.call('pull_products');
       await ref.loadAll();
-      ui.toast(`Synced ${r.upserted} products from Shopify.`);
-    }catch(e){ ui.err(e); }
+      shopify.showResult('ok', `Synced ${r.upserted} products from Shopify. (${r.products_found} products / ${r.variants_found} variants found, ${r.skipped_no_sku} skipped for missing SKU.)`);
+    }catch(e){
+      shopify.showResult('err', 'Sync failed:\n' + (e?.message || String(e)));
+      console.error(e);
+    }
     ui.busy(false);
-    shopify.render();
   },
   async registerWebhooks(){
     if(!confirm('Register webhooks in Shopify so the CRM auto-updates on inventory changes, product edits, and order events?\n\nSafe to run multiple times — existing subscriptions are detected and skipped.')) return;
     ui.busy(true);
+    shopify.showResult('warn', 'Registering webhooks in Shopify…');
     try{
       const r = await shopify.call('register_webhooks');
-      const created  = (r.results||[]).filter(x=>x.status==='created').length;
-      const existing = (r.results||[]).filter(x=>x.status==='existing').length;
+      const created  = (r.results||[]).filter(x=>x.status==='created');
+      const existing = (r.results||[]).filter(x=>x.status==='existing');
       const errors   = (r.results||[]).filter(x=>x.status==='error');
-      if(errors.length){
-        ui.err(new Error(`Some webhooks failed: ${errors.map(e=>e.topic+' — '+JSON.stringify(e.errors)).join('; ')}`));
-      } else {
-        ui.toast(`Webhooks: ${created} created, ${existing} already existed.`);
-      }
-    }catch(e){ ui.err(e); }
+      const lines = [
+        `Webhooks: ${created.length} created, ${existing.length} already existed, ${errors.length} failed.`,
+        `Callback URL: ${r.callback_url || '(missing)'}`,
+        '',
+        ...created.map(x => `  + ${x.topic}`),
+        ...existing.map(x => `  = ${x.topic} (already registered)`),
+        ...errors.map(x => `  ✕ ${x.topic} — ${JSON.stringify(x.errors).slice(0,160)}`),
+      ].join('\n');
+      shopify.showResult(errors.length ? 'err' : 'ok', lines);
+    }catch(e){
+      shopify.showResult('err', 'Register webhooks failed:\n' + (e?.message || String(e)));
+      console.error(e);
+    }
     ui.busy(false);
   }
 };
