@@ -18,7 +18,13 @@ window.REFLECT_CONFIG = {
      Requires: shopify-prep.sql run, the shopify-sync Edge Function
      deployed, and SHOPIFY_* secrets set. See SHOPIFY_SETUP.md. */
   SHOPIFY_MODE: 'live',
-  SHOPIFY_SYNC_URL: 'https://clzpkjssxvmgvgloxehk.supabase.co/functions/v1/shopify-sync',
+  /* NOTE: The Supabase Edge Function's URL slug is 'bright-handler' — that
+     was the auto-generated name at first deploy, and Supabase makes the
+     slug immutable after creation. The display name was later renamed to
+     "shopify-sync" (visible in the Supabase dashboard) but the URL stayed.
+     Everything works the same; only the URL string differs from what you
+     might expect. */
+  SHOPIFY_SYNC_URL: 'https://clzpkjssxvmgvgloxehk.supabase.co/functions/v1/bright-handler',
 
   /* Auto-send invite emails when admin adds a new rep. Requires the
      'invite-rep' Supabase Edge Function to be deployed. When 'off',
