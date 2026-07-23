@@ -17,7 +17,7 @@ window.REFLECT_CONFIG = {
        'live' — Admin can test the connection and sync products
      Requires: shopify-prep.sql run, the shopify-sync Edge Function
      deployed, and SHOPIFY_* secrets set. See SHOPIFY_SETUP.md. */
-  SHOPIFY_MODE: 'off',
+  SHOPIFY_MODE: 'live',
   SHOPIFY_SYNC_URL: 'https://clzpkjssxvmgvgloxehk.supabase.co/functions/v1/shopify-sync',
 
   /* Auto-send invite emails when admin adds a new rep. Requires the
