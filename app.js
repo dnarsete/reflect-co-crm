@@ -2566,6 +2566,22 @@ const shopify = {
     }catch(e){ ui.err(e); }
     ui.busy(false);
     shopify.render();
+  },
+  async registerWebhooks(){
+    if(!confirm('Register webhooks in Shopify so the CRM auto-updates on inventory changes, product edits, and order events?\n\nSafe to run multiple times — existing subscriptions are detected and skipped.')) return;
+    ui.busy(true);
+    try{
+      const r = await shopify.call('register_webhooks');
+      const created  = (r.results||[]).filter(x=>x.status==='created').length;
+      const existing = (r.results||[]).filter(x=>x.status==='existing').length;
+      const errors   = (r.results||[]).filter(x=>x.status==='error');
+      if(errors.length){
+        ui.err(new Error(`Some webhooks failed: ${errors.map(e=>e.topic+' — '+JSON.stringify(e.errors)).join('; ')}`));
+      } else {
+        ui.toast(`Webhooks: ${created} created, ${existing} already existed.`);
+      }
+    }catch(e){ ui.err(e); }
+    ui.busy(false);
   }
 };
 

@@ -486,9 +486,10 @@
       <div class="card">
         <h2>Shopify integration</h2>
         <div id="shopify-status"></div>
-        <div id="shopify-actions" class="row hide" style="gap:8px;margin-top:8px">
+        <div id="shopify-actions" class="row hide" style="gap:8px;margin-top:8px;flex-wrap:wrap">
           <button class="icon-btn" onclick="shopify.testConnection()">Test connection</button>
           <button class="icon-btn primary" onclick="shopify.syncProducts()">Sync products now</button>
+          <button class="icon-btn" onclick="shopify.registerWebhooks()">Register webhooks</button>
         </div>
         <div id="shopify-log"></div>
       </div>

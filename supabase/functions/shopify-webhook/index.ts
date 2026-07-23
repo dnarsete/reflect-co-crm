@@ -15,13 +15,18 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
-const WEBHOOK_SECRET = Deno.env.get("SHOPIFY_WEBHOOK_SECRET") ?? "";
+/* Webhook HMAC key.
+   Dev Dashboard apps (post-2026) sign every webhook with the app's Client Secret.
+   Prefer SHOPIFY_CLIENT_SECRET; fall back to the legacy SHOPIFY_WEBHOOK_SECRET
+   for any deployment still using the old model.
+   Reference: https://shopify.dev/docs/apps/build/webhooks/verify-deliveries */
+const WEBHOOK_SECRET = Deno.env.get("SHOPIFY_CLIENT_SECRET") ?? Deno.env.get("SHOPIFY_WEBHOOK_SECRET") ?? "";
 const SUPABASE_URL   = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_KEY    = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
 serve(async (req: Request): Promise<Response> => {
   if (req.method !== "POST") return new Response("POST only", { status: 405 });
-  if (!WEBHOOK_SECRET) return new Response("Webhook secret not configured", { status: 500 });
+  if (!WEBHOOK_SECRET) return new Response("Webhook secret not configured (set SHOPIFY_CLIENT_SECRET)", { status: 500 });
 
   const raw = await req.text();
   const hmacHeader = req.headers.get("X-Shopify-Hmac-Sha256") || "";

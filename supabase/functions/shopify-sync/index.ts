@@ -1,30 +1,44 @@
 /* =====================================================================
    The Reflect Co — Shopify Sync Edge Function
    Secure server-side proxy between the CRM and the Shopify Admin API.
-   The Shopify token never reaches the browser. Admin-only.
+   The Shopify credentials never reach the browser. Admin-only.
+
+   Auth model (as of 2026 Dev Dashboard apps):
+     Client Credentials Grant (CCG) — SHOPIFY_CLIENT_ID + SHOPIFY_CLIENT_SECRET
+     are exchanged for a 24-hour access token at
+     https://{shop}/admin/oauth/access_token. The token is cached in the
+     shopify_tokens table until 60s before expiry and re-fetched on demand.
+     Backward-compat: if SHOPIFY_ADMIN_TOKEN is set (legacy static token),
+     it's used directly and CCG is skipped.
 
    POST body: { action: string, payload?: object }
    Actions:
-     - test_connection      verify the token + store reachability
+     - test_connection      verify credentials + store reachability
      - pull_products        fetch products + inventory -> upsert into products
      - push_account         create a Shopify customer from a CRM account
      - create_draft_order   create a Shopify draft order from a CRM order
      - get_order_status     fetch fulfillment status + tracking for an order
+     - register_webhooks    register all four topics via GraphQL (idempotent)
    ===================================================================== */
 
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
-const SHOPIFY_STORE   = Deno.env.get("SHOPIFY_STORE_URL") ?? "";
-const SHOPIFY_TOKEN   = Deno.env.get("SHOPIFY_ADMIN_TOKEN") ?? "";
-const API_VERSION     = Deno.env.get("SHOPIFY_API_VERSION") ?? "2026-01";
-const SUPABASE_URL    = Deno.env.get("SUPABASE_URL") ?? "";
-const SUPABASE_ANON   = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
-const SERVICE_KEY     = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+/* CCG credentials (preferred, Dev Dashboard 2026+) */
+const SHOPIFY_CLIENT_ID     = Deno.env.get("SHOPIFY_CLIENT_ID") ?? "";
+const SHOPIFY_CLIENT_SECRET = Deno.env.get("SHOPIFY_CLIENT_SECRET") ?? "";
+const SHOPIFY_SHOP          = Deno.env.get("SHOPIFY_SHOP") ?? Deno.env.get("SHOPIFY_STORE_URL") ?? "";
 
-/* CORS allow-list: production CRM origin + localhost for dev. Add to ALLOWED_ORIGINS
-   env var (comma-separated) if you host the CRM under an additional origin. */
+/* Legacy static token (backward compat) */
+const LEGACY_TOKEN          = Deno.env.get("SHOPIFY_ADMIN_TOKEN") ?? "";
+
+const API_VERSION           = Deno.env.get("SHOPIFY_API_VERSION") ?? "2026-07";
+const SUPABASE_URL          = Deno.env.get("SUPABASE_URL") ?? "";
+const SUPABASE_ANON         = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+const SERVICE_KEY           = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+
+/* CORS allow-list */
 const DEFAULT_ORIGINS = [
   "https://dnarsete.github.io",
   "http://localhost:5173",
@@ -54,14 +68,17 @@ serve(async (req: Request): Promise<Response> => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return json({ error: "POST only" }, 405);
 
-  if (!SHOPIFY_STORE || !SHOPIFY_TOKEN) {
-    return json({ error: "Shopify not configured. Set SHOPIFY_STORE_URL and SHOPIFY_ADMIN_TOKEN secrets in Supabase." }, 500);
+  if (!SHOPIFY_SHOP) {
+    return json({ error: "Shopify not configured. Set SHOPIFY_SHOP (e.g. the-reflect-co.myshopify.com) as a Supabase secret." }, 500);
+  }
+  const usingCCG = !!(SHOPIFY_CLIENT_ID && SHOPIFY_CLIENT_SECRET);
+  if (!usingCCG && !LEGACY_TOKEN) {
+    return json({ error: "Shopify not configured. Set SHOPIFY_CLIENT_ID + SHOPIFY_CLIENT_SECRET (Dev Dashboard app) or the legacy SHOPIFY_ADMIN_TOKEN." }, 500);
   }
 
-  /* --- verify the caller is an authenticated admin --- */
+  /* --- verify caller is an authenticated admin --- */
   const authHeader = req.headers.get("Authorization") ?? "";
   if (!authHeader.startsWith("Bearer ")) return json({ error: "Authorization required" }, 401);
-
   const userClient = createClient(SUPABASE_URL, SUPABASE_ANON, {
     global: { headers: { Authorization: authHeader } },
     auth: { persistSession: false },
@@ -74,7 +91,7 @@ serve(async (req: Request): Promise<Response> => {
     return json({ error: "Admin access required" }, 403);
   }
 
-  /* service-role client — bypasses RLS for sync writes */
+  /* service-role client — bypasses RLS for sync writes and token cache */
   const db = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
 
   let body: any;
@@ -85,11 +102,12 @@ serve(async (req: Request): Promise<Response> => {
   try {
     let result: any;
     switch (action) {
-      case "test_connection":    result = await testConnection(); break;
+      case "test_connection":    result = await testConnection(db); break;
       case "pull_products":      result = await pullProducts(db); break;
       case "push_account":       result = await pushAccount(db, payload); break;
       case "create_draft_order": result = await createDraftOrder(db, payload); break;
       case "get_order_status":   result = await getOrderStatus(db, payload); break;
+      case "register_webhooks":  result = await registerWebhooks(db); break;
       default: return json({ error: `Unknown action: ${action}` }, 400);
     }
     await logSync(db, action, "success", result, userData.user.id);
@@ -101,21 +119,73 @@ serve(async (req: Request): Promise<Response> => {
   }
 });
 
-/* ------------------------- helpers ------------------------- */
+/* ------------------------- Auth: CCG token acquisition ------------------------- */
 
 function storeHost() {
-  return SHOPIFY_STORE.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  return SHOPIFY_SHOP.replace(/^https?:\/\//, "").replace(/\/+$/, "");
 }
+
+/* Fetches a CCG access token, cached in shopify_tokens until 60s before expiry.
+   Reference: https://shopify.dev/docs/apps/build/authentication-authorization/access-tokens/client-credentials-grant */
+async function getCCGToken(db: any): Promise<string> {
+  const cacheKey = "access_token";
+  /* 1. Try cache */
+  const { data: cached } = await db.from("shopify_tokens").select("*").eq("key", cacheKey).maybeSingle();
+  if (cached && new Date(cached.expires_at).getTime() > Date.now() + 60_000) {
+    return cached.access_token;
+  }
+  /* 2. Exchange credentials for a fresh token */
+  const params = new URLSearchParams();
+  params.set("client_id", SHOPIFY_CLIENT_ID);
+  params.set("client_secret", SHOPIFY_CLIENT_SECRET);
+  params.set("grant_type", "client_credentials");
+
+  const res = await fetch(`https://${storeHost()}/admin/oauth/access_token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: params.toString(),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`CCG token exchange failed (${res.status}): ${text.slice(0, 400)}`);
+  }
+  let parsed: any;
+  try { parsed = JSON.parse(text); } catch { throw new Error(`CCG token response not JSON: ${text.slice(0, 200)}`); }
+  const token = parsed?.access_token;
+  if (!token) throw new Error(`CCG response missing access_token: ${text.slice(0, 200)}`);
+  const expiresIn = Number(parsed?.expires_in || 86399);
+  const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
+
+  /* 3. Persist to cache */
+  await db.from("shopify_tokens").upsert({
+    key: cacheKey,
+    access_token: token,
+    scope: parsed?.scope || null,
+    expires_at: expiresAt,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "key" });
+
+  return token;
+}
+
+/* Returns the active token — either the legacy static one, or a fresh CCG one. */
+async function getShopifyToken(db: any): Promise<string> {
+  if (LEGACY_TOKEN) return LEGACY_TOKEN;
+  return await getCCGToken(db);
+}
+
+/* ------------------------- HTTP helpers ------------------------- */
 
 function shopifyUrl(path: string) {
   return `https://${storeHost()}/admin/api/${API_VERSION}/${path}`;
 }
 
-async function shopifyFetch(path: string, opts: RequestInit = {}): Promise<{ body: any; headers: Headers }> {
+async function shopifyFetch(db: any, path: string, opts: RequestInit = {}): Promise<{ body: any; headers: Headers }> {
+  const token = await getShopifyToken(db);
   const res = await fetch(shopifyUrl(path), {
     ...opts,
     headers: {
-      "X-Shopify-Access-Token": SHOPIFY_TOKEN,
+      "X-Shopify-Access-Token": token,
       "Content-Type": "application/json",
       "Accept": "application/json",
       ...(opts.headers || {}),
@@ -131,7 +201,25 @@ async function shopifyFetch(path: string, opts: RequestInit = {}): Promise<{ bod
   return { body: parsed, headers: res.headers };
 }
 
-/* Follow Shopify cursor pagination via the Link header */
+async function shopifyGraphQL(db: any, query: string, variables?: any): Promise<any> {
+  const token = await getShopifyToken(db);
+  const res = await fetch(`https://${storeHost()}/admin/api/${API_VERSION}/graphql.json`, {
+    method: "POST",
+    headers: {
+      "X-Shopify-Access-Token": token,
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+  const text = await res.text();
+  let parsed: any;
+  try { parsed = JSON.parse(text); } catch { throw new Error(`Shopify GraphQL response not JSON: ${text.slice(0, 400)}`); }
+  if (!res.ok) throw new Error(`Shopify GraphQL ${res.status}: ${text.slice(0, 400)}`);
+  if (parsed.errors) throw new Error(`Shopify GraphQL errors: ${JSON.stringify(parsed.errors).slice(0, 400)}`);
+  return parsed.data;
+}
+
 function nextPageInfo(linkHeader: string | null): string | null {
   if (!linkHeader) return null;
   const m = linkHeader.split(",").find((p) => p.includes('rel="next"'));
@@ -149,8 +237,8 @@ async function logSync(db: any, action: string, status: string, detail: any, use
 
 /* ------------------------- actions ------------------------- */
 
-async function testConnection() {
-  const { body } = await shopifyFetch("shop.json");
+async function testConnection(db: any) {
+  const { body } = await shopifyFetch(db, "shop.json");
   return {
     shop: {
       name: body?.shop?.name,
@@ -160,11 +248,11 @@ async function testConnection() {
       plan: body?.shop?.plan_name,
     },
     api_version: API_VERSION,
+    auth_mode: LEGACY_TOKEN ? "legacy_token" : "ccg",
   };
 }
 
 async function pullProducts(db: any) {
-  /* 1. Fetch all products (paginated) */
   const products: any[] = [];
   let pageInfo: string | null = null;
   let pages = 0;
@@ -173,12 +261,11 @@ async function pullProducts(db: any) {
     const path = pageInfo
       ? `products.json?limit=250&page_info=${encodeURIComponent(pageInfo)}`
       : `products.json?limit=250`;
-    const { body, headers } = await shopifyFetch(path);
+    const { body, headers } = await shopifyFetch(db, path);
     products.push(...(body?.products || []));
     pageInfo = nextPageInfo(headers.get("Link"));
   } while (pageInfo && pages < 20);
 
-  /* 2. Collect every variant + its inventory_item_id */
   const variants: any[] = [];
   for (const p of products) {
     for (const v of (p.variants || [])) {
@@ -194,19 +281,17 @@ async function pullProducts(db: any) {
     }
   }
 
-  /* 3. Fetch inventory levels for all inventory_item_ids (batched, 50 per call) */
   const invByItem: Record<string, number> = {};
   const itemIds = variants.map((v) => v.shopify_inventory_item_id).filter(Boolean) as string[];
   for (let i = 0; i < itemIds.length; i += 50) {
     const batch = itemIds.slice(i, i + 50).join(",");
-    const { body } = await shopifyFetch(`inventory_levels.json?inventory_item_ids=${batch}&limit=250`);
+    const { body } = await shopifyFetch(db, `inventory_levels.json?inventory_item_ids=${batch}&limit=250`);
     for (const lvl of (body?.inventory_levels || [])) {
       const id = String(lvl.inventory_item_id);
       invByItem[id] = (invByItem[id] || 0) + Number(lvl.available || 0);
     }
   }
 
-  /* 4. Upsert into the products table (keyed by SKU) */
   let upserted = 0, skippedNoSku = 0;
   const nowIso = new Date().toISOString();
   for (const v of variants) {
@@ -226,7 +311,6 @@ async function pullProducts(db: any) {
     if (!error) upserted++;
   }
 
-  /* 5. Update sync metadata */
   await db.from("settings").upsert({ key: "shopify_connected", value: true });
   await db.from("settings").upsert({ key: "shopify_store_url", value: storeHost() });
   await db.from("settings").upsert({ key: "shopify_last_product_sync", value: nowIso });
@@ -253,7 +337,7 @@ async function pushAccount(db: any, payload: any) {
     tags: ["reflect-crm", acc.type || ""].filter(Boolean).join(", "),
     addresses: acc.business_address ? [{ address1: acc.business_address, default: true }] : undefined,
   };
-  const { body } = await shopifyFetch("customers.json", {
+  const { body } = await shopifyFetch(db, "customers.json", {
     method: "POST",
     body: JSON.stringify({ customer }),
   });
@@ -274,8 +358,6 @@ async function createDraftOrder(db: any, payload: any) {
     return { already_linked: true, shopify_draft_order_id: ord.shopify_draft_order_id };
   }
 
-  /* Map CRM items to Shopify draft-order line items.
-     If the product has a known shopify_variant_id, use it; else a custom line item. */
   const skus = (ord.items || []).map((i: any) => i.sku);
   const { data: prods } = await db.from("products").select("sku, shopify_variant_id").in("sku", skus);
   const variantBySku: Record<string, string> = {};
@@ -302,7 +384,7 @@ async function createDraftOrder(db: any, payload: any) {
   }
   if (ord.tax_exempt) draft.tax_exempt = true;
 
-  const { body } = await shopifyFetch("draft_orders.json", {
+  const { body } = await shopifyFetch(db, "draft_orders.json", {
     method: "POST",
     body: JSON.stringify({ draft_order: draft }),
   });
@@ -326,11 +408,10 @@ async function getOrderStatus(db: any, payload: any) {
   const shopifyId = ord.shopify_order_id || ord.shopify_draft_order_id;
   if (!shopifyId) return { linked: false, message: "Order not yet sent to Shopify." };
 
-  /* If we only have a draft order id, check whether it completed into an order */
   const path = ord.shopify_order_id
     ? `orders/${ord.shopify_order_id}.json`
     : `draft_orders/${ord.shopify_draft_order_id}.json`;
-  const { body } = await shopifyFetch(path);
+  const { body } = await shopifyFetch(db, path);
   const o = body?.order || body?.draft_order || {};
   const tracking = (o.fulfillments || [])
     .flatMap((f: any) => f.tracking_numbers || [])
@@ -347,4 +428,61 @@ async function getOrderStatus(db: any, payload: any) {
     status: o.status,
     tracking,
   };
+}
+
+/* Register the four webhooks we care about via the GraphQL Admin API.
+   Idempotent: existing subscriptions are detected and reported as "existing".
+   Reference: https://shopify.dev/docs/api/admin-graphql/latest/mutations/webhookSubscriptionCreate
+              https://shopify.dev/docs/api/admin-graphql/latest/enums/webhooksubscriptiontopic */
+async function registerWebhooks(db: any) {
+  const callbackUrl = `${SUPABASE_URL}/functions/v1/shopify-webhook`;
+  /* Verified enum values from shopify.dev */
+  const topics = [
+    "ORDERS_PAID",
+    "ORDERS_FULFILLED",
+    "ORDERS_UPDATED",
+    "PRODUCTS_UPDATE",
+    "INVENTORY_LEVELS_UPDATE",
+  ];
+
+  /* 1. Read existing subscriptions for our callback URL */
+  const existingQuery = `{
+    webhookSubscriptions(first: 100) {
+      edges { node { id topic endpoint { __typename ... on WebhookHttpEndpoint { callbackUrl } } } }
+    }
+  }`;
+  const existingData = await shopifyGraphQL(db, existingQuery);
+  const existing = new Set<string>();
+  for (const edge of (existingData?.webhookSubscriptions?.edges || [])) {
+    const t = edge?.node?.topic;
+    const url = edge?.node?.endpoint?.callbackUrl;
+    if (t && url === callbackUrl) existing.add(t);
+  }
+
+  /* 2. Create the ones that aren't already registered */
+  const mutation = `mutation($topic: WebhookSubscriptionTopic!, $sub: WebhookSubscriptionInput!) {
+    webhookSubscriptionCreate(topic: $topic, webhookSubscription: $sub) {
+      webhookSubscription { id topic }
+      userErrors { field message }
+    }
+  }`;
+  const results: any[] = [];
+  for (const topic of topics) {
+    if (existing.has(topic)) {
+      results.push({ topic, status: "existing" });
+      continue;
+    }
+    const r = await shopifyGraphQL(db, mutation, {
+      topic,
+      sub: { callbackUrl, format: "JSON" },
+    });
+    const created = r?.webhookSubscriptionCreate?.webhookSubscription;
+    const errors  = r?.webhookSubscriptionCreate?.userErrors || [];
+    if (errors.length) {
+      results.push({ topic, status: "error", errors });
+    } else {
+      results.push({ topic, status: "created", id: created?.id });
+    }
+  }
+  return { callback_url: callbackUrl, results };
 }
