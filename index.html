@@ -80,6 +80,12 @@
         <button id="auth-signin-btn" type="submit" class="icon-btn primary grow">Sign in</button>
         <button id="auth-signup-btn" type="button" class="icon-btn grow" onclick="auth.signup()">Create account</button>
       </div>
+      <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
+        <button id="auth-magic-btn" type="button" class="icon-btn grow" onclick="auth.magicLink()" style="width:100%">
+          ✉️ Email me a sign-in link
+        </button>
+        <div class="muted" style="font-size:11px;text-align:center;margin-top:4px">No password needed — we email you a one-click link.</div>
+      </div>
       <div style="margin-top:8px;text-align:center">
         <a href="#" onclick="auth.resetPassword();return false" class="muted" style="font-size:13px">Forgot password?</a>
       </div>

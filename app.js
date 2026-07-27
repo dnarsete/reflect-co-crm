@@ -167,6 +167,39 @@ const auth = {
     errEl.classList.remove('err'); errEl.classList.add('ok'); errEl.classList.remove('hide');
     errEl.innerHTML = '✉️ Check your inbox ('+esc(email)+') for a reset link. Open it on this device to set a new password.';
   },
+  /* Passwordless sign-in via magic link. Rep enters their email, clicks the
+     button, then clicks the link that lands in their inbox → auto signed in.
+     Uses Supabase's built-in OTP flow with the email-link format.
+     Requires "Email" auth provider enabled in the Supabase project (default). */
+  async magicLink(){
+    const errEl = document.getElementById('auth-err');
+    const email = (document.getElementById('auth-email').value||'').trim().toLowerCase();
+    if(!email){
+      errEl.textContent = 'Enter your email above, then click "Email me a sign-in link".';
+      errEl.classList.remove('hide'); errEl.classList.remove('ok'); errEl.classList.add('err');
+      return;
+    }
+    ui.busy(true);
+    const { error } = await sb.auth.signInWithOtp({
+      email,
+      options: {
+        emailRedirectTo: location.origin + location.pathname,
+        /* shouldCreateUser: false means the link will only work for existing
+           users. Set true to allow first-time sign-in via magic link — but
+           note: for a rep-first CRM you probably want admin to add reps
+           explicitly, so keep this false. */
+        shouldCreateUser: false
+      }
+    });
+    ui.busy(false);
+    if(error){
+      errEl.textContent = 'Sign-in link failed: ' + error.message;
+      errEl.classList.remove('hide'); errEl.classList.remove('ok'); errEl.classList.add('err');
+      return;
+    }
+    errEl.classList.remove('err'); errEl.classList.add('ok'); errEl.classList.remove('hide');
+    errEl.innerHTML = '✉️ Sign-in link sent to <b>'+esc(email)+'</b>. Open it on this device to sign in. Link expires in 1 hour.';
+  },
   async applyRecoveryFlow(){
     /* After clicking the email link, Supabase puts a recovery token in the URL hash.
        Render an in-page modal (never window.prompt — masked input + strength check + confirm). */
@@ -345,6 +378,27 @@ const dashboard = {
   async render(){
     document.getElementById('who').textContent = (cache.me.name || cache.me.email) + (auth.isAdmin()?' · Admin':' · Rep');
     document.getElementById('role-pill').textContent = auth.isAdmin()?'Admin':'Rep';
+
+    /* Test-mode banner — persistent, top of screen, unmistakable. Only
+       renders once; kept on every render so it survives view changes. */
+    if(cache.me && cache.me.test_mode){
+      if(!document.getElementById('reflect-testmode-banner')){
+        const b = document.createElement('div');
+        b.id = 'reflect-testmode-banner';
+        b.textContent = '🧪 TEST MODE — orders you finalize will NOT push to Shopify. No invoices. No emails. No real transactions.';
+        Object.assign(b.style, {
+          position:'sticky', top:'0', left:'0', right:'0',
+          background:'#8a5a00', color:'#fff', textAlign:'center',
+          padding:'6px 10px', fontWeight:'600', fontSize:'12px',
+          letterSpacing:'0.02em', zIndex:'2147483646',
+          borderBottom:'2px solid #d4a017'
+        });
+        document.body.prepend(b);
+      }
+    } else {
+      const existing = document.getElementById('reflect-testmode-banner');
+      if(existing) existing.remove();
+    }
 
     /* counts */
     const [accCount, mtdOrders] = await Promise.all([
@@ -794,8 +848,8 @@ const orders = {
 
       <div class="row" style="gap:8px;margin-top:6px">
         <button class="icon-btn" onclick="orders.saveDraft('${orders._draft.id||''}', ${isNew})">Save draft</button>
-        <button class="icon-btn primary" onclick="orders.finalize('${orders._draft.id||''}', ${isNew})">Finalize & invoice</button>
-        ${!isNew && shopify.mode()==='live'?`<button class="icon-btn" onclick="orders.pushToShopify('${orders._draft.id}')">Push to Shopify</button>`:''}
+        <button class="icon-btn primary" onclick="orders.finalize('${orders._draft.id||''}', ${isNew})">${(cache.me && cache.me.test_mode) ? '🧪 Complete (test only)' : 'Finalize & invoice'}</button>
+        ${!isNew && shopify.mode()==='live' && !(cache.me && cache.me.test_mode) ? `<button class="icon-btn" onclick="orders.pushToShopify('${orders._draft.id}')">Push to Shopify</button>`:''}
         ${!isNew?`<button class="icon-btn danger" onclick="orders.remove('${orders._draft.id}')">Delete</button>`:''}
         <button class="icon-btn ghost" onclick="ui.closeModal()">Close</button>
       </div>
@@ -1005,14 +1059,23 @@ const orders = {
     const cardMethods = ['Visa','Mastercard','Amex'];
     if(cardMethods.includes(d.payment.method) && !d.payment.signature){ ui.toast('Card payment requires an authorization signature. Tap "Get signature".'); return; }
 
+    /* Test mode: the rep is a training/testing account. Order is marked
+       complete in the CRM but never pushes to Shopify — no invoice email,
+       no real Shopify draft, no real money. */
+    const inTestMode = !!(cache.me && cache.me.test_mode);
+
     const sub = d.items.reduce((s,i)=>s+i.qty*i.price,0);
     const discPct = sub>0 ? (Number(d.discount)/sub*100) : 0;
     const adminFlag = discPct >= ref.highDiscPct() ? `High discount (${discPct.toFixed(1)}%) — admin will be notified.\n` : '';
-    if(!confirm(adminFlag+'Finalize this order? This generates an order #, invoice, and charges payment.')) return;
+    const confirmText = inTestMode
+      ? adminFlag + '🧪 TEST MODE — complete this order?\n\nOrder is marked finalized in the CRM. No Shopify draft is created. No invoice is sent. No card is charged.'
+      : adminFlag + 'Finalize this order? This generates an order #, invoice, and charges payment.';
+    if(!confirm(confirmText)) return;
 
     d.status='finalized';
     d.payment.authorized = true;
     const payload = orders.buildPayload(d);
+    if(inTestMode) payload.is_test = true;
     let q;
     if(isNew){
       payload.created_by = (await sb.auth.getUser()).data.user.id;
@@ -1022,8 +1085,10 @@ const orders = {
     }
     if(q.error){ ui.err(q.error); return; }
     await orders.syncTaxToAccount(d);
-    /* Push to Shopify if integration is live. Failure doesn't block the CRM order — it's flagged for retry via shopify.pushOrder(). */
-    if(shopify.mode() === 'live'){
+    /* Push to Shopify only when integration is live AND the rep is NOT in
+       test mode. Test-mode reps never push to Shopify — the whole point of
+       test mode is to prevent real orders from leaving the CRM. */
+    if(shopify.mode() === 'live' && !inTestMode){
       try {
         const sr = await shopify.call('create_draft_order', { order_id: q.data.id });
         if(sr.invoice_url){
@@ -1034,6 +1099,8 @@ const orders = {
         ui.toast('Order finalized but Shopify push failed. Use "Push to Shopify" on the order to retry.');
         console.warn('shopify push failed:', e);
       }
+    } else if(inTestMode){
+      ui.toast('Test order saved — no Shopify draft created.');
     }
     ui.closeModal();
     invoice.show(q.data);
@@ -2845,6 +2912,12 @@ const adminPanel = {
         <div><label>City</label><input id="r-city" value="${esc(prof.city||'')}"/></div>
         <div><label>State</label><input id="r-state" value="${esc(prof.state||'')}" placeholder="CO"/></div>
         <div><label>ZIP</label><input id="r-zip" value="${esc(prof.zip||'')}"/></div>
+        <div style="grid-column:1/-1;padding:10px;border:1px solid var(--line);background:rgba(212,160,23,0.08);border-radius:8px;margin-top:6px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input id="r-testmode" type="checkbox" ${prof.test_mode?'checked':''} style="width:auto"/>
+            <span>🧪 <b>Test mode</b> — orders this rep finalizes will NOT push to Shopify. Use this for reps who are learning the system so they can't accidentally send real invoices.</span>
+          </label>
+        </div>
       </div>
       <div class="row" style="gap:8px;margin-top:12px">
         <button class="icon-btn primary" onclick="adminPanel.saveRep('${id||''}', ${isNew})">Save</button>
@@ -2880,6 +2953,7 @@ const adminPanel = {
   async saveRep(id, isNew){
     const get = i => (document.getElementById(i)?.value || '');
     const email = get('r-email').trim().toLowerCase();
+    const testMode = !!document.getElementById('r-testmode')?.checked;
     const payload = {
       name: get('r-name').trim(),
       rep_id: get('r-repid').trim() || null,
@@ -2892,7 +2966,8 @@ const adminPanel = {
       street: get('r-street').trim() || null,
       city: get('r-city').trim() || null,
       state: get('r-state').trim() || null,
-      zip: get('r-zip').trim() || null
+      zip: get('r-zip').trim() || null,
+      test_mode: testMode
     };
     if(!isNew){
       const q = await sb.from('profiles').update(payload).eq('id', id);
