@@ -381,7 +381,7 @@ const dashboard = {
 
     /* Test-mode banner — persistent, top of screen, unmistakable. Only
        renders once; kept on every render so it survives view changes. */
-    if(cache.me && cache.me.test_mode){
+    if(cache.me && cache.me.test_mode && cache.me.role !== 'admin'){
       if(!document.getElementById('reflect-testmode-banner')){
         const b = document.createElement('div');
         b.id = 'reflect-testmode-banner';
@@ -848,8 +848,8 @@ const orders = {
 
       <div class="row" style="gap:8px;margin-top:6px">
         <button class="icon-btn" onclick="orders.saveDraft('${orders._draft.id||''}', ${isNew})">Save draft</button>
-        <button class="icon-btn primary" onclick="orders.finalize('${orders._draft.id||''}', ${isNew})">${(cache.me && cache.me.test_mode) ? '🧪 Complete (test only)' : 'Finalize & invoice'}</button>
-        ${!isNew && shopify.mode()==='live' && !(cache.me && cache.me.test_mode) ? `<button class="icon-btn" onclick="orders.pushToShopify('${orders._draft.id}')">Push to Shopify</button>`:''}
+        <button class="icon-btn primary" onclick="orders.finalize('${orders._draft.id||''}', ${isNew})">${(cache.me && cache.me.test_mode && cache.me.role !== 'admin') ? '🧪 Complete (test only)' : 'Finalize & invoice'}</button>
+        ${!isNew && shopify.mode()==='live' && !(cache.me && cache.me.test_mode && cache.me.role !== 'admin') ? `<button class="icon-btn" onclick="orders.pushToShopify('${orders._draft.id}')">Push to Shopify</button>`:''}
         ${!isNew?`<button class="icon-btn danger" onclick="orders.remove('${orders._draft.id}')">Delete</button>`:''}
         <button class="icon-btn ghost" onclick="ui.closeModal()">Close</button>
       </div>
@@ -1062,7 +1062,7 @@ const orders = {
     /* Test mode: the rep is a training/testing account. Order is marked
        complete in the CRM but never pushes to Shopify — no invoice email,
        no real Shopify draft, no real money. */
-    const inTestMode = !!(cache.me && cache.me.test_mode);
+    const inTestMode = !!(cache.me && cache.me.test_mode && cache.me.role !== 'admin');
 
     const sub = d.items.reduce((s,i)=>s+i.qty*i.price,0);
     const discPct = sub>0 ? (Number(d.discount)/sub*100) : 0;
