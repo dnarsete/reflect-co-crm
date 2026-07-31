@@ -77,6 +77,7 @@ serve(async (req: Request): Promise<Response> => {
   /* --- parse body --- */
   let body: any;
   try { body = await req.json(); } catch { return json({ error: "Invalid JSON body" }, 400); }
+  const mode = String(body?.mode || "invite");
   const email = String(body?.email || "").trim().toLowerCase();
   if (!email) return json({ error: "email required" }, 400);
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ error: "Invalid email format" }, 400);
@@ -85,7 +86,32 @@ serve(async (req: Request): Promise<Response> => {
   /* --- service-role admin client --- */
   const admin = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
 
-  /* --- Check if user already exists --- */
+  /* --- Mode: update_email --- change an existing user's email address.
+     Body: { mode: 'update_email', user_id, email: new_email } */
+  if (mode === "update_email") {
+    const userId = String(body?.user_id || "");
+    if (!userId) return json({ error: "user_id required for update_email" }, 400);
+    const upd = await admin.auth.admin.updateUserById(userId, {
+      email,
+      email_confirm: true,
+    });
+    if (upd.error) return json({ error: "Auth email update failed: " + upd.error.message }, 500);
+    /* Also update the profiles.email column so the app stays in sync */
+    const admDb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
+    const profUpd = await admDb.from("profiles").update({ email }).eq("id", userId);
+    if (profUpd.error) return json({ error: "Profile email update failed: " + profUpd.error.message }, 500);
+    /* Return a fresh magic link for the new email */
+    const linkRes = await admin.auth.admin.generateLink({
+      type: "magiclink",
+      email,
+      options: { redirectTo },
+    });
+    if (linkRes.error) return json({ error: "Generate link failed: " + linkRes.error.message }, 500);
+    const inviteUrl = (linkRes.data as any)?.properties?.action_link || (linkRes.data as any)?.action_link || null;
+    return json({ ok: true, mode: "update_email", email, invite_url: inviteUrl });
+  }
+
+  /* --- Mode: invite (default) --- create user if new + generate magic link --- */
   let isNewUser = false;
   const listRes = await admin.auth.admin.listUsers({ page: 1, perPage: 1000 });
   const existing = listRes.data?.users?.find((u: any) => (u.email || "").toLowerCase() === email);

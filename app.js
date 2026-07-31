@@ -2894,7 +2894,7 @@ const adminPanel = {
       <h3>${isNew?'Add rep':'Edit '+esc(prof.name||prof.email)}</h3>
       ${isNew ? '<p class="muted" style="font-size:13px;margin:0 0 12px">If this email has already signed up, this updates their profile. If not, the settings are saved as a pending invite and applied automatically when they sign up.</p>' : ''}
       <div class="grid-2">
-        <div><label>Email</label><input id="r-email" type="email" value="${esc(prof.email)}" ${isNew?'':'disabled'} autocapitalize="none"/></div>
+        <div><label>Email ${isNew?'':'<span class="muted" style="font-size:11px">(edit updates login)</span>'}</label><input id="r-email" type="email" value="${esc(prof.email)}" autocapitalize="none"/></div>
         <div><label>Full name</label><input id="r-name" value="${esc(prof.name||'')}"/></div>
         <div><label>Cell phone</label><input id="r-cell" value="${esc(prof.cell||'')}" placeholder="555-555-5555"/></div>
         <div><label>Company (optional)</label><input id="r-company" value="${esc(prof.company||'')}"/></div>
@@ -2971,6 +2971,48 @@ const adminPanel = {
       test_mode: testMode
     };
     if(!isNew){
+      /* Check if email changed. If so, we need to update auth.users
+         (via Edge Function) as well as the profiles table. */
+      const currentProf = (cache.repsFull||cache.reps||[]).find(x=>x.id===id);
+      const oldEmail = (currentProf?.email || '').trim().toLowerCase();
+      const emailChanged = email && email !== oldEmail;
+
+      if(emailChanged){
+        if(!confirm(`Change ${oldEmail}'s email to ${email}?\n\nThis updates their login. They'll need to sign in with the new email going forward. A fresh sign-in link will be generated automatically.`)) return;
+        const inviteUrlBase = window.REFLECT_CONFIG?.ADMIN_INVITE_URL;
+        if(!inviteUrlBase){ ui.toast('ADMIN_INVITE_URL not set — cannot update email.'); return; }
+        try{
+          const session = await sb.auth.getSession();
+          const token = session.data.session?.access_token;
+          const res = await fetch(inviteUrlBase, {
+            method:'POST',
+            headers:{
+              'Authorization':'Bearer '+token,
+              'Content-Type':'application/json',
+              'apikey': window.REFLECT_CONFIG.SUPABASE_KEY
+            },
+            body: JSON.stringify({ mode:'update_email', user_id: id, email, redirect_to: location.origin + location.pathname })
+          });
+          const data = await res.json();
+          if(!res.ok || data.error){
+            ui.err(new Error('Email change failed: ' + (data.error || 'HTTP '+res.status) + '. Redeploy the admin-invite Edge Function so it supports mode:update_email.'));
+            return;
+          }
+          /* Auth + profiles.email now updated by the Edge Function.
+             Update the rest of the profile fields (payload minus email is fine — email was updated separately). */
+          const q = await sb.from('profiles').update(payload).eq('id', id);
+          if(q.error){ ui.err(q.error); return; }
+          ui.closeModal();
+          ui.toast(`Email changed to ${email}. Fresh sign-in link ready.`);
+          /* Show the new invite link modal so admin can send it */
+          const firstName = (payload.name||'').trim().split(/\s+/)[0]||'';
+          if(data.invite_url) adminPanel.showInviteLinkModal(email, data.invite_url, false, firstName);
+          adminPanel.renderRepsAndInvites();
+          return;
+        } catch(e){ ui.err(e); return; }
+      }
+
+      /* No email change — plain profile update */
       const q = await sb.from('profiles').update(payload).eq('id', id);
       if(q.error){ ui.err(q.error); return; }
       ui.closeModal(); ui.toast('Saved'); adminPanel.renderRepsAndInvites();
