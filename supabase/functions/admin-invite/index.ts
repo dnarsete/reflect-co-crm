@@ -86,6 +86,25 @@ serve(async (req: Request): Promise<Response> => {
   /* --- service-role admin client --- */
   const admin = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
 
+  /* --- Mode: delete_user --- permanently remove a rep from the system.
+     Body: { mode: 'delete_user', user_id, email: user_email }.
+     `email` is only used for the format check + logging clarity; the
+     actual delete is by user_id. Cascades to profile via FK. */
+  if (mode === "delete_user") {
+    const userId = String(body?.user_id || "");
+    if (!userId) return json({ error: "user_id required for delete_user" }, 400);
+    /* Prevent an admin from deleting themselves via this endpoint */
+    if (userId === userData.user.id) {
+      return json({ error: "Cannot delete your own admin account" }, 400);
+    }
+    const del = await admin.auth.admin.deleteUser(userId);
+    if (del.error) return json({ error: "Delete failed: " + del.error.message }, 500);
+    /* Also clean up any pending invite that shares the email */
+    const admDb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
+    await admDb.from("pending_invites").delete().eq("email", email);
+    return json({ ok: true, mode: "delete_user", user_id: userId, email });
+  }
+
   /* --- Mode: update_email --- change an existing user's email address.
      Body: { mode: 'update_email', user_id, email: new_email } */
   if (mode === "update_email") {

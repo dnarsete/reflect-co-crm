@@ -2829,10 +2829,12 @@ const adminPanel = {
           <div class="meta">${esc(r.email)}${r.cell?' · '+esc(r.cell):''}${(r.city||r.state)?' · '+esc([r.city, r.state].filter(Boolean).join(', ')):''} · commission ${r.commission||0}% · territory ${(r.territory||[]).join(', ')||'—'}</div>
         </div>
         <button class="icon-btn" onclick="adminPanel.openRepModal('${r.id}')">Edit</button>
+        <button class="icon-btn" onclick="adminPanel.generateInviteLink('${esc(r.email).replace(/'/g,'&#39;')}')">🔗 Get link</button>
         <button class="icon-btn ghost" onclick="adminPanel.resetRepPassword('${esc(r.email).replace(/'/g,'&#39;')}')">Reset PW</button>
         ${isSelf ? '' : (disabled
           ? `<button class="icon-btn" onclick="adminPanel.enableRep('${r.id}')">Enable</button>`
           : `<button class="icon-btn danger" onclick="adminPanel.disableRep('${r.id}')">Disable</button>`)}
+        ${isSelf ? '' : `<button class="icon-btn danger" onclick="adminPanel.deleteRep('${r.id}', '${esc(r.email).replace(/'/g,'&#39;')}', '${esc(r.name||r.email).replace(/'/g,'&#39;')}')">Delete</button>`}
       </div>`;
     }).join('') : `<div class="muted">${search||filter!=='all' ? 'No reps match the search/filter.' : 'No reps yet.'}</div>`;
 
@@ -3175,6 +3177,44 @@ const adminPanel = {
     });
     if(error){ ui.err(error); return; }
     ui.toast('Reset email sent to ' + email);
+  },
+  /* Hard delete: removes the auth user AND the profile (via FK cascade).
+     Historical orders/accounts stay but lose rep attribution (rep_id
+     text stays; the FK is on created_by uuid with set null).
+     Uses the admin-invite Edge Function's delete_user mode which
+     requires service_role. */
+  async deleteRep(id, email, name){
+    const label = name || email;
+    if(!confirm(`Permanently delete ${label}?\n\nThis removes their login and profile. Historical orders/accounts they created stay in the system but their user reference is set to null. This cannot be undone.\n\nType "delete" to confirm.`)) return;
+    const confirmText = prompt(`To confirm deletion of ${label}, type: delete`);
+    if((confirmText||'').trim().toLowerCase() !== 'delete'){ ui.toast('Delete cancelled — text did not match.'); return; }
+    const url = window.REFLECT_CONFIG?.ADMIN_INVITE_URL;
+    if(!url){ ui.toast('ADMIN_INVITE_URL not set — cannot delete via UI. Use SQL fallback.'); return; }
+    ui.busy(true);
+    try{
+      const session = await sb.auth.getSession();
+      const token = session.data.session?.access_token;
+      const res = await fetch(url, {
+        method:'POST',
+        headers:{
+          'Authorization': 'Bearer ' + token,
+          'Content-Type': 'application/json',
+          'apikey': window.REFLECT_CONFIG.SUPABASE_KEY
+        },
+        body: JSON.stringify({ mode:'delete_user', user_id: id, email })
+      });
+      const data = await res.json();
+      ui.busy(false);
+      if(!res.ok || data.error){
+        ui.err(new Error('Delete failed: ' + (data.error || 'HTTP '+res.status) + '. If the Edge Function needs redeploying, tell Dan.'));
+        return;
+      }
+      ui.toast(`${label} deleted permanently.`);
+      adminPanel.renderRepsAndInvites();
+    } catch(e){
+      ui.busy(false);
+      ui.err(e);
+    }
   },
   async addType(){
     const t = document.getElementById('new-type').value.trim(); if(!t) return;
