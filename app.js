@@ -3001,12 +3001,24 @@ const adminPanel = {
 
   /* Calls the admin-invite Edge Function to (1) create the auth user
      if new and (2) return a one-click magic-link URL. Displays it in a
-     modal with a copy button. */
+     modal with a copy button. Looks up the rep's name from
+     pending_invites or profiles so the message can be personalized. */
   async generateInviteLink(email){
     const url = window.REFLECT_CONFIG?.ADMIN_INVITE_URL;
     if(!url){ ui.toast('ADMIN_INVITE_URL not set in config.js.'); return; }
     ui.busy(true);
     try{
+      /* Fetch the rep's name so the SMS/email can be personalized. */
+      let repName = '';
+      const inv = await sb.from('pending_invites').select('name').ilike('email', email).maybeSingle();
+      if(inv.data?.name){
+        repName = inv.data.name;
+      } else {
+        const prof = await sb.from('profiles').select('name').ilike('email', email).maybeSingle();
+        if(prof.data?.name) repName = prof.data.name;
+      }
+      const firstName = (repName || '').trim().split(/\s+/)[0] || '';
+
       const session = await sb.auth.getSession();
       const token = session.data.session?.access_token;
       if(!token){ ui.toast('Sign in required.'); ui.busy(false); return; }
@@ -3025,35 +3037,49 @@ const adminPanel = {
         ui.err(new Error('Invite link generation failed: ' + (data.error || 'HTTP '+res.status) + '. Deploy the admin-invite Edge Function first (supabase/functions/admin-invite/index.ts).'));
         return;
       }
-      adminPanel.showInviteLinkModal(email, data.invite_url, data.is_new_user);
+      adminPanel.showInviteLinkModal(email, data.invite_url, data.is_new_user, firstName);
     } catch(e){
       ui.busy(false);
       ui.err(e);
     }
   },
 
-  /* Persistent modal — shows the invite URL big and copyable. */
-  showInviteLinkModal(email, url, isNewUser){
-    const smsBody = `You've been invited to the Reflect CRM. Click to sign in: ${url}`;
-    const mailtoUrl = `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent('Your Reflect CRM sign-in link')}&body=${encodeURIComponent(smsBody)}`;
+  /* Persistent modal — shows the invite URL big and copyable.
+     Personalizes the SMS/email body with the rep's first name if we have it. */
+  showInviteLinkModal(email, url, isNewUser, firstName){
+    const greet = firstName ? `Hi ${firstName}` : 'Hi';
+    /* Short, plain-language default that assumes zero technical background.
+       Deliberately doesn't mention "magic link" or "authentication" — just
+       "tap here." No password. No sign-up form. Just tap. */
+    const smsBody = `${greet}! You've been invited to the Reflect Co CRM. Tap the link below to sign in — no password needed:\n\n${url}\n\nThis link works one time only. Save this page as a bookmark once you're in so you can come back easily.`;
+    const emailSubject = 'Your Reflect Co CRM sign-in link';
+    const emailBody = `${greet},\n\nYou've been invited to the Reflect Co CRM. Just tap the link below and you'll be signed in automatically — no password, no sign-up form.\n\n${url}\n\nOnce you're in, save the page as a bookmark (or add to your phone's Home Screen) so you can come back later. The next time you visit, either use the same link or click "Email me a sign-in link" on the login page.\n\nIf the link doesn't work, tell Dan and he'll send a fresh one.\n\nThanks!`;
+    const mailtoUrl = `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(emailSubject)}&body=${encodeURIComponent(emailBody)}`;
     const smsUrl = `sms:?&body=${encodeURIComponent(smsBody)}`;
     ui.modal(`
-      <h3>Sign-in link ready</h3>
-      <p style="font-size:13px;margin:0 0 12px">
-        Send this link to <b>${esc(email)}</b>. When they click it, they're signed in — no password needed.
-        ${isNewUser ? '' : '<br><span class="muted">(User already existed — this is a fresh sign-in link.)</span>'}
+      <h3>Sign-in link ready ${firstName?'for '+esc(firstName):''}</h3>
+      <p style="font-size:13px;margin:0 0 8px">
+        Send this to <b>${esc(email)}</b>. When they tap it, they're in — no password, no sign-up form.
+        ${isNewUser ? '' : '<br><span class="muted" style="font-size:12px">(User already existed — this is a fresh sign-in link.)</span>'}
       </p>
-      <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:4px">The one-click link:</label>
-      <textarea id="invite-url-ta" readonly rows="4" style="width:100%;font-family:monospace;font-size:11px;padding:8px;border-radius:6px;word-break:break-all;background:var(--panel-2);border:1px solid var(--line);color:var(--ink)">${esc(url)}</textarea>
-      <div class="row" style="gap:8px;margin-top:12px;flex-wrap:wrap">
-        <button class="icon-btn primary" onclick="adminPanel._copyInviteLink()">📋 Copy link</button>
-        <a class="icon-btn" href="${esc(smsUrl)}" style="text-decoration:none">📱 Send via Text</a>
-        <a class="icon-btn" href="${esc(mailtoUrl)}" style="text-decoration:none">✉️ Send via Email</a>
+      <div class="row" style="gap:8px;margin-bottom:12px;flex-wrap:wrap">
+        <a class="icon-btn primary" href="${esc(smsUrl)}" style="text-decoration:none">📱 Send via Text</a>
+        <a class="icon-btn primary" href="${esc(mailtoUrl)}" style="text-decoration:none">✉️ Send via Email</a>
+        <button class="icon-btn" onclick="adminPanel._copyInviteLink()">📋 Copy link only</button>
+      </div>
+      <details>
+        <summary style="cursor:pointer;font-size:12px;color:var(--muted)">Preview / manual link</summary>
+        <label style="display:block;font-size:12px;color:var(--muted);margin:8px 0 4px">The one-click sign-in URL:</label>
+        <textarea id="invite-url-ta" readonly rows="4" style="width:100%;font-family:monospace;font-size:11px;padding:8px;border-radius:6px;word-break:break-all;background:var(--panel-2);border:1px solid var(--line);color:var(--ink)">${esc(url)}</textarea>
+        <label style="display:block;font-size:12px;color:var(--muted);margin:12px 0 4px">SMS message that will be pre-filled:</label>
+        <textarea readonly rows="6" style="width:100%;font-family:inherit;font-size:12px;padding:8px;border-radius:6px;background:var(--panel-2);border:1px solid var(--line);color:var(--ink)">${esc(smsBody)}</textarea>
+      </details>
+      <div class="row" style="gap:8px;margin-top:12px">
         <div class="grow"></div>
         <button class="icon-btn ghost" onclick="ui.closeModal()">Close</button>
       </div>
       <p class="muted" style="font-size:11px;margin-top:12px">
-        ⚠ The link is single-use and expires in about an hour. If the rep doesn't click it in time, come back to their row and click "Get link" for a fresh one.
+        ⚠ Link is single-use and expires in ~1 hour. If the rep doesn't tap it in time, click <b>🔗 Get link</b> on their row for a fresh one.
       </p>
     `);
   },
@@ -3857,6 +3883,10 @@ async function boot(){
   document.querySelectorAll('.admin-only').forEach(el=>el.classList.toggle('hide', !auth.isAdmin()));
   idleLogout.start();
   absoluteTimeout.start();
+  /* Show the welcome overlay on first sign-in per device (localStorage-tracked).
+     Non-blocking — sits on top of the app; user dismisses with a big button. */
+  welcome.maybeShow();
+
   /* First-login prompt: if profile not yet onboarded, send them to Profile */
   if(cache.me && !cache.me.onboarded){
     nav.go('profile');
@@ -3864,6 +3894,99 @@ async function boot(){
     nav.go('dashboard');
   }
 }
+
+/* ---------- FIRST-TIME WELCOME OVERLAY ---------- */
+/* Shown once per device per user (localStorage flag). Explains the CRM
+   in plain language, points at required Profile fields, tells them how
+   to come back next time (bookmark / re-use invite link / magic link). */
+const welcome = {
+  maybeShow(){
+    try {
+      if(!cache.me || !cache.me.id) return;
+      const key = 'reflect_welcomed_' + cache.me.id;
+      if(localStorage.getItem(key)) return;
+      welcome.show();
+    } catch(_){ /* silent — localStorage may be disabled */ }
+  },
+  show(){
+    const first = (cache.me.name || '').trim().split(/\s+/)[0] || 'there';
+    const isRep = cache.me.role === 'rep';
+    const inTest = !!(cache.me.test_mode && cache.me.role !== 'admin');
+    /* Detect iOS Safari to give the right "Add to Home Screen" instruction */
+    const ua = navigator.userAgent || '';
+    const isIOS = /iPad|iPhone|iPod/.test(ua) && !window.MSStream;
+    const isAndroid = /Android/.test(ua);
+    const homeScreenTip = isIOS
+      ? 'On iPhone/iPad: tap the <b>Share</b> icon (square with arrow) at the bottom of Safari → scroll down → <b>Add to Home Screen</b>. You get an app icon.'
+      : isAndroid
+      ? 'On Android: tap the <b>⋮ menu</b> in Chrome → <b>Install app</b> or <b>Add to Home screen</b>. You get an app icon.'
+      : 'Bookmark this page (Ctrl/Cmd + D). Or use the sign-in link Dan sent you again — it always works.';
+
+    const html = `
+      <div id="reflect-welcome-overlay" style="
+        position:fixed;inset:0;background:rgba(0,0,0,0.65);
+        z-index:2147483647;display:flex;align-items:center;justify-content:center;
+        padding:16px;overflow-y:auto;">
+        <div style="
+          background:var(--panel);color:var(--ink);
+          max-width:520px;width:100%;border-radius:14px;padding:24px;
+          box-shadow:0 20px 40px rgba(0,0,0,0.4);
+          border:1px solid var(--line);">
+          <h2 style="margin:0 0 6px;font-size:22px">👋 Welcome, ${esc(first)}!</h2>
+          <p style="margin:0 0 16px;color:var(--muted);font-size:14px">You're signed in to the Reflect Co CRM.</p>
+
+          ${inTest ? `
+          <div style="background:#8a5a00;color:#fff;padding:10px 12px;border-radius:8px;font-size:13px;margin-bottom:16px">
+            <b>🧪 You're in Test Mode</b> — feel free to click around. Nothing you do will create real orders, send real invoices, or affect the business. It's a full-featured sandbox.
+          </div>` : ''}
+
+          <div style="margin:0 0 16px">
+            <div style="font-weight:600;margin-bottom:6px">A quick tour:</div>
+            <ul style="margin:0;padding-left:18px;font-size:13px;line-height:1.7">
+              <li>📇 <b>Accounts</b> — the retailers, spas, boutiques you sell to</li>
+              <li>🧾 <b>Orders</b> — create + track wholesale orders</li>
+              <li>📊 <b>Reports</b> — your sales and commission</li>
+              <li>🔮 <b>Forecast</b> — set your monthly goals</li>
+              <li>👤 <b>Profile</b> — your contact info (fill this out first — required)</li>
+            </ul>
+            <div style="font-size:12px;color:var(--muted);margin-top:8px">Tabs are at the bottom of the screen.</div>
+          </div>
+
+          <div style="background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:16px">
+            <div style="font-weight:600;font-size:13px;margin-bottom:6px">📌 Save this page so you can come back easily:</div>
+            <div style="font-size:13px;color:var(--ink-soft);line-height:1.6">${homeScreenTip}</div>
+          </div>
+
+          <div style="font-size:12px;color:var(--muted);margin-bottom:16px">
+            <b>Next time you visit:</b> just come back to this URL and it'll remember you. If it doesn't, click <b>✉️ Email me a sign-in link</b> on the sign-in page — no password needed, ever.
+          </div>
+
+          <button
+            id="reflect-welcome-close"
+            style="width:100%;padding:14px;background:var(--accent);color:#fff;
+                   border:none;border-radius:10px;font-size:15px;font-weight:600;
+                   cursor:pointer">
+            Got it — let's go →
+          </button>
+        </div>
+      </div>
+    `;
+    const wrap = document.createElement('div');
+    wrap.innerHTML = html;
+    document.body.appendChild(wrap.firstElementChild);
+    document.getElementById('reflect-welcome-close').onclick = welcome.dismiss;
+  },
+  dismiss(){
+    try { localStorage.setItem('reflect_welcomed_' + cache.me.id, new Date().toISOString()); } catch(_){}
+    const el = document.getElementById('reflect-welcome-overlay');
+    if(el) el.remove();
+  },
+  /* Admin utility: reset per-device so you can re-see the welcome. */
+  reset(){
+    if(cache.me?.id) localStorage.removeItem('reflect_welcomed_' + cache.me.id);
+    ui.toast('Welcome overlay reset — sign out + back in to see it.');
+  }
+};
 
 sb.auth.onAuthStateChange((event)=>{
   if(event === 'SIGNED_OUT') location.reload();
