@@ -33,8 +33,10 @@ const PROD_CONFIG = {
 
   /* One-click magic-link invite. Admin creates rep → gets a copyable URL
      they can send via text/email/Slack. Rep clicks → auto signed in.
-     Requires the admin-invite Edge Function deployed. */
-  ADMIN_INVITE_URL: 'https://clzpkjssxvmgvgloxehk.supabase.co/functions/v1/admin-invite'
+     Requires the admin-invite Edge Function deployed.
+     NOTE: URL slug is 'hyper-worker' (Supabase auto-generated) — the
+     display name in the dashboard is 'admin-invite'. Slug is immutable. */
+  ADMIN_INVITE_URL: 'https://clzpkjssxvmgvgloxehk.supabase.co/functions/v1/hyper-worker'
 };
 
 /* ---------- STAGING (test data, safe to break) ----------
