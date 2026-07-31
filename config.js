@@ -29,7 +29,12 @@ const PROD_CONFIG = {
   SHOPIFY_SYNC_URL: 'https://clzpkjssxvmgvgloxehk.supabase.co/functions/v1/bright-handler',
 
   INVITE_EMAILS: 'off',
-  INVITE_FUNCTION_URL: 'https://clzpkjssxvmgvgloxehk.supabase.co/functions/v1/invite-rep'
+  INVITE_FUNCTION_URL: 'https://clzpkjssxvmgvgloxehk.supabase.co/functions/v1/invite-rep',
+
+  /* One-click magic-link invite. Admin creates rep → gets a copyable URL
+     they can send via text/email/Slack. Rep clicks → auto signed in.
+     Requires the admin-invite Edge Function deployed. */
+  ADMIN_INVITE_URL: 'https://clzpkjssxvmgvgloxehk.supabase.co/functions/v1/admin-invite'
 };
 
 /* ---------- STAGING (test data, safe to break) ----------

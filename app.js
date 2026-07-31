@@ -2848,6 +2848,7 @@ const adminPanel = {
             <div class="title">${esc(i.email)} <span class="badge warn">${esc(i.rep_id||'no rep id')}</span> <span class="badge">${esc(i.role)}</span></div>
             <div class="meta">Will become: ${esc(i.name||'(name from email)')} · commission ${i.commission||0}% · invited ${new Date(i.created_at).toLocaleDateString()}</div>
           </div>
+          <button class="icon-btn primary" onclick="adminPanel.generateInviteLink('${esc(i.email).replace(/'/g,'&#39;')}')">🔗 Get link</button>
           <button class="icon-btn" onclick="adminPanel.openInviteModal('${esc(i.email).replace(/'/g,'&#39;')}')">Edit</button>
           <button class="icon-btn danger" onclick="adminPanel.cancelInvite('${esc(i.email).replace(/'/g,'&#39;')}')">Cancel</button>
         </div>`).join('') : '<div class="muted" style="font-size:13px">No pending invites. New reps you add via "+ Add rep" appear here until they sign up.</div>';
@@ -2991,34 +2992,82 @@ const adminPanel = {
     });
     if(q.error){ ui.err(q.error); return; }
     ui.closeModal();
-
-    /* Send an official invite email if enabled */
-    if(window.REFLECT_CONFIG?.INVITE_EMAILS === 'live'){
-      try{
-        const session = await sb.auth.getSession();
-        const token = session.data.session?.access_token;
-        const res = await fetch(window.REFLECT_CONFIG.INVITE_FUNCTION_URL, {
-          method:'POST',
-          headers:{
-            'Authorization': 'Bearer ' + token,
-            'Content-Type': 'application/json',
-            'apikey': window.REFLECT_CONFIG.SUPABASE_KEY
-          },
-          body: JSON.stringify({ email })
-        });
-        const data = await res.json();
-        if(!res.ok || data.error){
-          ui.toast(`Invite saved but email failed: ${data.error || 'HTTP '+res.status}. Tell ${email} to sign up at the CRM URL.`);
-        } else {
-          ui.toast(`Invite email sent to ${email}. They'll get a link to set their password.`);
-        }
-      } catch(e){
-        ui.toast(`Invite saved but email couldn't send. Tell ${email} to sign up at the CRM URL.`);
-      }
-    } else {
-      ui.toast(`Invite saved. Tell ${email} to sign up at the CRM URL. (Enable INVITE_EMAILS in config.js to auto-email.)`);
-    }
+    ui.toast(`Invite saved for ${email}. Generating one-click sign-in link…`);
+    /* Generate a magic-link URL for this rep. Admin can copy + send it
+       however (text/email/Slack). Rep clicks → auto signed in. */
+    await adminPanel.generateInviteLink(email);
     adminPanel.renderRepsAndInvites();
+  },
+
+  /* Calls the admin-invite Edge Function to (1) create the auth user
+     if new and (2) return a one-click magic-link URL. Displays it in a
+     modal with a copy button. */
+  async generateInviteLink(email){
+    const url = window.REFLECT_CONFIG?.ADMIN_INVITE_URL;
+    if(!url){ ui.toast('ADMIN_INVITE_URL not set in config.js.'); return; }
+    ui.busy(true);
+    try{
+      const session = await sb.auth.getSession();
+      const token = session.data.session?.access_token;
+      if(!token){ ui.toast('Sign in required.'); ui.busy(false); return; }
+      const res = await fetch(url, {
+        method:'POST',
+        headers:{
+          'Authorization': 'Bearer ' + token,
+          'Content-Type': 'application/json',
+          'apikey': window.REFLECT_CONFIG.SUPABASE_KEY
+        },
+        body: JSON.stringify({ email, redirect_to: location.origin + location.pathname })
+      });
+      const data = await res.json();
+      ui.busy(false);
+      if(!res.ok || data.error){
+        ui.err(new Error('Invite link generation failed: ' + (data.error || 'HTTP '+res.status) + '. Deploy the admin-invite Edge Function first (supabase/functions/admin-invite/index.ts).'));
+        return;
+      }
+      adminPanel.showInviteLinkModal(email, data.invite_url, data.is_new_user);
+    } catch(e){
+      ui.busy(false);
+      ui.err(e);
+    }
+  },
+
+  /* Persistent modal — shows the invite URL big and copyable. */
+  showInviteLinkModal(email, url, isNewUser){
+    const smsBody = `You've been invited to the Reflect CRM. Click to sign in: ${url}`;
+    const mailtoUrl = `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent('Your Reflect CRM sign-in link')}&body=${encodeURIComponent(smsBody)}`;
+    const smsUrl = `sms:?&body=${encodeURIComponent(smsBody)}`;
+    ui.modal(`
+      <h3>Sign-in link ready</h3>
+      <p style="font-size:13px;margin:0 0 12px">
+        Send this link to <b>${esc(email)}</b>. When they click it, they're signed in — no password needed.
+        ${isNewUser ? '' : '<br><span class="muted">(User already existed — this is a fresh sign-in link.)</span>'}
+      </p>
+      <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:4px">The one-click link:</label>
+      <textarea id="invite-url-ta" readonly rows="4" style="width:100%;font-family:monospace;font-size:11px;padding:8px;border-radius:6px;word-break:break-all;background:var(--panel-2);border:1px solid var(--line);color:var(--ink)">${esc(url)}</textarea>
+      <div class="row" style="gap:8px;margin-top:12px;flex-wrap:wrap">
+        <button class="icon-btn primary" onclick="adminPanel._copyInviteLink()">📋 Copy link</button>
+        <a class="icon-btn" href="${esc(smsUrl)}" style="text-decoration:none">📱 Send via Text</a>
+        <a class="icon-btn" href="${esc(mailtoUrl)}" style="text-decoration:none">✉️ Send via Email</a>
+        <div class="grow"></div>
+        <button class="icon-btn ghost" onclick="ui.closeModal()">Close</button>
+      </div>
+      <p class="muted" style="font-size:11px;margin-top:12px">
+        ⚠ The link is single-use and expires in about an hour. If the rep doesn't click it in time, come back to their row and click "Get link" for a fresh one.
+      </p>
+    `);
+  },
+
+  _copyInviteLink(){
+    const ta = document.getElementById('invite-url-ta');
+    if(!ta) return;
+    ta.select();
+    try{
+      navigator.clipboard.writeText(ta.value).then(
+        () => ui.toast('✓ Link copied — paste into text/email/Slack'),
+        () => { document.execCommand('copy'); ui.toast('✓ Link copied'); }
+      );
+    } catch(_){ document.execCommand('copy'); ui.toast('✓ Link copied'); }
   },
   async saveInvite(email){
     const get = i => document.getElementById(i).value;
