@@ -42,6 +42,14 @@ const ui = {
     document.getElementById('modal-back').classList.add('show');
   },
   closeModal(){ document.getElementById('modal-back').classList.remove('show') },
+  /* Secondary modal layer — overlays on top of the primary modal without
+     replacing it. Used by the signature pad so the order form survives
+     while a signature is being captured. */
+  modal2(html){
+    document.getElementById('modal2').innerHTML = html;
+    document.getElementById('modal2-back').classList.add('show');
+  },
+  closeModal2(){ document.getElementById('modal2-back').classList.remove('show') },
   toast(msg){
     const t = document.getElementById('toast');
     t.textContent = msg; t.classList.remove('hide');
@@ -1146,7 +1154,7 @@ const sigpad = {
       const last4 = esc(context.last4 || '____');
       const amount = esc(context.amount || 'the order total');
       const co = ref.company();
-      ui.modal(`
+      ui.modal2(`
         <h3>Credit card authorization</h3>
         <p class="muted" style="font-size:13px;margin:0 0 12px">
           By signing below, <b>${customer}</b> authorizes ${esc(co.name||'The Reflect Co')} to charge ${method} ending in ${last4} for <b>${amount}</b> on ${new Date().toLocaleDateString()}. All sales final.
@@ -1201,11 +1209,11 @@ const sigpad = {
     if(!sigpad._drawn){ ui.toast('Please sign before authorizing'); return; }
     const c = document.getElementById('sig-canvas');
     const dataUrl = c.toDataURL('image/png');
-    ui.closeModal();
+    ui.closeModal2();
     if(sigpad._resolve){ const r = sigpad._resolve; sigpad._resolve = null; r({ signed:true, dataUrl, signedAt:new Date().toISOString() }); }
   },
   cancel(){
-    ui.closeModal();
+    ui.closeModal2();
     if(sigpad._resolve){ const r = sigpad._resolve; sigpad._resolve = null; r({ signed:false }); }
   }
 };
