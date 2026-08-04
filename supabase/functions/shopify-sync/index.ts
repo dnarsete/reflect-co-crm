@@ -397,7 +397,49 @@ async function createDraftOrder(db: any, payload: any) {
       shopify_invoice_url: invoiceUrl,
     }).eq("id", orderId);
   }
-  return { created: true, shopify_draft_order_id: draftId, invoice_url: invoiceUrl };
+
+  /* Auto-send invoice — kicks the Shopify email flow so the customer
+     receives a pay-invoice link immediately. Without this the draft
+     sits in Shopify Drafts and requires manual "Send invoice" click.
+     Reference: https://shopify.dev/docs/api/admin-rest/latest/resources/draftorder#post-draft-orders-draft-order-id-send-invoice */
+  let invoiceSent = false;
+  let invoiceSendError: string | null = null;
+  if (draftId && (payload?.send_invoice !== false)) {
+    const customerEmail = ord.account?.email || null;
+    if (!customerEmail) {
+      invoiceSendError = "No customer email on the account — cannot auto-send invoice. Add an email to the account or send it manually from Shopify.";
+    } else {
+      try {
+        const invoicePayload: any = {
+          draft_order_invoice: {
+            to: customerEmail,
+            /* subject and custom_message use Shopify's default template
+               if omitted. Keeping defaults for now — can add branded
+               copy later once we know what the merchant prefers. */
+          }
+        };
+        await shopifyFetch(db, `draft_orders/${draftId}/send_invoice.json`, {
+          method: "POST",
+          body: JSON.stringify(invoicePayload),
+        });
+        invoiceSent = true;
+        /* Update CRM order to reflect the sent state */
+        await db.from("orders").update({
+          shopify_status: "invoice_sent",
+        }).eq("id", orderId);
+      } catch (e: any) {
+        invoiceSendError = "Draft created but invoice send failed: " + (e?.message || String(e)) + " — send manually from Shopify Drafts.";
+      }
+    }
+  }
+
+  return {
+    created: true,
+    shopify_draft_order_id: draftId,
+    invoice_url: invoiceUrl,
+    invoice_sent: invoiceSent,
+    invoice_send_error: invoiceSendError,
+  };
 }
 
 async function getOrderStatus(db: any, payload: any) {

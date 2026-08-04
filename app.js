@@ -1102,7 +1102,13 @@ const orders = {
         if(sr.invoice_url){
           q.data.shopify_invoice_url = sr.invoice_url;
         }
-        ui.toast('Order finalized + Shopify draft created. Invoice link ready.');
+        if(sr.invoice_sent){
+          ui.toast('Order finalized. Shopify has emailed the invoice to the customer.');
+        } else if(sr.invoice_send_error){
+          ui.toast('Order finalized + draft created, but invoice email failed: ' + sr.invoice_send_error);
+        } else {
+          ui.toast('Order finalized + Shopify draft created. Invoice link ready.');
+        }
       } catch(e){
         ui.toast('Order finalized but Shopify push failed. Use "Push to Shopify" on the order to retry.');
         console.warn('shopify push failed:', e);
