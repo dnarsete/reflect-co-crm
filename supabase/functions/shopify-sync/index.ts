@@ -384,10 +384,31 @@ async function createDraftOrder(db: any, payload: any) {
   }
   if (ord.tax_exempt) draft.tax_exempt = true;
 
-  const { body } = await shopifyFetch(db, "draft_orders.json", {
-    method: "POST",
-    body: JSON.stringify({ draft_order: draft }),
-  });
+  /* Wrap the Shopify call so we can log the exact request payload
+     when Shopify returns a validation error. Their "Record is invalid"
+     message doesn't tell us which field — we need to see what we sent. */
+  let body: any;
+  try {
+    const res = await shopifyFetch(db, "draft_orders.json", {
+      method: "POST",
+      body: JSON.stringify({ draft_order: draft }),
+    });
+    body = res.body;
+  } catch (e: any) {
+    /* Log the full request payload + error so we can diagnose 422s */
+    try {
+      await db.from("shopify_sync_log").insert({
+        action: "create_draft_order:payload",
+        status: "error",
+        detail: {
+          error: e?.message || String(e),
+          sent_payload: { draft_order: draft },
+          order_id: orderId,
+        },
+      });
+    } catch (_) { /* logging never breaks the flow */ }
+    throw e;
+  }
   const draftId = body?.draft_order?.id ? String(body.draft_order.id) : null;
   const invoiceUrl = body?.draft_order?.invoice_url || null;
   if (draftId) {
