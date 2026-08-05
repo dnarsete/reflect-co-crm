@@ -976,7 +976,7 @@ const orders = {
             </select>
           </div>
           <div><label>Card last 4 (if card)</label><input id="o-pay-l4" value="${esc(orders._draft.payment?.last4||'')}" maxlength="4"/></div>
-          <div><label>Authorization signature</label>
+          <div><label>Authorization signature <span class="muted" style="font-size:11px;font-weight:400">(optional)</span></label>
             <div id="o-sig-wrap"></div>
           </div>
         </div>
@@ -1203,8 +1203,9 @@ const orders = {
     const d = orders.collect();
     if(!d.account_id){ ui.toast('Pick an account first'); return; }
     if(!(d.items||[]).length){ ui.toast('Add at least one item'); return; }
-    const cardMethods = ['Visa','Mastercard','Amex'];
-    if(cardMethods.includes(d.payment.method) && !d.payment.signature){ ui.toast('Card payment requires an authorization signature. Tap "Get signature".'); return; }
+    /* Signature is optional — reps can capture one if the customer is
+       present, but it's not required to Finalize. Shopify captures its
+       own consent when the customer pays via the invoice link. */
 
     /* Test mode: the rep is a training/testing account. Order is marked
        complete in the CRM but never pushes to Shopify — no invoice email,
