@@ -2136,13 +2136,15 @@ const materials = {
           const icon = ({pdf:'📄',png:'🖼',jpg:'🖼',jpeg:'🖼',gif:'🖼',mp4:'🎬',mov:'🎬',doc:'📃',docx:'📃',xls:'📊',xlsx:'📊',ppt:'📽',pptx:'📽',zip:'🗜'}[ext] || '📎');
           const kb = f.metadata?.size ? (f.metadata.size < 1024*1024 ? (f.metadata.size/1024).toFixed(0)+' KB' : (f.metadata.size/1024/1024).toFixed(1)+' MB') : '';
           const when = f.created_at ? new Date(f.created_at).toLocaleDateString() : '';
+          const p = esc(f.path).replace(/'/g,'&#39;');
           return `<div class="list-item">
             <div class="grow">
               <div class="title">${icon} ${esc(f.name)}</div>
               <div class="meta">${esc(cat)}${kb?' · '+esc(kb):''}${when?' · uploaded '+esc(when):''}</div>
             </div>
-            <button class="icon-btn" onclick="materials.download('${esc(f.path).replace(/'/g,'&#39;')}')">Download</button>
-            ${auth.isAdmin()?`<button class="icon-btn danger" onclick="materials.remove('${esc(f.path).replace(/'/g,'&#39;')}')">Delete</button>`:''}
+            <button class="icon-btn primary" onclick="materials.view('${p}')">👁 View</button>
+            ${auth.isAdmin()?`<button class="icon-btn" onclick="materials.download('${p}')">⬇ Download</button>`:''}
+            ${auth.isAdmin()?`<button class="icon-btn danger" onclick="materials.remove('${p}')">Delete</button>`:''}
           </div>`;
         }).join('')}
       </div>
@@ -2205,17 +2207,31 @@ const materials = {
     materials.render();
   },
 
-  async download(path){
-    /* Signed URL good for 5 minutes — long enough to click through, short enough
-       to avoid leaked link reuse. */
+  /* View — opens the file in a new tab so browsers render PDFs, images,
+     and videos inline. What every rep uses to actually read/show a doc. */
+  async view(path){
     const { data, error } = await sb.storage.from(materials.BUCKET).createSignedUrl(path, 300);
     if(error){ ui.err(error); return; }
-    /* Use an anchor with target=_blank so browsers open PDFs/images inline and
-       download binaries — matches expected behavior. */
+    /* Try to open in a new tab. If popup blocker interferes, fall back to
+       navigating current tab. */
+    const w = window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
+    if(!w){
+      ui.toast('Popup blocked. Allow popups for this site, or the file will open in this tab.');
+      location.href = data.signedUrl;
+    }
+  },
+
+  /* Download — forces the browser to save the file locally rather than
+     open inline. Admin-only. Uses the ?download query param that Supabase
+     Storage honors to set Content-Disposition: attachment. */
+  async download(path){
+    if(!auth.isAdmin()){ ui.toast('Admin only — use View to open.'); return; }
+    const filename = path.split('/').pop() || 'file';
+    const { data, error } = await sb.storage.from(materials.BUCKET).createSignedUrl(path, 300, { download: filename });
+    if(error){ ui.err(error); return; }
     const a = document.createElement('a');
     a.href = data.signedUrl;
-    a.target = '_blank';
-    a.rel = 'noopener';
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -3704,11 +3720,18 @@ const security = {
   }
 };
 
-/* ---------- ABSOLUTE SESSION TIMEOUT ---------- */
+/* ---------- ABSOLUTE SESSION TIMEOUT ----------
+   Admins get a 30-day session cap (real business tool — being kicked
+   every 12 hours is friction with no security benefit for the owner).
+   Reps still get 12 hours since they may share devices or work remote. */
 const absoluteTimeout = {
-  MAX_MS: 12 * 60 * 60 * 1000,  /* 12 hours */
+  MAX_MS_REP: 12 * 60 * 60 * 1000,        /* 12 hours */
+  MAX_MS_ADMIN: 30 * 24 * 60 * 60 * 1000, /* 30 days */
   KEY: 'reflectco.session_started_at',
   _interval: null,
+  _cap(){
+    return (cache.me?.role === 'admin') ? absoluteTimeout.MAX_MS_ADMIN : absoluteTimeout.MAX_MS_REP;
+  },
   start(){
     if(absoluteTimeout._interval) return;
     let started = parseInt(localStorage.getItem(absoluteTimeout.KEY) || '0', 10);
@@ -3717,10 +3740,11 @@ const absoluteTimeout = {
       localStorage.setItem(absoluteTimeout.KEY, String(started));
     }
     absoluteTimeout._interval = setInterval(()=>{
-      if(Date.now() - started > absoluteTimeout.MAX_MS){
+      if(Date.now() - started > absoluteTimeout._cap()){
         clearInterval(absoluteTimeout._interval); absoluteTimeout._interval = null;
         localStorage.removeItem(absoluteTimeout.KEY);
-        alert('Your session has reached the 12-hour maximum. Signing you out for security.');
+        const days = cache.me?.role === 'admin' ? '30 days' : '12 hours';
+        alert(`Your session has reached the ${days} maximum. Signing you out for security.`);
         auth.logout();
       }
     }, 60_000);
