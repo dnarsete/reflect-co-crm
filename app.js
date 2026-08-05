@@ -607,6 +607,11 @@ const accounts = {
           <button class="icon-btn" onclick="accounts.addNote('${acc.id}')">Add</button>
         </div>
       </div>` : ''}
+      ${!isNew && acc.shopify_customer_id ? `
+      <div style="margin-top:12px;padding:10px;border:1px solid var(--line);background:rgba(212,160,23,0.06);border-radius:6px;font-size:12px">
+        <div style="margin-bottom:6px"><b>Shopify link:</b> customer ID <code>${esc(acc.shopify_customer_id)}</code> · <span class="muted">If Shopify returns "Record is invalid" on this account's orders, the customer may have been deleted or merged in Shopify. Reset the link to fall back to email-based checkout.</span></div>
+        <button class="icon-btn ghost" onclick="accounts.resetShopifyLink('${acc.id}')">🔗 Reset Shopify link</button>
+      </div>` : ''}
       <div class="row" style="gap:8px;margin-top:12px">
         <button class="icon-btn primary" onclick="accounts.save('${acc.id||''}', ${isNew})">Save</button>
         ${!isNew?`<button class="icon-btn danger" onclick="accounts.remove('${acc.id}')">Delete</button>`:''}
@@ -821,6 +826,18 @@ const accounts = {
     const r = await sb.from('accounts').delete().eq('id', id);
     if(r.error){ ui.err(r.error); return; }
     ui.closeModal(); ui.toast('Deleted'); accounts.render();
+  },
+  /* Clears the stored Shopify customer ID on an account.
+     Use when Shopify returns "Record is invalid" because the customer
+     was deleted/merged in Shopify. Next order pushes via email path. */
+  async resetShopifyLink(id){
+    if(!confirm('Reset Shopify customer link for this account?\n\nThe next order for this account will create a fresh Shopify customer via the email path. Existing Shopify orders for this account are not affected.')) return;
+    const r = await sb.from('accounts').update({ shopify_customer_id: null }).eq('id', id);
+    if(r.error){ ui.err(r.error); return; }
+    ui.toast('Shopify link reset. Next order will create a fresh customer.');
+    /* Refresh the modal by re-opening the account edit */
+    ui.closeModal();
+    accounts.open(id);
   }
 };
 
@@ -1219,11 +1236,37 @@ const orders = {
        test mode. Test-mode reps never push to Shopify — the whole point of
        test mode is to prevent real orders from leaving the CRM. */
     if(shopify.mode() === 'live' && !inTestMode){
+      /* Attempt to push the draft to Shopify. On a Shopify "Record is
+         invalid" error (usually caused by a stale/deleted customer ID),
+         auto-null the stored shopify_customer_id and retry once with
+         the email fallback path. Self-heals the class of failure we hit
+         when a Shopify customer gets deleted or merged. */
+      const pushOnce = () => shopify.call('create_draft_order', { order_id: q.data.id });
+      const looksLikeInvalidCustomer = e => {
+        const m = (e?.message || '').toLowerCase();
+        return m.includes('record is invalid') || m.includes('customer') && m.includes('invalid');
+      };
+      let sr = null;
       try {
-        const sr = await shopify.call('create_draft_order', { order_id: q.data.id });
-        if(sr.invoice_url){
-          q.data.shopify_invoice_url = sr.invoice_url;
+        sr = await pushOnce();
+      } catch(e){
+        if(looksLikeInvalidCustomer(e) && d.account_id){
+          console.warn('Shopify rejected — auto-healing by nulling stored customer ID and retrying', e);
+          try {
+            await sb.from('accounts').update({ shopify_customer_id: null }).eq('id', d.account_id);
+            ui.toast('Shopify link auto-reset (stale customer) — retrying push…');
+            sr = await pushOnce();
+          } catch(retryErr){
+            ui.toast('Order finalized but Shopify push failed even after auto-reset: ' + (retryErr?.message || retryErr) + '. Use "Push to Shopify" on the order to retry manually.');
+            console.warn('auto-heal retry failed:', retryErr);
+          }
+        } else {
+          ui.toast('Order finalized but Shopify push failed. Use "Push to Shopify" on the order to retry.');
+          console.warn('shopify push failed:', e);
         }
+      }
+      if(sr){
+        if(sr.invoice_url){ q.data.shopify_invoice_url = sr.invoice_url; }
         if(sr.invoice_sent){
           ui.toast('Order finalized. Shopify has emailed the invoice to the customer.');
         } else if(sr.invoice_send_error){
@@ -1231,9 +1274,6 @@ const orders = {
         } else {
           ui.toast('Order finalized + Shopify draft created. Invoice link ready.');
         }
-      } catch(e){
-        ui.toast('Order finalized but Shopify push failed. Use "Push to Shopify" on the order to retry.');
-        console.warn('shopify push failed:', e);
       }
     } else if(inTestMode){
       ui.toast('Test order saved — no Shopify draft created.');
