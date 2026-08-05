@@ -374,7 +374,9 @@ async function createDraftOrder(db: any, payload: any) {
     line_items,
     note: `Reflect CRM order · rep ${ord.rep_id || "—"} · ${ord.order_number || "draft"}`,
     tags: "reflect-crm",
-    use_customer_default_address: true,
+    /* NOTE: 'use_customer_default_address' removed. It was suspected of
+       causing Shopify's opaque "Record is invalid" 422s in certain
+       account/address combinations. Explicit customer+email is enough. */
   };
   if (ord.account?.shopify_customer_id) draft.customer = { id: Number(ord.account.shopify_customer_id) };
   else if (ord.account?.email) draft.email = ord.account.email;
@@ -384,9 +386,24 @@ async function createDraftOrder(db: any, payload: any) {
   }
   if (ord.tax_exempt) draft.tax_exempt = true;
 
-  /* Wrap the Shopify call so we can log the exact request payload
-     when Shopify returns a validation error. Their "Record is invalid"
-     message doesn't tell us which field — we need to see what we sent. */
+  /* Always log the payload BEFORE the Shopify call, unconditionally.
+     Uses status='success' just to pass the CHECK constraint — real
+     purpose is diagnostic capture we can query later.
+     This log will fire whether Shopify accepts or rejects. */
+  try {
+    await db.from("shopify_sync_log").insert({
+      action: "create_draft_order:attempt",
+      status: "success",
+      detail: {
+        order_id: orderId,
+        payload_sent: { draft_order: draft },
+      },
+    });
+  } catch (_) { /* never break the flow */ }
+  /* Also console.error to Deno stdout for the Logs tab */
+  console.error("[shopify-sync] Attempting draft_order create with payload:", JSON.stringify(draft));
+
+  /* Wrap the Shopify call so we can log the error alongside the payload */
   let body: any;
   try {
     const res = await shopifyFetch(db, "draft_orders.json", {
@@ -395,18 +412,18 @@ async function createDraftOrder(db: any, payload: any) {
     });
     body = res.body;
   } catch (e: any) {
-    /* Log the full request payload + error so we can diagnose 422s */
+    console.error("[shopify-sync] Shopify rejected draft_order:", e?.message || String(e));
     try {
       await db.from("shopify_sync_log").insert({
-        action: "create_draft_order:payload",
+        action: "create_draft_order:rejected",
         status: "error",
         detail: {
           error: e?.message || String(e),
-          sent_payload: { draft_order: draft },
+          payload_sent: { draft_order: draft },
           order_id: orderId,
         },
       });
-    } catch (_) { /* logging never breaks the flow */ }
+    } catch (_) { /* never break the flow */ }
     throw e;
   }
   const draftId = body?.draft_order?.id ? String(body.draft_order.id) : null;
