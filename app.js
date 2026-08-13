@@ -530,8 +530,8 @@ const accounts = {
     const isNew = !a;
     const acc = a || {
       type:'Medical Spa', business_name:'', billing_name:'', business_address:'', billing_address:'',
-      business_street:'', business_city:'', business_state:'', business_zip:'',
-      billing_street:'', billing_city:'', billing_state:'', billing_zip:'',
+      business_street:'', business_suite:'', business_city:'', business_state:'', business_zip:'',
+      billing_street:'', billing_suite:'', billing_city:'', billing_state:'', billing_zip:'',
       billing_same_as_business:false,
       email:'', cell:'', business_phone:'', sales_tax_license:'', sales_tax_state:'',
       tax_exempt:false, opt_in:true, notes:[], rep_id: auth.repId()
@@ -560,7 +560,10 @@ const accounts = {
       <!-- Business address block -->
       <div style="margin-top:12px;padding:10px;border:1px solid var(--line);background:var(--panel-2);border-radius:8px">
         <div style="font-weight:600;font-size:13px;margin-bottom:8px">📍 Business address</div>
-        <div><label>Street address</label><input id="f-b-street" value="${esc(acc.business_street||'')}" autocomplete="street-address"/></div>
+        <div class="grid-2" style="grid-template-columns:2fr 1fr">
+          <div><label>Street address</label><input id="f-b-street" value="${esc(acc.business_street||'')}" autocomplete="street-address"/></div>
+          <div><label>Suite / Apt / Unit</label><input id="f-b-suite" value="${esc(acc.business_suite||'')}" autocomplete="address-line2" placeholder="Ste 202"/></div>
+        </div>
         <div class="grid-3" style="margin-top:8px">
           <div><label>City</label><input id="f-b-city" value="${esc(acc.business_city||'')}" autocomplete="address-level2"/></div>
           <div><label>State</label><input id="f-b-state" value="${esc(acc.business_state||'')}" autocomplete="address-level1" placeholder="CO"/></div>
@@ -578,7 +581,10 @@ const accounts = {
 
       <div id="f-billing-block" style="margin-top:8px;padding:10px;border:1px solid var(--line);background:var(--panel-2);border-radius:8px">
         <div style="font-weight:600;font-size:13px;margin-bottom:8px">💳 Billing address</div>
-        <div><label>Street address</label><input id="f-l-street" value="${esc(acc.billing_street||'')}" autocomplete="street-address"/></div>
+        <div class="grid-2" style="grid-template-columns:2fr 1fr">
+          <div><label>Street address</label><input id="f-l-street" value="${esc(acc.billing_street||'')}" autocomplete="street-address"/></div>
+          <div><label>Suite / Apt / Unit</label><input id="f-l-suite" value="${esc(acc.billing_suite||'')}" autocomplete="address-line2" placeholder="Ste 202"/></div>
+        </div>
         <div class="grid-3" style="margin-top:8px">
           <div><label>City</label><input id="f-l-city" value="${esc(acc.billing_city||'')}" autocomplete="address-level2"/></div>
           <div><label>State</label><input id="f-l-state" value="${esc(acc.billing_state||'')}" autocomplete="address-level1" placeholder="CO"/></div>
@@ -723,18 +729,21 @@ const accounts = {
      When unchecked: re-enable billing fields for independent editing. */
   toggleBillingSame(checked){
     const bStreet = document.getElementById('f-b-street').value;
+    const bSuite  = document.getElementById('f-b-suite')?.value || '';
     const bCity   = document.getElementById('f-b-city').value;
     const bState  = document.getElementById('f-b-state').value;
     const bZip    = document.getElementById('f-b-zip').value;
-    const ids = ['f-l-street','f-l-city','f-l-state','f-l-zip'];
+    const ids = ['f-l-street','f-l-suite','f-l-city','f-l-state','f-l-zip'];
     if(checked){
       /* Auto-fill billing from business */
       document.getElementById('f-l-street').value = bStreet;
+      if(document.getElementById('f-l-suite')) document.getElementById('f-l-suite').value = bSuite;
       document.getElementById('f-l-city').value = bCity;
       document.getElementById('f-l-state').value = bState;
       document.getElementById('f-l-zip').value = bZip;
       ids.forEach(id => {
         const el = document.getElementById(id);
+        if(!el) return;
         el.disabled = true;
         el.style.opacity = '0.55';
       });
@@ -743,6 +752,7 @@ const accounts = {
     } else {
       ids.forEach(id => {
         const el = document.getElementById(id);
+        if(!el) return;
         el.disabled = false;
         el.style.opacity = '';
       });
@@ -757,24 +767,30 @@ const accounts = {
        (belt+suspenders — the checkbox onchange already did this, but re-copy
        in case business fields were edited after checking the box). */
     const bStreet = get('f-b-street').trim();
+    const bSuite  = (document.getElementById('f-b-suite')?.value || '').trim();
     const bCity   = get('f-b-city').trim();
     const bState  = get('f-b-state').trim();
     const bZip    = get('f-b-zip').trim();
     const lStreet = same ? bStreet : get('f-l-street').trim();
+    const lSuite  = same ? bSuite  : (document.getElementById('f-l-suite')?.value || '').trim();
     const lCity   = same ? bCity   : get('f-l-city').trim();
     const lState  = same ? bState  : get('f-l-state').trim();
     const lZip    = same ? bZip    : get('f-l-zip').trim();
     /* Concatenate into legacy single-line address columns so anything
        reading those (invoice, dashboard summary, etc.) still works
-       during the transition. Format: "street, city, state zip" */
-    const joinAddr = (s, c, st, z) => [s, [c, st].filter(Boolean).join(', '), z].filter(Boolean).join(', ');
-    const businessAddressLine = joinAddr(bStreet, bCity, bState, bZip);
-    const billingAddressLine  = joinAddr(lStreet, lCity, lState, lZip);
+       during the transition. Format: "street[, suite], city, state zip" */
+    const joinAddr = (s, su, c, st, z) => [
+      [s, su].filter(Boolean).join(', '),
+      [c, st].filter(Boolean).join(', '),
+      z
+    ].filter(Boolean).join(', ');
+    const businessAddressLine = joinAddr(bStreet, bSuite, bCity, bState, bZip);
+    const billingAddressLine  = joinAddr(lStreet, lSuite, lCity, lState, lZip);
     const payload = {
       business_name:get('f-bn'), type:get('f-type'), billing_name:get('f-rn'),
       email:get('f-em'),
-      business_street: bStreet, business_city: bCity, business_state: bState, business_zip: bZip,
-      billing_street: lStreet, billing_city: lCity, billing_state: lState, billing_zip: lZip,
+      business_street: bStreet, business_suite: bSuite, business_city: bCity, business_state: bState, business_zip: bZip,
+      billing_street: lStreet, billing_suite: lSuite, billing_city: lCity, billing_state: lState, billing_zip: lZip,
       billing_same_as_business: same,
       business_address: businessAddressLine, billing_address: billingAddressLine,
       cell:get('f-cell'), business_phone:get('f-bp'),
@@ -792,10 +808,10 @@ const accounts = {
     /* Graceful fallback: if the DB doesn't have the new structured
        columns yet (Dan hasn't run the address SQL migration), retry
        with a legacy-only payload so the save still succeeds. */
-    if(q.error && /business_street|billing_street|billing_same_as_business|billing_city|billing_state|billing_zip|business_city|business_state|business_zip/.test(q.error.message||'')){
+    if(q.error && /business_street|business_suite|billing_street|billing_suite|billing_same_as_business|billing_city|billing_state|billing_zip|business_city|business_state|business_zip/.test(q.error.message||'')){
       const {
-        business_street, business_city, business_state, business_zip,
-        billing_street, billing_city, billing_state, billing_zip,
+        business_street, business_suite, business_city, business_state, business_zip,
+        billing_street, billing_suite, billing_city, billing_state, billing_zip,
         billing_same_as_business,
         ...legacyPayload
       } = payload;
