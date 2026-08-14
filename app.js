@@ -91,6 +91,9 @@ const auth = {
       }
     }
     errEl.classList.add('hide');
+    /* Fresh sign-in resets the absolute-timeout clock so a stale 12h+ timestamp
+       in localStorage doesn't insta-log-out the user seconds after login. */
+    try { absoluteTimeout.reset(); } catch(_){}
     await boot();
   },
   async signup(){
@@ -201,7 +204,15 @@ const auth = {
     });
     ui.busy(false);
     if(error){
-      errEl.textContent = 'Sign-in link failed: ' + error.message;
+      /* Translate Supabase's cryptic errors into actionable messages. */
+      const raw = String(error.message || '');
+      let human = 'Sign-in link failed: ' + raw;
+      if(/Signups not allowed|otp|not authorized/i.test(raw)){
+        human = "This email isn't in our system yet. Ask your admin to add you from the Reps tab — you'll get a fresh invite link.";
+      } else if(/rate limit|too many/i.test(raw)){
+        human = "Too many sign-in link requests. Wait a minute and try again.";
+      }
+      errEl.textContent = human;
       errEl.classList.remove('hide'); errEl.classList.remove('ok'); errEl.classList.add('err');
       return;
     }
@@ -867,20 +878,24 @@ const accounts = {
 };
 
 /* ---------- ORDERS ---------- */
+/* Test-mode orders (is_test = true) are excluded from every list here so
+   they never inflate KPIs, dashboards, commissions, or the Orders list.
+   `is_test IS NOT true` catches both false and null (older orders that
+   pre-date the column). */
 const orders = {
   async listMTD(){
     const from = startOfMonth();
-    const { data, error } = await sb.from('orders').select('*').eq('status','finalized').gte('placed_at', from);
+    const { data, error } = await sb.from('orders').select('*').eq('status','finalized').gte('placed_at', from).not('is_test','is',true);
     if(error){ ui.err(error); return []; }
     return data || [];
   },
   async lastForAccount(accountId){
-    const { data, error } = await sb.from('orders').select('*').eq('account_id', accountId).order('placed_at',{ascending:false}).limit(1);
+    const { data, error } = await sb.from('orders').select('*').eq('account_id', accountId).not('is_test','is',true).order('placed_at',{ascending:false}).limit(1);
     if(error){ return null; }
     return (data && data[0]) || null;
   },
   async listAll(){
-    const { data, error } = await sb.from('orders').select('*').order('placed_at',{ascending:false});
+    const { data, error } = await sb.from('orders').select('*').not('is_test','is',true).order('placed_at',{ascending:false});
     if(error){ ui.err(error); return []; }
     return data || [];
   },
@@ -1019,12 +1034,13 @@ const orders = {
       </div>
 
       <div class="row" style="gap:8px;margin-top:6px">
-        <button class="icon-btn" onclick="orders.saveDraft('${orders._draft.id||''}', ${isNew})">Save draft</button>
-        <button class="icon-btn primary" onclick="orders.finalize('${orders._draft.id||''}', ${isNew})">${(cache.me && cache.me.test_mode && cache.me.role !== 'admin') ? '🧪 Complete (test only)' : 'Finalize & invoice'}</button>
+        ${orders._draft.status !== 'finalized' ? `<button class="icon-btn" onclick="orders.saveDraft('${orders._draft.id||''}', ${isNew})">Save draft</button>` : ''}
+        ${orders._draft.status !== 'finalized' ? `<button class="icon-btn primary" onclick="orders.finalize('${orders._draft.id||''}', ${isNew})">${(cache.me && cache.me.test_mode && cache.me.role !== 'admin') ? '🧪 Complete (test only)' : 'Finalize & invoice'}</button>` : ''}
         ${!isNew && shopify.mode()==='live' && !(cache.me && cache.me.test_mode && cache.me.role !== 'admin') ? `<button class="icon-btn" onclick="orders.pushToShopify('${orders._draft.id}')">Push to Shopify</button>`:''}
-        ${!isNew?`<button class="icon-btn danger" onclick="orders.remove('${orders._draft.id}')">Delete</button>`:''}
+        ${!isNew && orders._draft.status === 'draft' ? `<button class="icon-btn danger" onclick="orders.remove('${orders._draft.id}')">Delete</button>`:''}
         <button class="icon-btn ghost" onclick="ui.closeModal()">Close</button>
       </div>
+      ${!isNew && orders._draft.status === 'finalized' ? '<p class="muted" style="font-size:12px;margin-top:8px">📋 This order is finalized — read-only. To void or refund, do it in Shopify. To create a similar new order, use "+ New Order".</p>' : ''}
     `);
     /* For existing orders, mark account as already-loaded so refresh() doesn't overwrite the order's saved tax_exempt */
     if(!isNew && orders._draft.account_id){
@@ -1279,9 +1295,16 @@ const orders = {
         if(looksLikeInvalidCustomer(e) && d.account_id){
           console.warn('Shopify rejected — auto-healing by nulling stored customer ID and retrying', e);
           try {
-            await sb.from('accounts').update({ shopify_customer_id: null }).eq('id', d.account_id);
-            ui.toast('Shopify link auto-reset (stale customer) — retrying push…');
-            sr = await pushOnce();
+            /* Verify the update actually took (RLS could silently 0-row it
+               if the account isn't owned by this rep) before retrying. */
+            const upd = await sb.from('accounts').update({ shopify_customer_id: null }).eq('id', d.account_id).select('id');
+            if(upd.error || !upd.data || upd.data.length === 0){
+              ui.toast('Order finalized. Shopify push failed and auto-heal could not reset the customer link — ask an admin to open this account and click "Reset Shopify link".');
+              console.warn('auto-heal update returned 0 rows or error:', upd.error);
+            } else {
+              ui.toast('Shopify link auto-reset (stale customer) — retrying push…');
+              sr = await pushOnce();
+            }
           } catch(retryErr){
             ui.toast('Order finalized but Shopify push failed even after auto-reset: ' + (retryErr?.message || retryErr) + '. Use "Push to Shopify" on the order to retry manually.');
             console.warn('auto-heal retry failed:', retryErr);
@@ -1637,9 +1660,14 @@ const reports = {
     const acct = document.getElementById('rep-acct').value.trim().toUpperCase();
     const ord  = document.getElementById('rep-ord').value.trim().toUpperCase();
     const typ  = document.getElementById('rep-type').value;
-    let q = sb.from('orders').select('*, account:accounts(account_number,business_name,type)').eq('status','finalized');
+    let q = sb.from('orders').select('*, account:accounts(account_number,business_name,type)').eq('status','finalized').not('is_test','is',true);
     if(from) q = q.gte('placed_at', from);
-    if(to)   q = q.lte('placed_at', to + 'T23:59:59');
+    /* Cast the end-of-day cutoff to the client's local timezone so late-in-the-day
+       orders (evening UTC roll-over) still fall inside "today". */
+    if(to){
+      const endLocal = new Date(to + 'T23:59:59');
+      q = q.lte('placed_at', endLocal.toISOString());
+    }
     if(repId) q = q.eq('rep_id', repId);
     if(ord) q = q.ilike('order_number', `%${ord}%`);
     const { data, error } = await q.order('placed_at',{ascending:true});
@@ -1930,8 +1958,8 @@ const reports = {
 
     /* Fetch prior-year same-period orders */
     const repId = document.getElementById('rep-rep').value;
-    let q = sb.from('orders').select('rep_id, total, shipping, tax').eq('status','finalized')
-      .gte('placed_at', pfIso).lte('placed_at', ptIso + 'T23:59:59');
+    let q = sb.from('orders').select('rep_id, total, shipping, tax').eq('status','finalized').not('is_test','is',true)
+      .gte('placed_at', pfIso).lte('placed_at', new Date(ptIso + 'T23:59:59').toISOString());
     if(repId) q = q.eq('rep_id', repId);
     const r = await q;
     if(r.error){ card.classList.add('hide'); return; }
@@ -2113,18 +2141,21 @@ const materials = {
   _files: [],
 
   /* Load all files across every category folder. Signed download URLs are
-     generated on click, not up-front, so this stays fast even at 100+ files. */
+     generated on click, not up-front, so this stays fast even at 100+ files.
+     Parallelizes the 6 category listings so total wait ~= slowest single
+     bucket call, not sum-of-6. Cuts first-tap latency from ~2s to ~350ms. */
   async loadAll(){
-    const all = [];
-    for(const cat of materials.CATEGORIES){
+    const listOne = async (cat) => {
       const { data, error } = await sb.storage.from(materials.BUCKET).list(cat, {
         limit: 500, sortBy: { column: 'name', order: 'asc' }
       });
-      if(error){ continue; }
-      (data||[]).filter(f => f.name && f.name !== '.emptyFolderPlaceholder')
-        .forEach(f => all.push({ ...f, category: cat, path: `${cat}/${f.name}` }));
-    }
-    materials._files = all;
+      if(error) return [];
+      return (data||[])
+        .filter(f => f.name && f.name !== '.emptyFolderPlaceholder')
+        .map(f => ({ ...f, category: cat, path: `${cat}/${f.name}` }));
+    };
+    const results = await Promise.all(materials.CATEGORIES.map(listOne));
+    materials._files = results.flat();
   },
 
   async render(){
@@ -2424,6 +2455,8 @@ const profile = {
       }
       const er = await sb.auth.updateUser({ email: newEmail });
       if(er.error){
+        /* Revert the input so the user isn't misled into thinking the change stuck. */
+        document.getElementById('p-email').value = currentEmail;
         ui.err(er.error);
         return;
       }
@@ -4173,6 +4206,17 @@ async function boot(){
     document.getElementById('app').classList.add('hide');
     return;
   }
+  /* If the session token was issued after the stale localStorage timestamp
+     (which can happen when the user closes/reopens the browser and the
+     supabase session refresh brings them back in), reset the absolute
+     timeout clock so we don't insta-log them out. */
+  try {
+    const started = parseInt(localStorage.getItem(absoluteTimeout.KEY) || '0', 10);
+    const sessionIssuedMs = (session.expires_at ? (session.expires_at - (session.expires_in || 3600)) * 1000 : Date.now());
+    if(!started || sessionIssuedMs > started){
+      absoluteTimeout.reset();
+    }
+  } catch(_){}
   try{
     await profiles.loadMe(session.user.id);
     if(cache.me?.disabled){
@@ -4183,7 +4227,11 @@ async function boot(){
     }
     await Promise.all([ref.loadAll(), profiles.loadReps()]);
   } catch(e){
+    /* Don't hide the auth screen on boot failure — leaving the app half-loaded
+       is worse than showing the sign-in page with an error. Rep can retry. */
     ui.err(e);
+    document.getElementById('auth').classList.remove('hide');
+    document.getElementById('app').classList.add('hide');
     return;
   }
   document.getElementById('auth').classList.add('hide');
