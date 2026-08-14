@@ -226,7 +226,7 @@ const auth = {
     setTimeout(()=>{
       ui.modal(`
         <h3>Set a new password</h3>
-        <p class="muted" style="font-size:13px;margin:0 0 12px">Choose a strong password — at least 14 characters, or 10+ with letters, numbers, and a symbol.</p>
+        <p class="muted" style="font-size:13px;margin:0 0 12px">Choose a strong password — at least 12 characters, or 10+ with letters, numbers, and a symbol.</p>
         <div id="pwr-err" class="alert err hide" style="margin-bottom:10px"></div>
         <div style="margin-bottom:10px">
           <label>New password</label>
@@ -266,9 +266,9 @@ const auth = {
   passwordStrength(pw){
     pw = String(pw||'');
     if(pw.length < 10) return { ok:false, msg:'Password must be at least 10 characters.' };
-    if(pw.length >= 14) return { ok:true };
+    if(pw.length >= 12) return { ok:true };
     const classes = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/].filter(r => r.test(pw)).length;
-    if(classes < 3) return { ok:false, msg:'Short passwords need 3 of: lowercase, uppercase, number, symbol. Or use 14+ characters.' };
+    if(classes < 3) return { ok:false, msg:'Short passwords need 3 of: lowercase, uppercase, number, symbol. Or use 12+ characters.' };
     if(/^password|^123456|^qwerty|^letmein|^admin/i.test(pw)) return { ok:false, msg:'That password is too common. Pick something less predictable.' };
     return { ok:true };
   },
