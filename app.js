@@ -3142,7 +3142,30 @@ const adminPanel = {
     const full = (cache.repsFull && cache.repsFull.length) ? cache.repsFull : cache.reps;
     const r = id ? full.find(x=>x.id===id) : null;
     const isNew = !r;
+
+    /* For a NEW rep, pre-fill Rep ID with the next available R-### so the
+       admin doesn't leave it blank. The DB trigger auto-assigns on signup
+       too, but suggesting it in the invite lets the admin see and adjust
+       the ID up front. Scan both live profiles and pending invites so we
+       don't collide with an invite that hasn't been redeemed yet. */
+    let suggestedRepId = '';
+    if(isNew){
+      try {
+        const pending = await sb.from('pending_invites').select('rep_id');
+        const allIds = [
+          ...full.map(x => x.rep_id),
+          ...((pending.data || []).map(x => x.rep_id))
+        ];
+        const nums = allIds.map(v => {
+          const m = /^R-(\d+)$/i.exec(String(v || ''));
+          return m ? parseInt(m[1], 10) : 0;
+        });
+        const max = nums.length ? Math.max(0, ...nums) : 0;
+        suggestedRepId = 'R-' + String(max + 1).padStart(3, '0');
+      } catch(_) { suggestedRepId = ''; }
+    }
     const prof = r || { email:'', name:'', rep_id:'', role:'rep', commission:20, territory:[], cell:'', company:'', street:'', city:'', state:'', zip:'' };
+    const repIdValue = isNew ? suggestedRepId : (prof.rep_id || '');
     ui.modal(`
       <h3>${isNew?'Add rep':'Edit '+esc(prof.name||prof.email)}</h3>
       ${isNew ? '<p class="muted" style="font-size:13px;margin:0 0 12px">If this email has already signed up, this updates their profile. If not, the settings are saved as a pending invite and applied automatically when they sign up.</p>' : ''}
@@ -3153,7 +3176,7 @@ const adminPanel = {
         <div><label>Company (optional)</label><input id="r-company" value="${esc(prof.company||'')}"/></div>
         <div><label>Tax ID / EIN (optional)</label><input id="r-tax-id" value="${esc(prof.tax_id||'')}" placeholder="For 1099 purposes"/></div>
         <div></div>
-        <div><label>Rep ID</label><input id="r-repid" value="${esc(prof.rep_id||'')}" placeholder="R-002"/></div>
+        <div><label>Rep ID ${isNew?'<span class="muted" style="font-size:11px">(next available — override if you want)</span>':''}</label><input id="r-repid" value="${esc(repIdValue)}" placeholder="R-002"/></div>
         <div><label>Role</label>
           <select id="r-role">
             <option value="rep" ${prof.role==='rep'?'selected':''}>rep</option>
