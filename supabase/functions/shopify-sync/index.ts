@@ -76,7 +76,14 @@ serve(async (req: Request): Promise<Response> => {
     return json({ error: "Shopify not configured. Set SHOPIFY_CLIENT_ID + SHOPIFY_CLIENT_SECRET (Dev Dashboard app) or the legacy SHOPIFY_ADMIN_TOKEN." }, 500);
   }
 
-  /* --- verify caller is an authenticated admin --- */
+  /* --- verify caller is authenticated + not disabled ---
+     Two authorization tiers:
+       Rep-safe actions (create_draft_order, push_account, get_order_status)
+         — either role works. RLS filters what data they can read via the
+         userClient; a rep can only touch their own rows.
+       Admin-only actions (test_connection, pull_products, register_webhooks)
+         — admin role required. These read/write shared state (settings,
+         product catalog, webhook subscriptions) that reps shouldn't touch. */
   const authHeader = req.headers.get("Authorization") ?? "";
   if (!authHeader.startsWith("Bearer ")) return json({ error: "Authorization required" }, 401);
   const userClient = createClient(SUPABASE_URL, SUPABASE_ANON, {
@@ -86,9 +93,9 @@ serve(async (req: Request): Promise<Response> => {
   const { data: userData, error: userErr } = await userClient.auth.getUser();
   if (userErr || !userData?.user) return json({ error: "Not authenticated" }, 401);
   const { data: profile } = await userClient
-    .from("profiles").select("role, disabled").eq("id", userData.user.id).single();
-  if (!profile || profile.role !== "admin" || profile.disabled) {
-    return json({ error: "Admin access required" }, 403);
+    .from("profiles").select("role, rep_id, disabled").eq("id", userData.user.id).single();
+  if (!profile || profile.disabled) {
+    return json({ error: "Access denied. Contact your administrator." }, 403);
   }
 
   /* service-role client — bypasses RLS for sync writes and token cache */
@@ -98,6 +105,37 @@ serve(async (req: Request): Promise<Response> => {
   try { body = await req.json(); } catch { return json({ error: "Invalid JSON body" }, 400); }
   const action = body?.action;
   const payload = body?.payload || {};
+
+  /* Per-action authorization */
+  const ADMIN_ONLY = new Set(["test_connection", "pull_products", "register_webhooks"]);
+  if (ADMIN_ONLY.has(action) && profile.role !== "admin") {
+    return json({ error: "Admin access required for this action." }, 403);
+  }
+
+  /* For rep-scoped actions, verify the payload references records the rep owns.
+     Prevents a rep from crafting a request to push another rep's order. */
+  if (profile.role !== "admin") {
+    if (action === "create_draft_order" || action === "get_order_status") {
+      const orderId = payload?.order_id;
+      if (orderId) {
+        const { data: ord } = await userClient.from("orders").select("id, rep_id").eq("id", orderId).maybeSingle();
+        if (!ord) return json({ error: "Order not found or not accessible to you." }, 403);
+        if (profile.rep_id && ord.rep_id !== profile.rep_id) {
+          return json({ error: "You can only push your own orders to Shopify." }, 403);
+        }
+      }
+    }
+    if (action === "push_account") {
+      const accountId = payload?.account_id;
+      if (accountId) {
+        const { data: acc } = await userClient.from("accounts").select("id, rep_id").eq("id", accountId).maybeSingle();
+        if (!acc) return json({ error: "Account not found or not accessible to you." }, 403);
+        if (profile.rep_id && acc.rep_id !== profile.rep_id) {
+          return json({ error: "You can only push your own accounts to Shopify." }, 403);
+        }
+      }
+    }
+  }
 
   try {
     let result: any;
