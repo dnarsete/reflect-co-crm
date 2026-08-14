@@ -207,10 +207,13 @@ const auth = {
       /* Translate Supabase's cryptic errors into actionable messages. */
       const raw = String(error.message || '');
       let human = 'Sign-in link failed: ' + raw;
-      if(/Signups not allowed|otp|not authorized/i.test(raw)){
+      if(/Signups not allowed|not authorized/i.test(raw)){
         human = "This email isn't in our system yet. Ask your admin to add you from the Reps tab — you'll get a fresh invite link.";
-      } else if(/rate limit|too many/i.test(raw)){
-        human = "Too many sign-in link requests. Wait a minute and try again.";
+      } else if(/security purposes|only request this after|rate limit|too many|for security/i.test(raw)){
+        /* Extract the seconds-to-wait if Supabase told us. */
+        const m = /after (\d+) seconds?/i.exec(raw);
+        const wait = m ? m[1] : '60';
+        human = `A sign-in link was just sent — check your inbox (and spam folder). If you need a new one, wait ${wait} seconds and click again. Old links are still valid for up to 1 hour.`;
       }
       errEl.textContent = human;
       errEl.classList.remove('hide'); errEl.classList.remove('ok'); errEl.classList.add('err');
