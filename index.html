@@ -56,51 +56,58 @@
       </div>
     </div>
     <h1>Sign in</h1>
-    <div class="sub">Real accounts, real shared data. First-time users hit <b>Create account</b>.</div>
+    <div class="sub">Enter your email and we'll send you a one-click sign-in link. No password needed.</div>
     <div id="auth-err" class="alert err hide" style="margin-bottom:10px"></div>
-    <form onsubmit="event.preventDefault();auth.login()">
-      <div style="margin-bottom:10px">
-        <label>Email <span class="muted" style="font-size:11px">*</span></label>
-        <input id="auth-email" type="email" placeholder="you@thereflectco.com" autocomplete="username" autocapitalize="none" spellcheck="false" />
-      </div>
-      <div style="margin-bottom:10px">
-        <label>Password <span class="muted" style="font-size:11px">*</span></label>
-        <input id="auth-pass" type="password" placeholder="At least 10 characters" autocomplete="current-password" autocapitalize="none" spellcheck="false" />
-      </div>
 
-      <div id="signup-extras" class="hide">
-        <div style="border-top:1px solid var(--line);padding-top:10px;margin-bottom:8px">
-          <div class="muted" style="font-size:12px;margin-bottom:8px"><span style="color:var(--brand)">*</span> = required</div>
-          <div class="grid-2">
-            <div><label>Full name <span class="muted" style="font-size:11px">*</span></label><input id="su-name" autocomplete="name"/></div>
-            <div><label>Cell phone <span class="muted" style="font-size:11px">*</span></label><input id="su-cell" type="tel" autocomplete="tel" placeholder="555-555-5555"/></div>
-            <div style="grid-column:1/-1"><label>Company (optional)</label><input id="su-company" autocomplete="organization"/></div>
-            <div style="grid-column:1/-1"><label>Street address</label><input id="su-street" autocomplete="street-address"/></div>
-            <div><label>City</label><input id="su-city" autocomplete="address-level2"/></div>
-            <div><label>State</label><input id="su-state" autocomplete="address-level1" placeholder="CO"/></div>
-            <div><label>ZIP</label><input id="su-zip" autocomplete="postal-code"/></div>
-          </div>
+    <!-- PRIMARY FLOW: magic link. Reps don't have passwords, so this must be the
+         default action. Enter key on the email field submits this form. -->
+    <form onsubmit="event.preventDefault();auth.magicLink()">
+      <div style="margin-bottom:10px">
+        <label>Email</label>
+        <input id="auth-email" type="email" placeholder="you@thereflectco.com" autocomplete="username" autocapitalize="none" spellcheck="false" required />
+      </div>
+      <button id="auth-magic-btn" type="submit" class="icon-btn primary grow" style="width:100%">
+        ✉️ Email me a sign-in link
+      </button>
+      <div class="muted" style="font-size:11px;text-align:center;margin-top:6px">One-click link, expires in 1 hour.</div>
+    </form>
+
+    <!-- SECONDARY FLOW: password sign-in for admins who set one up. Hidden by
+         default; expandable so it doesn't distract reps who don't have a password. -->
+    <details style="margin-top:14px;border-top:1px solid var(--line);padding-top:10px">
+      <summary style="cursor:pointer;font-size:13px" class="muted">I have a password</summary>
+      <form onsubmit="event.preventDefault();auth.login()" style="margin-top:10px">
+        <div style="margin-bottom:8px">
+          <label>Password</label>
+          <input id="auth-pass" type="password" placeholder="At least 10 characters" autocomplete="current-password" autocapitalize="none" spellcheck="false" />
+        </div>
+        <button id="auth-signin-btn" type="submit" class="icon-btn grow" style="width:100%">Sign in with password</button>
+        <div style="margin-top:8px;text-align:center">
+          <a href="#" onclick="auth.resetPassword();return false" class="muted" style="font-size:13px">Forgot password?</a>
+        </div>
+      </form>
+    </details>
+
+    <!-- SIGN-UP: hidden by default; the admin-invite flow is preferred. Kept for
+         the bootstrap admin (first-ever user) and any self-serve case. -->
+    <details style="margin-top:8px">
+      <summary style="cursor:pointer;font-size:13px" class="muted">First time here?</summary>
+      <div class="muted" style="font-size:13px;line-height:1.6;margin-top:6px">
+        Reps and admins are added by an existing admin. If you haven't received an invite email, contact your admin. First-ever bootstrap admin can create an account below.
+      </div>
+      <div id="signup-extras" class="hide" style="margin-top:8px">
+        <div class="grid-2">
+          <div><label>Full name <span class="muted" style="font-size:11px">*</span></label><input id="su-name" autocomplete="name"/></div>
+          <div><label>Cell phone <span class="muted" style="font-size:11px">*</span></label><input id="su-cell" type="tel" autocomplete="tel" placeholder="555-555-5555"/></div>
+          <div style="grid-column:1/-1"><label>Company (optional)</label><input id="su-company" autocomplete="organization"/></div>
+          <div style="grid-column:1/-1"><label>Street address</label><input id="su-street" autocomplete="street-address"/></div>
+          <div><label>City</label><input id="su-city" autocomplete="address-level2"/></div>
+          <div><label>State</label><input id="su-state" autocomplete="address-level1" placeholder="CO"/></div>
+          <div><label>ZIP</label><input id="su-zip" autocomplete="postal-code"/></div>
         </div>
       </div>
-
-      <div class="row" style="gap:8px;margin-top:6px">
-        <button id="auth-signin-btn" type="submit" class="icon-btn primary grow">Sign in</button>
-        <button id="auth-signup-btn" type="button" class="icon-btn grow" onclick="auth.signup()">Create account</button>
-      </div>
-      <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
-        <button id="auth-magic-btn" type="button" class="icon-btn grow" onclick="auth.magicLink()" style="width:100%">
-          ✉️ Email me a sign-in link
-        </button>
-        <div class="muted" style="font-size:11px;text-align:center;margin-top:4px">No password needed — we email you a one-click link.</div>
-      </div>
-      <div style="margin-top:8px;text-align:center">
-        <a href="#" onclick="auth.resetPassword();return false" class="muted" style="font-size:13px">Forgot password?</a>
-      </div>
-    </form>
-    <details style="margin-top:10px">
-      <summary>About accounts</summary>
-      <div class="muted" style="font-size:13px;line-height:1.6">
-        New users start as <b>reps</b>. An admin promotes them via Admin → Reps. Bootstrap: the first user can run a one-line SQL in Supabase to make themselves admin (see setup guide).
+      <div class="row" style="gap:8px;margin-top:8px">
+        <button id="auth-signup-btn" type="button" class="icon-btn grow" onclick="auth.signup()" style="width:100%">Create account (first-time bootstrap only)</button>
       </div>
     </details>
   </div>

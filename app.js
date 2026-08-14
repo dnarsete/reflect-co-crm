@@ -76,7 +76,7 @@ const auth = {
     const { error } = await sb.auth.signInWithPassword({ email, password: pass });
     ui.busy(false);
     if(error){
-      errEl.innerHTML = 'Sign-in failed: '+esc(error.message)+'.<br>If this is your first time, try <b>Create account</b> below.';
+      errEl.innerHTML = 'Sign-in failed: '+esc(error.message)+'.<br>If you don\'t have a password, close this section and use <b>✉️ Email me a sign-in link</b> above.';
       errEl.classList.remove('hide');
       return;
     }
