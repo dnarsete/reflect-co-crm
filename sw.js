@@ -3,7 +3,7 @@
    cache-first for static assets (icons, fonts), pass-through for
    Supabase API calls (never cache live data).  */
 
-const VERSION = 'reflect-crm-v21';
+const VERSION = 'reflect-crm-v22';
 const SHELL = [
   './',
   './index.html',

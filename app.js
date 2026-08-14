@@ -762,6 +762,15 @@ const accounts = {
   },
   async save(id, isNew){
     const get = i => document.getElementById(i).value;
+    /* Preflight: if a rep is creating a NEW account and they have no rep_id
+       assigned on their profile, the RLS policy will reject the insert with
+       a cryptic "new row violates row-level security policy" error. Block
+       here with a message they can actually act on. Admins can create
+       accounts freely (RLS admin-all bypasses this). */
+    if(isNew && !auth.isAdmin() && !auth.repId()){
+      alert("Your profile doesn't have a Rep ID assigned yet, so you can't create accounts.\n\nAsk your admin to open the Reps tab → Edit your profile → set a Rep ID → Save. Then sign out and back in.");
+      return;
+    }
     const same = document.getElementById('f-billing-same').checked;
     /* If "same as" is checked, copy business fields into billing at save time
        (belt+suspenders — the checkbox onchange already did this, but re-copy
@@ -796,7 +805,7 @@ const accounts = {
       cell:get('f-cell'), business_phone:get('f-bp'),
       sales_tax_license:get('f-stl'), sales_tax_state:get('f-sts'),
       tax_exempt: document.getElementById('f-exempt').checked,
-      opt_in:get('f-opt')==='true', rep_id: get('f-rep') || auth.repId()
+      opt_in:get('f-opt')==='true', rep_id: (get('f-rep').trim() || auth.repId() || null)
     };
     let q;
     if(isNew){
