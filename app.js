@@ -220,9 +220,17 @@ const auth = {
     errEl.innerHTML = '✉️ Sign-in link sent to <b>'+esc(email)+'</b>. Open it on this device to sign in. Link expires in 1 hour.';
   },
   async applyRecoveryFlow(){
-    /* After clicking the email link, Supabase puts a recovery token in the URL hash.
-       Render an in-page modal (never window.prompt — masked input + strength check + confirm). */
-    if(!location.hash.includes('access_token') && !location.hash.includes('type=recovery') && location.hash !== '#reset') return;
+    /* Fires ONLY for password-reset links (type=recovery) or the manual
+       #reset hash. Magic-link and invite links also carry access_token
+       in the hash, but they must NOT trigger this modal — reps invited
+       via magic link don't have (or need) a password. */
+    const isRecovery = /(^|[#&])type=recovery(&|$)/.test(location.hash) || location.hash === '#reset';
+    if(!isRecovery) return;
+    /* SECURITY: hide both auth screen and app so the dashboard/data is
+       not visible under the modal. Restored on submit via location.reload(). */
+    auth._recoveryPending = true;
+    document.getElementById('auth')?.classList.add('hide');
+    document.getElementById('app')?.classList.add('hide');
     setTimeout(()=>{
       ui.modal(`
         <h3>Set a new password</h3>
@@ -4223,6 +4231,14 @@ function csvWatermark(filterDesc){
 
 /* ---------- BOOT ---------- */
 async function boot(){
+  /* If a password-recovery flow is active, the dashboard must stay hidden
+     until the password is set (see auth.applyRecoveryFlow). Reload will
+     re-run boot() after the reset. */
+  if(auth._recoveryPending){
+    document.getElementById('auth').classList.add('hide');
+    document.getElementById('app').classList.add('hide');
+    return;
+  }
   const { data: { session } } = await sb.auth.getSession();
   if(!session){
     document.getElementById('auth').classList.remove('hide');
