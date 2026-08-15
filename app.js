@@ -3242,9 +3242,18 @@ const adminPanel = {
     const get = i => (document.getElementById(i)?.value || '');
     const email = get('r-email').trim().toLowerCase();
     const testMode = !!document.getElementById('r-testmode')?.checked;
+    /* Rep ID is REQUIRED at save time. The modal pre-fills the next
+       available R-###, but if the admin blanked it out (or the field
+       lost its value somehow), assign one server-side-safe before save
+       so no rep ever lands in the system without an ID. */
+    let repIdValue = get('r-repid').trim();
+    if(!repIdValue){
+      const next = await adminPanel._nextAvailableRepId();
+      repIdValue = next || '';
+    }
     const payload = {
       name: get('r-name').trim(),
-      rep_id: get('r-repid').trim() || null,
+      rep_id: repIdValue || null,
       role: get('r-role'),
       commission: parseFloat(get('r-comm')||'0') || 0,
       territory: get('r-terr').split(',').map(x=>x.trim()).filter(Boolean),
