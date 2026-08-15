@@ -3045,8 +3045,46 @@ const messages = {
 
 /* ---------- ADMIN ---------- */
 const adminPanel = {
+  /* One-shot backfill for legacy reps whose profile.rep_id is NULL
+     (created before the auto-assign trigger existed). Runs every time
+     admin opens the Reps tab; no-op when nothing needs patching. */
+  async _backfillMissingRepIds(){
+    try {
+      const stale = await sb.from('profiles').select('id, email, name').is('rep_id', null);
+      if(stale.error || !stale.data || !stale.data.length) return 0;
+      const [profs, pend] = await Promise.all([
+        sb.from('profiles').select('rep_id').not('rep_id', 'is', null),
+        sb.from('pending_invites').select('rep_id').not('rep_id', 'is', null)
+      ]);
+      const usedNums = new Set(
+        [...(profs.data||[]), ...(pend.data||[])]
+          .map(x => { const m=/^R-(\d+)$/i.exec(String(x.rep_id||'')); return m?parseInt(m[1],10):0; })
+          .filter(n => n > 0)
+      );
+      let next = 1;
+      let patched = 0;
+      for(const row of stale.data){
+        while(usedNums.has(next)) next++;
+        const newId = 'R-' + String(next).padStart(3, '0');
+        const upd = await sb.from('profiles').update({ rep_id: newId }).eq('id', row.id);
+        if(!upd.error){
+          usedNums.add(next);
+          patched++;
+          console.log(`[REFLECT] Auto-assigned ${newId} to ${row.email}`);
+        }
+        next++;
+      }
+      return patched;
+    } catch(_) { return 0; }
+  },
+
   async renderRepsAndInvites(){
+    /* Backfill legacy reps that predate the trigger, THEN load reps. */
+    const patched = await adminPanel._backfillMissingRepIds();
     await profiles.loadReps();
+    if(patched > 0){
+      ui.toast(`Auto-assigned Rep IDs to ${patched} rep${patched===1?'':'s'} who were missing one.`);
+    }
     const me = cache.me;
 
     /* Read search + filter (only present in the Reps view; safe defaults for admin view) */
@@ -3154,29 +3192,43 @@ const adminPanel = {
     const r = id ? full.find(x=>x.id===id) : null;
     const isNew = !r;
 
-    /* For a NEW rep, pre-fill Rep ID with the next available R-### so the
-       admin doesn't leave it blank. The DB trigger auto-assigns on signup
-       too, but suggesting it in the invite lets the admin see and adjust
-       the ID up front. Scan both live profiles and pending invites so we
-       don't collide with an invite that hasn't been redeemed yet. */
-    let suggestedRepId = '';
-    if(isNew){
-      try {
-        const pending = await sb.from('pending_invites').select('rep_id');
-        const allIds = [
-          ...full.map(x => x.rep_id),
-          ...((pending.data || []).map(x => x.rep_id))
-        ];
-        const nums = allIds.map(v => {
-          const m = /^R-(\d+)$/i.exec(String(v || ''));
-          return m ? parseInt(m[1], 10) : 0;
-        });
-        const max = nums.length ? Math.max(0, ...nums) : 0;
-        suggestedRepId = 'R-' + String(max + 1).padStart(3, '0');
-      } catch(_) { suggestedRepId = ''; }
+    /* Build the Rep ID dropdown from every rep + pending invite currently
+       in the system. Sequential R-001 through max(existing)+5, with taken
+       slots disabled and labeled by owner. Prevents collisions at pick time. */
+    const pendingRes = await sb.from('pending_invites').select('rep_id, email, name');
+    const pendingList = pendingRes.data || [];
+    const takenBy = {};
+    full.forEach(x => { if(x.rep_id) takenBy[String(x.rep_id).toUpperCase()] = {name:x.name, email:x.email, kind:'rep'}; });
+    pendingList.forEach(x => { if(x.rep_id) takenBy[String(x.rep_id).toUpperCase()] = {name:x.name, email:x.email, kind:'invite'}; });
+    const usedNums = Object.keys(takenBy).map(k => { const m=/^R-(\d+)$/i.exec(k); return m?parseInt(m[1],10):0; }).filter(n=>n>0);
+    const maxNum = usedNums.length ? Math.max(0, ...usedNums) : 0;
+    const showUpTo = Math.max(10, maxNum + 5);
+    const currentRepId = (r?.rep_id || '').toUpperCase();
+    /* Pre-select: current rep's own ID for edits, first available for new. */
+    let firstAvailable = null;
+    for(let i=1; i<=showUpTo; i++){
+      const cand = 'R-' + String(i).padStart(3, '0');
+      if(!takenBy[cand]){ firstAvailable = cand; break; }
     }
+    const preselect = isNew ? firstAvailable : (currentRepId || firstAvailable);
+    const repIdOpts = [];
+    for(let i=1; i<=showUpTo; i++){
+      const cand = 'R-' + String(i).padStart(3, '0');
+      const owner = takenBy[cand];
+      const isCurrent = (cand === currentRepId);
+      const isSelected = (cand === preselect);
+      if(owner && !isCurrent){
+        const who = owner.name || owner.email || '?';
+        const marker = owner.kind === 'invite' ? 'pending' : 'taken';
+        repIdOpts.push(`<option value="${cand}" disabled>${cand} — ${marker} (${esc(who)})</option>`);
+      } else {
+        const label = isCurrent ? `${cand} (this rep)` : `${cand} (available)`;
+        repIdOpts.push(`<option value="${cand}" ${isSelected?'selected':''}>${label}</option>`);
+      }
+    }
+    const repIdOptions = repIdOpts.join('');
+
     const prof = r || { email:'', name:'', rep_id:'', role:'rep', commission:20, territory:[], cell:'', company:'', street:'', city:'', state:'', zip:'' };
-    const repIdValue = isNew ? suggestedRepId : (prof.rep_id || '');
     ui.modal(`
       <h3>${isNew?'Add rep':'Edit '+esc(prof.name||prof.email)}</h3>
       ${isNew ? '<p class="muted" style="font-size:13px;margin:0 0 12px">If this email has already signed up, this updates their profile. If not, the settings are saved as a pending invite and applied automatically when they sign up.</p>' : ''}
@@ -3187,7 +3239,9 @@ const adminPanel = {
         <div><label>Company (optional)</label><input id="r-company" value="${esc(prof.company||'')}"/></div>
         <div><label>Tax ID / EIN (optional)</label><input id="r-tax-id" value="${esc(prof.tax_id||'')}" placeholder="For 1099 purposes"/></div>
         <div></div>
-        <div><label>Rep ID ${isNew?'<span class="muted" style="font-size:11px">(next available — override if you want)</span>':''}</label><input id="r-repid" value="${esc(repIdValue)}" placeholder="R-002"/></div>
+        <div><label>Rep ID <span class="muted" style="font-size:11px">${isNew?'(next available auto-selected)':'(pick any available)'}</span></label>
+          <select id="r-repid" style="width:100%">${repIdOptions}</select>
+        </div>
         <div><label>Role</label>
           <select id="r-role">
             <option value="rep" ${prof.role==='rep'?'selected':''}>rep</option>
@@ -3242,14 +3296,22 @@ const adminPanel = {
     const get = i => (document.getElementById(i)?.value || '');
     const email = get('r-email').trim().toLowerCase();
     const testMode = !!document.getElementById('r-testmode')?.checked;
-    /* Rep ID is REQUIRED at save time. The modal pre-fills the next
-       available R-###, but if the admin blanked it out (or the field
-       lost its value somehow), assign one server-side-safe before save
-       so no rep ever lands in the system without an ID. */
-    let repIdValue = get('r-repid').trim();
+    /* Rep ID is REQUIRED at save time. The modal now presents a dropdown
+       (disabled options for taken IDs), so blank should be impossible —
+       but if the field is somehow empty, assign next available. Also
+       guard against a duplicate: if the chosen ID is already assigned
+       to another rep, block the save and tell the admin. */
+    let repIdValue = get('r-repid').trim().toUpperCase();
     if(!repIdValue){
       const next = await adminPanel._nextAvailableRepId();
       repIdValue = next || '';
+    }
+    if(repIdValue){
+      const dupRep = (cache.repsFull||cache.reps||[]).find(x => x.id !== id && (x.rep_id||'').toUpperCase() === repIdValue);
+      if(dupRep){
+        alert(`Rep ID ${repIdValue} is already assigned to ${dupRep.name || dupRep.email}. Please pick a different Rep ID.`);
+        return;
+      }
     }
     const payload = {
       name: get('r-name').trim(),
