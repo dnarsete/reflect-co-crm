@@ -1264,6 +1264,38 @@ const orders = {
        no real Shopify draft, no real money. */
     const inTestMode = !!(cache.me && cache.me.test_mode && cache.me.role !== 'admin');
 
+    /* Non-test orders push to Shopify. Shopify will refuse checkout ("Shipping
+       not available") if the account has no complete shipping address, and the
+       shipping charge silently disappears. Enforce a full City/State/ZIP up
+       front so no order goes out with a broken shipping address. Admins in
+       test mode skip this — nothing pushes to Shopify anyway. */
+    if(!inTestMode){
+      const acctRes = await sb.from('accounts')
+        .select('business_name, business_street, business_address, business_city, business_state, business_zip')
+        .eq('id', d.account_id).single();
+      const a = acctRes.data || {};
+      const hasStreet = !!(a.business_street || a.business_address);
+      const missing = [];
+      if(!hasStreet)      missing.push('Street address');
+      if(!a.business_city)  missing.push('City');
+      if(!a.business_state) missing.push('State');
+      if(!a.business_zip)   missing.push('ZIP');
+      if(missing.length){
+        ui.modal(`
+          <h3 style="margin:0 0 10px">⚠️ Shipping address incomplete</h3>
+          <p style="margin:0 0 8px">Before this order can be sent to Shopify, the account <b>${esc(a.business_name||'')}</b> needs a complete business address.</p>
+          <p style="margin:0 0 8px"><b>Missing:</b> ${missing.join(', ')}</p>
+          <p style="margin:0 0 8px;color:var(--muted);font-size:13px">If Shopify doesn't have the full address, checkout will fail with "Shipping not available" and the shipping charge on the invoice will be lost.</p>
+          <p style="margin:0 0 12px">Fix it: open <b>Accounts</b> → this account → fill in the missing fields → <b>Save</b>. Then come back and finalize the order.</p>
+          <div class="row" style="gap:8px">
+            <button class="icon-btn primary" onclick="ui.closeModal();accounts.open('${esc(d.account_id).replace(/'/g,'&#39;')}')">Open account now</button>
+            <button class="icon-btn ghost" onclick="ui.closeModal()">Close</button>
+          </div>
+        `);
+        return;
+      }
+    }
+
     const sub = d.items.reduce((s,i)=>s+i.qty*i.price,0);
     const discPct = sub>0 ? (Number(d.discount)/sub*100) : 0;
     const adminFlag = discPct >= ref.highDiscPct() ? `High discount (${discPct.toFixed(1)}%) — admin will be notified.\n` : '';

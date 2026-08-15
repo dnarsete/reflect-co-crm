@@ -366,6 +366,23 @@ async function pushAccount(db: any, payload: any) {
     return { already_linked: true, shopify_customer_id: acc.shopify_customer_id };
   }
   const nameParts = (acc.billing_name || acc.business_name || "").trim().split(/\s+/);
+  /* Build a STRUCTURED address so Shopify can use it for checkout,
+     tax calc, and shipping-zone matching. A single-line string used to
+     go here — Shopify accepted it but the checkout couldn't use it. */
+  const bizStreet = acc.business_street || acc.business_address || null;
+  const addressBlock = (bizStreet && acc.business_city && acc.business_state && acc.business_zip) ? [{
+    address1: bizStreet,
+    address2: acc.business_suite || undefined,
+    city: acc.business_city,
+    province: acc.business_state,
+    zip: acc.business_zip,
+    country_code: "US",
+    first_name: nameParts[0] || acc.business_name || "Account",
+    last_name: nameParts.slice(1).join(" ") || "",
+    company: acc.business_name || undefined,
+    phone: acc.business_phone || acc.cell || undefined,
+    default: true,
+  }] : undefined;
   const customer: any = {
     first_name: nameParts[0] || acc.business_name || "Account",
     last_name: nameParts.slice(1).join(" ") || "",
@@ -373,7 +390,7 @@ async function pushAccount(db: any, payload: any) {
     phone: acc.business_phone || acc.cell || undefined,
     note: `CRM account ${acc.account_number} · type ${acc.type || "—"} · rep ${acc.rep_id || "—"}`,
     tags: ["reflect-crm", acc.type || ""].filter(Boolean).join(", "),
-    addresses: acc.business_address ? [{ address1: acc.business_address, default: true }] : undefined,
+    addresses: addressBlock,
   };
   const { body } = await shopifyFetch(db, "customers.json", {
     method: "POST",
@@ -419,8 +436,55 @@ async function createDraftOrder(db: any, payload: any) {
   if (ord.account?.shopify_customer_id) draft.customer = { id: Number(ord.account.shopify_customer_id) };
   else if (ord.account?.email) draft.email = ord.account.email;
   if (ord.promo_code) draft.note += ` · promo ${ord.promo_code}`;
+
+  /* SEND the account's structured shipping + billing address on the draft.
+     Without this, Shopify's checkout re-prompts the customer for an address
+     and re-calculates shipping from its zones (which usually strips the CRM
+     shipping charge). With it, checkout uses these fields as-is. */
+  const acct = ord.account || {};
+  const bizStreet = acct.business_street || acct.business_address || null;
+  const nameParts = (acct.billing_name || acct.business_name || "").trim().split(/\s+/);
+  if (bizStreet && acct.business_city && acct.business_state && acct.business_zip) {
+    const shipAddr = {
+      address1: bizStreet,
+      address2: acct.business_suite || undefined,
+      city: acct.business_city,
+      province: acct.business_state,
+      zip: acct.business_zip,
+      country_code: "US",
+      first_name: nameParts[0] || acct.business_name || "Account",
+      last_name: nameParts.slice(1).join(" ") || "",
+      company: acct.business_name || undefined,
+      phone: acct.business_phone || acct.cell || undefined,
+    };
+    draft.shipping_address = shipAddr;
+    /* Billing: prefer the account's separate billing block if fully set,
+       else fall back to the shipping address. */
+    const billStreet = acct.billing_street || acct.billing_address || null;
+    if (billStreet && acct.billing_city && acct.billing_state && acct.billing_zip) {
+      draft.billing_address = {
+        address1: billStreet,
+        address2: acct.billing_suite || undefined,
+        city: acct.billing_city,
+        province: acct.billing_state,
+        zip: acct.billing_zip,
+        country_code: "US",
+        first_name: nameParts[0] || acct.business_name || "Account",
+        last_name: nameParts.slice(1).join(" ") || "",
+        company: acct.business_name || undefined,
+        phone: acct.business_phone || acct.cell || undefined,
+      };
+    } else {
+      draft.billing_address = shipAddr;
+    }
+  }
+
   if (Number(ord.shipping) > 0) {
-    draft.shipping_line = { title: "Shipping", price: String(ord.shipping) };
+    /* custom:true marks this as a merchant-defined charge that Shopify
+       should preserve at checkout rather than replace with a shipping-zone
+       calculation. Combined with an explicit shipping_address above, the
+       $30 (or whatever) survives all the way to invoice + payment. */
+    draft.shipping_line = { title: "Shipping", price: String(ord.shipping), custom: true };
   }
   if (ord.tax_exempt) draft.tax_exempt = true;
 
