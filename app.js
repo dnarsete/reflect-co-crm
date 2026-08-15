@@ -3332,11 +3332,48 @@ const adminPanel = {
      if new and (2) return a one-click magic-link URL. Displays it in a
      modal with a copy button. Looks up the rep's name from
      pending_invites or profiles so the message can be personalized. */
+  /* Compute the next available R-### by scanning existing rep_ids on both
+     live profiles and pending invites. Shared by openRepModal and
+     generateInviteLink so both stay in sync. */
+  async _nextAvailableRepId(){
+    try {
+      const [profs, pend] = await Promise.all([
+        sb.from('profiles').select('rep_id'),
+        sb.from('pending_invites').select('rep_id')
+      ]);
+      const allIds = [
+        ...((profs.data || []).map(x => x.rep_id)),
+        ...((pend.data || []).map(x => x.rep_id))
+      ];
+      const nums = allIds.map(v => {
+        const m = /^R-(\d+)$/i.exec(String(v || ''));
+        return m ? parseInt(m[1], 10) : 0;
+      });
+      const max = nums.length ? Math.max(0, ...nums) : 0;
+      return 'R-' + String(max + 1).padStart(3, '0');
+    } catch(_) { return null; }
+  },
+
   async generateInviteLink(email){
     const url = window.REFLECT_CONFIG?.ADMIN_INVITE_URL;
     if(!url){ ui.toast('ADMIN_INVITE_URL not set in config.js.'); return; }
     ui.busy(true);
     try{
+      /* If this rep already has a profile but no Rep ID, assign one now.
+         The DB trigger only fires on first signup — existing profiles
+         without a rep_id would otherwise stay broken until an admin
+         manually edited them. This closes that gap for every invite. */
+      const existing = await sb.from('profiles').select('id, rep_id').ilike('email', email).maybeSingle();
+      if(existing.data && !existing.data.rep_id){
+        const nextId = await adminPanel._nextAvailableRepId();
+        if(nextId){
+          const upd = await sb.from('profiles').update({ rep_id: nextId }).eq('id', existing.data.id);
+          if(!upd.error){
+            ui.toast(`Assigned Rep ID ${nextId} to ${email}.`);
+          }
+        }
+      }
+
       /* Fetch the rep's name so the SMS/email can be personalized. */
       let repName = '';
       const inv = await sb.from('pending_invites').select('name').ilike('email', email).maybeSingle();
