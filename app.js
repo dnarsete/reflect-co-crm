@@ -1285,7 +1285,6 @@ const orders = {
           <h3 style="margin:0 0 10px">⚠️ Shipping address incomplete</h3>
           <p style="margin:0 0 8px">Before this order can be invoiced, the account <b>${esc(a.business_name||'')}</b> needs a complete business address.</p>
           <p style="margin:0 0 8px"><b>Missing:</b> ${missing.join(', ')}</p>
-          <p style="margin:0 0 8px;color:var(--muted);font-size:13px">Without a complete address, checkout will fail with "Shipping not available" and the shipping charge on the invoice will be lost.</p>
           <p style="margin:0 0 12px">Fix it: open <b>Accounts</b> → this account → fill in the missing fields → <b>Save</b>. Then come back and finalize the order.</p>
           <div class="row" style="gap:8px">
             <button class="icon-btn primary" onclick="ui.closeModal();accounts.open('${esc(d.account_id).replace(/'/g,'&#39;')}')">Open account now</button>
