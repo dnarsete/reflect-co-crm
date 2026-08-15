@@ -3239,8 +3239,11 @@ const adminPanel = {
         <div><label>Company (optional)</label><input id="r-company" value="${esc(prof.company||'')}"/></div>
         <div><label>Tax ID / EIN (optional)</label><input id="r-tax-id" value="${esc(prof.tax_id||'')}" placeholder="For 1099 purposes"/></div>
         <div></div>
-        <div><label>Rep ID <span class="muted" style="font-size:11px">${isNew?'(next available auto-selected)':'(pick any available)'}</span></label>
-          <select id="r-repid" style="width:100%">${repIdOptions}</select>
+        <div><label>Rep ID <span class="muted" style="font-size:11px">(pick from list, or type any custom ID on the right)</span></label>
+          <div class="row" style="gap:6px;align-items:stretch">
+            <select id="r-repid" style="flex:1">${repIdOptions}</select>
+            <input id="r-repid-custom" placeholder="Or R-###" style="width:110px" title="Type a custom Rep ID here to override the dropdown selection"/>
+          </div>
         </div>
         <div><label>Role</label>
           <select id="r-role">
@@ -3296,12 +3299,12 @@ const adminPanel = {
     const get = i => (document.getElementById(i)?.value || '');
     const email = get('r-email').trim().toLowerCase();
     const testMode = !!document.getElementById('r-testmode')?.checked;
-    /* Rep ID is REQUIRED at save time. The modal now presents a dropdown
-       (disabled options for taken IDs), so blank should be impossible —
-       but if the field is somehow empty, assign next available. Also
-       guard against a duplicate: if the chosen ID is already assigned
-       to another rep, block the save and tell the admin. */
-    let repIdValue = get('r-repid').trim().toUpperCase();
+    /* Rep ID is REQUIRED at save time. Prefer the custom-text override
+       if the admin typed anything there; otherwise use the dropdown
+       selection. If both are blank (shouldn't happen — dropdown always
+       has a selection), fall back to next-available. */
+    const customVal = (document.getElementById('r-repid-custom')?.value || '').trim().toUpperCase();
+    let repIdValue = customVal || get('r-repid').trim().toUpperCase();
     if(!repIdValue){
       const next = await adminPanel._nextAvailableRepId();
       repIdValue = next || '';
