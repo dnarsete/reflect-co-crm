@@ -506,6 +506,73 @@ const dashboard = {
 
 /* ---------- ACCOUNTS ---------- */
 const accounts = {
+  /* Safety net for reps who paste (or browser-autofill) a full comma-
+     separated address into the Street field ("3300 E 1st Ave, 400,
+     Denver, CO, 80206"). If City/State/ZIP are empty AND the street
+     text looks like a multi-part address, split it into the right
+     fields. Prefix `b` = business address, `l` = billing address. */
+  _splitAddressIfPasted(prefix){
+    const streetEl = document.getElementById(`f-${prefix}-street`);
+    const suiteEl  = document.getElementById(`f-${prefix}-suite`);
+    const cityEl   = document.getElementById(`f-${prefix}-city`);
+    const stateEl  = document.getElementById(`f-${prefix}-state`);
+    const zipEl    = document.getElementById(`f-${prefix}-zip`);
+    if(!streetEl || !cityEl || !stateEl || !zipEl) return;
+    /* Only auto-split if the other fields are empty — otherwise the rep
+       already filled them and we shouldn't touch anything. */
+    if(cityEl.value.trim() || stateEl.value.trim() || zipEl.value.trim()) return;
+    const raw = streetEl.value.trim();
+    if(!raw || raw.split(',').length < 3) return;
+    /* Expected shapes:
+         "123 Main St, Denver, CO 80210"
+         "123 Main St, Ste 4, Denver, CO 80210"
+         "123 Main St, 400, Denver, CO, 80206"           (commas around state)
+         "123 Main St, Denver, CO, 80210, USA"           (country suffix)
+       Strategy: strip a trailing country if present, then peel off zip,
+       state, city from the end. Anything left over is street (+ suite). */
+    let parts = raw.split(',').map(s => s.trim()).filter(Boolean);
+    if(/^(usa|united states|us)$/i.test(parts[parts.length-1] || '')) parts.pop();
+    if(parts.length < 3) return;
+    /* Last chunk is zip (may be "80210" or "80210-1234"). */
+    let zip = '';
+    const lastZipMatch = /^(\d{5})(?:-\d{4})?$/.exec(parts[parts.length-1] || '');
+    if(lastZipMatch){ zip = lastZipMatch[0]; parts.pop(); }
+    else {
+      /* Sometimes state and zip end up together: "CO 80210" */
+      const combined = /^([A-Z]{2})\s+(\d{5})(?:-\d{4})?$/i.exec(parts[parts.length-1] || '');
+      if(combined){
+        stateEl.value = combined[1].toUpperCase();
+        zipEl.value = combined[2];
+        parts.pop();
+        cityEl.value = parts[parts.length-1] || '';
+        parts.pop();
+        streetEl.value = parts.join(', ');
+        if(parts.length >= 2 && !suiteEl?.value) {
+          /* Second-to-last remaining part is likely a suite */
+          suiteEl.value = parts[parts.length-1];
+          streetEl.value = parts.slice(0, -1).join(', ');
+        }
+        return;
+      }
+      return;
+    }
+    if(parts.length < 2) return;
+    /* Next chunk is state — 2-letter US code */
+    if(/^[A-Za-z]{2}$/.test(parts[parts.length-1] || '')){
+      stateEl.value = parts.pop().toUpperCase();
+      zipEl.value = zip;
+    } else { return; }
+    if(!parts.length) return;
+    /* Next chunk is city */
+    cityEl.value = parts.pop();
+    /* Whatever's left is street; if there are multiple, the LAST leftover
+       is probably a suite number and everything before it is street. */
+    if(parts.length >= 2 && !suiteEl?.value){
+      suiteEl.value = parts.pop();
+    }
+    streetEl.value = parts.join(', ');
+  },
+
   async count(){
     const { count, error } = await sb.from('accounts').select('*', { count:'exact', head:true });
     if(error){ ui.err(error); return 0; }
@@ -583,7 +650,7 @@ const accounts = {
       <div style="margin-top:12px;padding:10px;border:1px solid var(--line);background:var(--panel-2);border-radius:8px">
         <div style="font-weight:600;font-size:13px;margin-bottom:8px">📍 Business address</div>
         <div class="grid-2" style="grid-template-columns:2fr 1fr">
-          <div><label>Street address</label><input id="f-b-street" value="${esc(acc.business_street||'')}" autocomplete="street-address"/></div>
+          <div><label>Street address</label><input id="f-b-street" value="${esc(acc.business_street||'')}" autocomplete="address-line1" onblur="accounts._splitAddressIfPasted('b')"/></div>
           <div><label>Suite / Apt / Unit</label><input id="f-b-suite" value="${esc(acc.business_suite||'')}" autocomplete="address-line2" placeholder="Ste 202"/></div>
         </div>
         <div class="grid-3" style="margin-top:8px">
@@ -604,7 +671,7 @@ const accounts = {
       <div id="f-billing-block" style="margin-top:8px;padding:10px;border:1px solid var(--line);background:var(--panel-2);border-radius:8px">
         <div style="font-weight:600;font-size:13px;margin-bottom:8px">💳 Billing address</div>
         <div class="grid-2" style="grid-template-columns:2fr 1fr">
-          <div><label>Street address</label><input id="f-l-street" value="${esc(acc.billing_street||'')}" autocomplete="street-address"/></div>
+          <div><label>Street address</label><input id="f-l-street" value="${esc(acc.billing_street||'')}" autocomplete="address-line1" onblur="accounts._splitAddressIfPasted('l')"/></div>
           <div><label>Suite / Apt / Unit</label><input id="f-l-suite" value="${esc(acc.billing_suite||'')}" autocomplete="address-line2" placeholder="Ste 202"/></div>
         </div>
         <div class="grid-3" style="margin-top:8px">
