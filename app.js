@@ -40,16 +40,35 @@ const ui = {
   modal(html){
     document.getElementById('modal').innerHTML = html;
     document.getElementById('modal-back').classList.add('show');
+    /* Push a history entry so a trackpad two-finger swipe (browser
+       back-gesture) fires popstate — the global listener at the bottom
+       of this file catches it and closes the modal instead of letting
+       the browser navigate away and wipe the form. */
+    try { history.pushState({ reflectModal: 'primary' }, ''); } catch(_) {}
   },
-  closeModal(){ document.getElementById('modal-back').classList.remove('show') },
+  closeModal(){
+    const el = document.getElementById('modal-back');
+    if(!el || !el.classList.contains('show')) return;
+    el.classList.remove('show');
+    /* If our pushed state is still on top of the history stack, pop it
+       so a subsequent back-gesture doesn't try to close nothing. The
+       popstate listener sees the modal is already hidden and no-ops. */
+    try { if(history.state?.reflectModal === 'primary') history.back(); } catch(_) {}
+  },
   /* Secondary modal layer — overlays on top of the primary modal without
      replacing it. Used by the signature pad so the order form survives
      while a signature is being captured. */
   modal2(html){
     document.getElementById('modal2').innerHTML = html;
     document.getElementById('modal2-back').classList.add('show');
+    try { history.pushState({ reflectModal: 'secondary' }, ''); } catch(_) {}
   },
-  closeModal2(){ document.getElementById('modal2-back').classList.remove('show') },
+  closeModal2(){
+    const el = document.getElementById('modal2-back');
+    if(!el || !el.classList.contains('show')) return;
+    el.classList.remove('show');
+    try { if(history.state?.reflectModal === 'secondary') history.back(); } catch(_) {}
+  },
   toast(msg){
     const t = document.getElementById('toast');
     t.textContent = msg; t.classList.remove('hide');
@@ -4616,6 +4635,24 @@ const welcome = {
 sb.auth.onAuthStateChange((event)=>{
   if(event === 'SIGNED_OUT') location.reload();
   if(event === 'PASSWORD_RECOVERY') auth.applyRecoveryFlow();
+});
+
+/* Trap the browser's back-navigation (trackpad two-finger swipe on Mac,
+   Cmd+[, Android back button) so it closes an open modal instead of
+   navigating away from the CRM and wiping the form. Any open modal is
+   closed silently; if nothing is open the browser navigation proceeds
+   as normal. */
+window.addEventListener('popstate', () => {
+  const secondary = document.getElementById('modal2-back');
+  if(secondary?.classList.contains('show')){
+    secondary.classList.remove('show');
+    return;
+  }
+  const primary = document.getElementById('modal-back');
+  if(primary?.classList.contains('show')){
+    primary.classList.remove('show');
+    return;
+  }
 });
 
 auth.applyRecoveryFlow();
