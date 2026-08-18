@@ -622,7 +622,7 @@ const accounts = {
       business_street:'', business_suite:'', business_city:'', business_state:'', business_zip:'',
       billing_street:'', billing_suite:'', billing_city:'', billing_state:'', billing_zip:'',
       billing_same_as_business:false,
-      email:'', cell:'', business_phone:'', sales_tax_license:'', sales_tax_state:'',
+      email:'', cell:'', business_phone:'', website:'', sales_tax_license:'', sales_tax_state:'',
       tax_exempt:false, opt_in:true, notes:[], rep_id: auth.repId()
     };
     /* Backfill new structured fields from the legacy single-line
@@ -644,6 +644,7 @@ const accounts = {
         <div><label>Account email</label><input id="f-em" type="email" value="${esc(acc.email)}"/></div>
         <div><label>Cell (responsible)</label><input id="f-cell" value="${esc(acc.cell)}"/></div>
         <div><label>Business phone</label><input id="f-bp" value="${esc(acc.business_phone)}"/></div>
+        <div style="grid-column:1/-1"><label>Website</label><input id="f-web" type="url" value="${esc(acc.website||'')}" placeholder="https://…" autocapitalize="none" spellcheck="false"/></div>
       </div>
 
       <!-- Business address block -->
@@ -892,6 +893,7 @@ const accounts = {
       billing_same_as_business: same,
       business_address: businessAddressLine, billing_address: billingAddressLine,
       cell:get('f-cell'), business_phone:get('f-bp'),
+      website: (document.getElementById('f-web')?.value || '').trim() || null,
       sales_tax_license:get('f-stl'), sales_tax_state:get('f-sts'),
       tax_exempt: document.getElementById('f-exempt').checked,
       opt_in:get('f-opt')==='true', rep_id: (get('f-rep').trim() || auth.repId() || null)
@@ -906,17 +908,17 @@ const accounts = {
     /* Graceful fallback: if the DB doesn't have the new structured
        columns yet (Dan hasn't run the address SQL migration), retry
        with a legacy-only payload so the save still succeeds. */
-    if(q.error && /business_street|business_suite|billing_street|billing_suite|billing_same_as_business|billing_city|billing_state|billing_zip|business_city|business_state|business_zip/.test(q.error.message||'')){
+    if(q.error && /business_street|business_suite|billing_street|billing_suite|billing_same_as_business|billing_city|billing_state|billing_zip|business_city|business_state|business_zip|website/.test(q.error.message||'')){
       const {
         business_street, business_suite, business_city, business_state, business_zip,
         billing_street, billing_suite, billing_city, billing_state, billing_zip,
-        billing_same_as_business,
+        billing_same_as_business, website,
         ...legacyPayload
       } = payload;
       /* void the destructured vars so the linter doesn't complain */
       void business_street; void business_city; void business_state; void business_zip;
       void billing_street; void billing_city; void billing_state; void billing_zip;
-      void billing_same_as_business;
+      void billing_same_as_business; void website;
       if(isNew){
         q = await sb.from('accounts').insert(legacyPayload).select().single();
       } else {
