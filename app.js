@@ -4638,20 +4638,16 @@ sb.auth.onAuthStateChange((event)=>{
 });
 
 /* Trap the browser's back-navigation (trackpad two-finger swipe on Mac,
-   Cmd+[, Android back button) so it closes an open modal instead of
-   navigating away from the CRM and wiping the form. Any open modal is
-   closed silently; if nothing is open the browser navigation proceeds
-   as normal. */
+   Cmd+[, Android back button) whenever a modal is open. Pushing the
+   state right back cancels the navigation — the modal stays open and
+   the form data the user is entering is preserved. When no modal is
+   open, normal navigation proceeds. */
 window.addEventListener('popstate', () => {
+  const primary   = document.getElementById('modal-back');
   const secondary = document.getElementById('modal2-back');
-  if(secondary?.classList.contains('show')){
-    secondary.classList.remove('show');
-    return;
-  }
-  const primary = document.getElementById('modal-back');
-  if(primary?.classList.contains('show')){
-    primary.classList.remove('show');
-    return;
+  const modalOpen = secondary?.classList.contains('show') || primary?.classList.contains('show');
+  if(modalOpen){
+    try { history.pushState({ reflectModal: 'trap' }, ''); } catch(_) {}
   }
 });
 
