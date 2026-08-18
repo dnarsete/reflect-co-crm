@@ -566,14 +566,24 @@
 </section>
 
 <!-- ===================== MODAL ===================== -->
-<div id="modal-back" class="modal-back" onclick="if(event.target===this)ui.closeModal()">
+<!-- The click-outside-to-close checks that BOTH mousedown AND click happened
+     on the backdrop itself (not on a child). This stops the modal from
+     closing when the user highlights text inside the modal and the drag
+     overshoots — mouseup lands on the backdrop but mousedown started
+     inside, so it's a text selection, not a real click. -->
+<div id="modal-back" class="modal-back"
+     onmousedown="this.__mdOnBack = event.target === this"
+     onclick="if(event.target===this && this.__mdOnBack)ui.closeModal()">
   <div class="modal" id="modal"></div>
 </div>
 
 <!-- Secondary modal layer — for signature pad and any other flow that
      must overlay on top of the primary modal (e.g. sign an order without
      losing the order form). Higher z-index so it stacks above modal. -->
-<div id="modal2-back" class="modal-back" onclick="if(event.target===this)ui.closeModal2()" style="z-index:99999">
+<div id="modal2-back" class="modal-back"
+     onmousedown="this.__mdOnBack = event.target === this"
+     onclick="if(event.target===this && this.__mdOnBack)ui.closeModal2()"
+     style="z-index:99999">
   <div class="modal" id="modal2"></div>
 </div>
 
