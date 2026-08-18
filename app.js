@@ -781,6 +781,7 @@ const accounts = {
     if(r.error){ ui.err(r.error); return; }
     document.getElementById('note-text').value = '';
     accounts.renderNotes(accountId);
+    ui.toast('Note saved.');
   },
   async editNote(noteId, accountId){
     /* fetch the current text first so prompt is prefilled */
