@@ -940,8 +940,23 @@ const accounts = {
   },
   async remove(id){
     if(!confirm('Delete this account? Orders will keep their reference.')) return;
-    const r = await sb.from('accounts').delete().eq('id', id);
+    /* .select() so we can see which rows Supabase actually deleted.
+       If RLS silently blocks the delete, it returns [] (no error, no rows).
+       Without this check we'd falsely tell the user "Deleted" while the
+       account is still there. */
+    const r = await sb.from('accounts').delete().eq('id', id).select();
     if(r.error){ ui.err(r.error); return; }
+    if(!r.data || r.data.length === 0){
+      alert(
+        "Delete did not go through. Nothing was removed.\n\n" +
+        "Most likely cause: your account isn't recognized as admin by " +
+        "the database (role must be 'admin' and not disabled), so the " +
+        "row-level security policy blocked the delete silently.\n\n" +
+        "Fix: open the Reps tab → find yourself → confirm Role = admin " +
+        "and Disabled is unchecked. Then sign out and back in and try again."
+      );
+      return;
+    }
     ui.closeModal(); ui.toast('Deleted'); accounts.render();
   },
   /* Clears the stored Shopify customer ID on an account.
