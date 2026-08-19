@@ -4704,12 +4704,30 @@ async function boot(){
     document.getElementById('app').classList.add('hide');
     return;
   }
-  const { data: { session } } = await sb.auth.getSession();
-  if(!session){
-    document.getElementById('auth').classList.remove('hide');
-    document.getElementById('app').classList.add('hide');
-    return;
-  }
+  /* Re-entry guard: onAuthStateChange (INITIAL_SESSION / SIGNED_IN) may
+     also trigger boot. Running twice is functionally fine but wastes a
+     profile fetch — the flag lets both callers race safely to a single
+     execution. Cleared automatically once boot finishes so a subsequent
+     sign-in (e.g., after sign-out) can still trigger it. */
+  if(boot._running) return;
+  boot._running = true;
+  try {
+    /* If the URL still carries an access_token hash but Supabase-JS hasn't
+       parsed it into a session yet, wait a beat for the parse to complete
+       before deciding there's no session. Otherwise the fresh magic-link
+       redirect flashes the sign-in screen and the user thinks the link failed. */
+    let session = (await sb.auth.getSession()).data.session;
+    if(!session && /access_token=|refresh_token=/.test(location.hash)){
+      for(let i=0; i<10 && !session; i++){
+        await new Promise(r => setTimeout(r, 100));
+        session = (await sb.auth.getSession()).data.session;
+      }
+    }
+    if(!session){
+      document.getElementById('auth').classList.remove('hide');
+      document.getElementById('app').classList.add('hide');
+      return;
+    }
   /* If the session token was issued after the stale localStorage timestamp
      (which can happen when the user closes/reopens the browser and the
      supabase session refresh brings them back in), reset the absolute
@@ -4752,6 +4770,11 @@ async function boot(){
     nav.go('profile');
   } else {
     nav.go('dashboard');
+  }
+  } finally {
+    /* Reset the guard so a future sign-in (after sign-out or refresh)
+       can trigger boot again. */
+    boot._running = false;
   }
 }
 
@@ -4848,9 +4871,22 @@ const welcome = {
   }
 };
 
-sb.auth.onAuthStateChange((event)=>{
-  if(event === 'SIGNED_OUT') location.reload();
-  if(event === 'PASSWORD_RECOVERY') auth.applyRecoveryFlow();
+sb.auth.onAuthStateChange((event) => {
+  if(event === 'SIGNED_OUT') { location.reload(); return; }
+  if(event === 'PASSWORD_RECOVERY') { auth.applyRecoveryFlow(); return; }
+  /* SIGNED_IN fires when Supabase parses an access_token out of the URL hash
+     (magic-link click), when a password sign-in completes, and on TOKEN
+     refresh. The initial boot() below runs synchronously with the client's
+     hash parsing, so on a magic-link redirect boot often sees getSession()
+     return null and shows the sign-in screen. Re-running boot() from this
+     handler catches the just-parsed session and reveals the app.
+     Guard so we don't double-boot when SIGNED_IN happens to fire twice. */
+  if(event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED'){
+    if(!window.__reflectBootAfterAuth){
+      window.__reflectBootAfterAuth = true;
+      boot();
+    }
+  }
 });
 
 /* Trap the browser's back-navigation (trackpad two-finger swipe on Mac,
