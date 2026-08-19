@@ -27,10 +27,14 @@ create table if not exists public.profiles (
 );
 alter table public.profiles enable row level security;
 
-do $$ begin
-  create policy "profiles read all authenticated" on public.profiles
-    for select to authenticated using (true);
-exception when duplicate_object then null; end $$;
+/* NOTE: The permissive "profiles read all authenticated" policy that used
+   to live here (letting every rep read every other rep's row) has been
+   removed. The restrictive replacement lives in security-hardening.sql
+   and grants only:
+     - a rep reads their own row
+     - an admin reads all rows
+   Do NOT re-add a public-read policy — it would leak commissions,
+   cell phones, addresses, and other PII across the team. */
 
 do $$ begin
   create policy "profiles update self" on public.profiles

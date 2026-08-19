@@ -24,6 +24,33 @@ const safeSignature = s => (typeof s === 'string' && /^data:image\/(png|jpe?g);b
    Blocks javascript:, data:, and cross-origin URLs an attacker could store on the order. */
 const safeShopifyUrl = u => (typeof u === 'string' && /^https:\/\/([a-z0-9-]+\.)*(myshopify\.com|shopify\.com)\//i.test(u)) ? u : '';
 
+/* Timezone helper — the business runs on America/Denver. Reports date bounds
+   are interpreted here so a rep setting "today" gets a full Denver day rather
+   than a UTC day that leaks 6-7 hours of the next Denver day. */
+const tz = {
+  ZONE: 'America/Denver',
+  _offsetMinutes(atUtcMs){
+    /* Difference (in minutes) between wall-clock in ZONE and UTC at a moment. */
+    const d = new Date(atUtcMs);
+    const zoneStr = d.toLocaleString('en-US', { timeZone: tz.ZONE });
+    const utcStr  = d.toLocaleString('en-US', { timeZone: 'UTC' });
+    return (new Date(zoneStr).getTime() - new Date(utcStr).getTime()) / 60000;
+  },
+  startOfDayUTC(dateStr){
+    /* dateStr = 'YYYY-MM-DD'. Returns ISO UTC for 00:00:00 that day in ZONE. */
+    const [y,m,d] = dateStr.split('-').map(Number);
+    const naive = Date.UTC(y, m-1, d, 0, 0, 0);
+    const off = tz._offsetMinutes(naive);
+    return new Date(naive - off*60000).toISOString();
+  },
+  endOfDayUTC(dateStr){
+    const [y,m,d] = dateStr.split('-').map(Number);
+    const naive = Date.UTC(y, m-1, d, 23, 59, 59, 999);
+    const off = tz._offsetMinutes(naive);
+    return new Date(naive - off*60000).toISOString();
+  }
+};
+
 /* In-memory caches (populated on login, refreshed on demand) */
 const cache = {
   me: null,            // profiles row for the current user
@@ -210,6 +237,21 @@ const auth = {
       return;
     }
     ui.busy(true);
+    /* Pre-check: skip the actual signInWithOtp call if the email isn't in
+       our system. Prevents a mistyped address from consuming Supabase's
+       per-IP rate limit — a shared IP (co-working, cafe) with one typo
+       could otherwise lock every rep out for 60 seconds. */
+    try {
+      const preflight = await sb.rpc('email_exists', { p_email: email });
+      if(preflight.error === null && preflight.data === false){
+        ui.busy(false);
+        errEl.textContent = "This email isn't in our system yet. Ask your admin to add you from the Reps tab — you'll get a fresh invite link.";
+        errEl.classList.remove('hide'); errEl.classList.remove('ok'); errEl.classList.add('err');
+        return;
+      }
+      /* If the RPC doesn't exist yet (migration not run), fall through to the
+         real signInWithOtp call — Supabase will still gate on shouldCreateUser. */
+    } catch(_) { /* fall through */ }
     const { error } = await sb.auth.signInWithOtp({
       email,
       options: {
@@ -1920,13 +1962,11 @@ const reports = {
     const ord  = document.getElementById('rep-ord').value.trim().toUpperCase();
     const typ  = document.getElementById('rep-type').value;
     let q = sb.from('orders').select('*, account:accounts(account_number,business_name,type)').eq('status','finalized').not('is_test','is',true);
-    if(from) q = q.gte('placed_at', from);
-    /* Cast the end-of-day cutoff to the client's local timezone so late-in-the-day
-       orders (evening UTC roll-over) still fall inside "today". */
-    if(to){
-      const endLocal = new Date(to + 'T23:59:59');
-      q = q.lte('placed_at', endLocal.toISOString());
-    }
+    /* Both bounds interpreted in America/Denver (the business timezone) so
+       a rep setting "today" gets a full Denver day, not a UTC day that
+       includes several extra hours of the next day. */
+    if(from) q = q.gte('placed_at', tz.startOfDayUTC(from));
+    if(to)   q = q.lte('placed_at', tz.endOfDayUTC(to));
     if(repId) q = q.eq('rep_id', repId);
     if(ord) q = q.ilike('order_number', `%${ord}%`);
     const { data, error } = await q.order('placed_at',{ascending:true});
@@ -3676,6 +3716,14 @@ const adminPanel = {
      live profiles and pending invites. Shared by openRepModal and
      generateInviteLink so both stay in sync. */
   async _nextAvailableRepId(){
+    /* Prefer the server-side atomic allocator (audit-final-fixes.sql) so
+       two concurrent admins never end up with the same rep_id. If the RPC
+       isn't installed yet (migration not run) fall back to the local
+       max-plus-one calculation — race exists but is a rare corner case. */
+    try {
+      const rpc = await sb.rpc('allocate_next_rep_id');
+      if(rpc.error === null && rpc.data) return rpc.data;
+    } catch(_) { /* fall through to local calc */ }
     try {
       const [profs, pend] = await Promise.all([
         sb.from('profiles').select('rep_id'),

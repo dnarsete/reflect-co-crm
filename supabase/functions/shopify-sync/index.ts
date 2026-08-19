@@ -730,21 +730,50 @@ async function getOrderStatus(db: any, payload: any) {
   const shopifyId = ord.shopify_order_id || ord.shopify_draft_order_id;
   if (!shopifyId) return { linked: false, message: "Order not yet sent to Shopify." };
 
-  const path = ord.shopify_order_id
-    ? `orders/${ord.shopify_order_id}.json`
-    : `draft_orders/${ord.shopify_draft_order_id}.json`;
+  const isDraft = !ord.shopify_order_id;
+  const path = isDraft
+    ? `draft_orders/${ord.shopify_draft_order_id}.json`
+    : `orders/${ord.shopify_order_id}.json`;
   const { body } = await shopifyFetch(db, path);
   const o = body?.order || body?.draft_order || {};
+
   const tracking = (o.fulfillments || [])
     .flatMap((f: any) => f.tracking_numbers || [])
     .filter(Boolean);
-  const update: any = {
-    shopify_status: o.fulfillment_status || o.status || ord.shopify_status,
-  };
+
+  /* Draft status vs real-order status are different concepts. A draft
+     returns o.status = 'open' | 'completed' — meaningless as a fulfillment
+     signal, and overwriting shopify_status with 'open' on every poll used
+     to clobber the invoice_sent state we set at draft creation. For drafts,
+     only advance the status when the draft has actually been completed
+     (customer paid the invoice and it converted to a real order). */
+  const update: any = {};
+  if (isDraft) {
+    if (o.status === 'completed') {
+      update.shopify_status = 'paid';
+    }
+    /* Otherwise keep whatever shopify_status the CRM already has
+       ('draft' or 'invoice_sent'). Don't overwrite. */
+  } else {
+    /* Real order — use monotonic precedence to avoid regressing. */
+    const incoming = o.fulfillment_status || o.financial_status || 'open';
+    const cur = String(ord.shopify_status || '').toLowerCase();
+    const rank: Record<string, number> = {
+      "": 0, "open": 1, "pending": 2, "partially_paid": 3, "authorized": 4,
+      "paid": 5, "partially_fulfilled": 6, "fulfilled": 7,
+      "refunded": 8, "voided": 8, "cancelled": 9,
+    };
+    const curRank = rank[cur] ?? 0;
+    const incRank = rank[String(incoming).toLowerCase()] ?? 0;
+    update.shopify_status = incRank >= curRank ? incoming : ord.shopify_status;
+  }
   if (tracking.length) update.tracking = tracking.join(", ");
-  await db.from("orders").update(update).eq("id", orderId);
+  if (Object.keys(update).length) {
+    await db.from("orders").update(update).eq("id", orderId);
+  }
   return {
     linked: true,
+    kind: isDraft ? "draft" : "order",
     financial_status: o.financial_status,
     fulfillment_status: o.fulfillment_status,
     status: o.status,
