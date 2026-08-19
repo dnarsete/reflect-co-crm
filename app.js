@@ -501,12 +501,29 @@ const dashboard = {
       }
     } catch(_){}
 
-    /* Reorder + new-account alerts (relevant for reps and admin) */
+    /* Reorder + new-account alerts (relevant for reps and admin).
+       Perf: fetch the most-recent placed_at for all 30 accounts in ONE query
+       instead of 30 sequential lastForAccount() calls. */
     const myAccts = await accounts.list();
-    for(const a of myAccts.slice(0, 30)){
-      const last = await orders.lastForAccount(a.id);
+    const window = myAccts.slice(0, 30);
+    const ids = window.map(a => a.id);
+    const lastByAcct = {};
+    if(ids.length){
+      const or = await sb.from('orders')
+        .select('account_id, placed_at')
+        .in('account_id', ids)
+        .not('is_test','is',true)
+        .order('placed_at', { ascending: false });
+      if(!or.error && or.data){
+        or.data.forEach(o => {
+          if(!lastByAcct[o.account_id]) lastByAcct[o.account_id] = o.placed_at;
+        });
+      }
+    }
+    for(const a of window){
+      const last = lastByAcct[a.id];
       if(last){
-        const days = Math.floor((Date.now()-new Date(last.placed_at))/86400000);
+        const days = Math.floor((Date.now()-new Date(last))/86400000);
         if(days>=ref.reorderDays()) alerts.push({lvl:'info', html:false, text:`${a.business_name||a.account_number} due for reorder (${days}d since last)`});
       } else {
         const days = Math.floor((Date.now()-new Date(a.created_at))/86400000);
@@ -998,8 +1015,9 @@ const accounts = {
      was deleted/merged in Shopify. Next order pushes via email path. */
   async resetShopifyLink(id){
     if(!confirm('Reset Shopify customer link for this account?\n\nThe next order for this account will create a fresh Shopify customer via the email path. Existing Shopify orders for this account are not affected.')) return;
-    const r = await sb.from('accounts').update({ shopify_customer_id: null }).eq('id', id);
+    const r = await sb.from('accounts').update({ shopify_customer_id: null }).eq('id', id).select();
     if(r.error){ ui.err(r.error); return; }
+    if(!r.data || r.data.length === 0){ alert('Reset did not go through — check your admin role.'); return; }
     ui.toast('Shopify link reset. Next order will create a fresh customer.');
     /* Refresh the modal by re-opening the account edit */
     ui.closeModal();
@@ -2469,12 +2487,18 @@ const materials = {
   async view(path){
     const { data, error } = await sb.storage.from(materials.BUCKET).createSignedUrl(path, 300);
     if(error){ ui.err(error); return; }
-    /* Try to open in a new tab. If popup blocker interferes, fall back to
-       navigating current tab. */
+    /* Try to open in a new tab. If popup blocker interferes, show a modal
+       with a click-through link so we NEVER navigate the current tab away —
+       protecting any in-progress order form the rep may have open. */
     const w = window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
     if(!w){
-      ui.toast('Popup blocked. Allow popups for this site, or the file will open in this tab.');
-      location.href = data.signedUrl;
+      ui.modal(`
+        <h3>Popup was blocked</h3>
+        <p style="margin:0 0 12px">Your browser blocked the new-tab popup for this material. Click the link below to open it — it opens in a new tab so any work you have in progress stays intact.</p>
+        <p style="margin:0 0 12px"><a href="${esc(data.signedUrl)}" target="_blank" rel="noopener noreferrer" class="icon-btn primary" style="display:inline-block;text-decoration:none">Open material in new tab</a></p>
+        <div class="muted" style="font-size:12px;margin-bottom:12px">Tip: allow popups for this site in your browser settings so future clicks open directly.</div>
+        <div class="row"><button class="icon-btn ghost" onclick="ui.closeModal()">Close</button></div>
+      `);
     }
   },
 
@@ -2718,12 +2742,18 @@ const prospects = {
     };
     const ar = await sb.from('accounts').insert(acctPayload).select().single();
     if(ar.error){ ui.err(ar.error); return null; }
-    /* Mark prospect converted with the new account ID */
+    /* Mark prospect converted with the new account ID. If this second write
+       fails (RLS, network), roll back the just-created account so we don't
+       leave a duplicate/orphan account with no prospect link. */
     const upd = await sb.from('prospects').update({
       status: 'converted',
       converted_account_id: ar.data.id
-    }).eq('id', prospectId);
-    if(upd.error){ ui.err(upd.error); return null; }
+    }).eq('id', prospectId).select();
+    if(upd.error || !upd.data || upd.data.length === 0){
+      try { await sb.from('accounts').delete().eq('id', ar.data.id); } catch(_){}
+      ui.err(upd.error || { message: 'Prospect update blocked by RLS. The just-created account has been rolled back — try again or contact your admin.' });
+      return null;
+    }
     ui.toast(`Converted to ${ar.data.account_number}`);
     return ar.data;
   }
@@ -3741,25 +3771,29 @@ const adminPanel = {
       commission: parseFloat(get('r-comm')||'0') || 0,
       territory: get('r-terr').split(',').map(x=>x.trim()).filter(Boolean)
     };
-    const q = await sb.from('pending_invites').upsert(payload);
+    const q = await sb.from('pending_invites').upsert(payload).select();
     if(q.error){ ui.err(q.error); return; }
+    if(!q.data || q.data.length === 0){ ui.toast('Save did not go through — check your admin role.'); return; }
     ui.closeModal(); ui.toast('Invite updated'); adminPanel.renderRepsAndInvites();
   },
   async cancelInvite(email){
     if(!confirm(`Cancel invite for ${email}?`)) return;
-    const q = await sb.from('pending_invites').delete().eq('email', email);
+    const q = await sb.from('pending_invites').delete().eq('email', email).select();
     if(q.error){ ui.err(q.error); return; }
+    if(!q.data || q.data.length === 0){ ui.toast('Cancel did not go through — check your admin role.'); return; }
     ui.toast('Invite cancelled'); adminPanel.renderRepsAndInvites();
   },
   async disableRep(id){
     if(!confirm('Disable this rep? They will not be able to sign in, but their data stays for history.')) return;
-    const q = await sb.from('profiles').update({ disabled: true }).eq('id', id);
+    const q = await sb.from('profiles').update({ disabled: true }).eq('id', id).select();
     if(q.error){ ui.err(q.error); return; }
+    if(!q.data || q.data.length === 0){ alert('Disable did not go through — check your admin role.'); return; }
     ui.toast('Disabled'); adminPanel.renderRepsAndInvites();
   },
   async enableRep(id){
-    const q = await sb.from('profiles').update({ disabled: false }).eq('id', id);
+    const q = await sb.from('profiles').update({ disabled: false }).eq('id', id).select();
     if(q.error){ ui.err(q.error); return; }
+    if(!q.data || q.data.length === 0){ alert('Enable did not go through — check your admin role.'); return; }
     ui.toast('Re-enabled'); adminPanel.renderRepsAndInvites();
   },
   async resetRepPassword(email){
@@ -4124,7 +4158,9 @@ const security = {
    every 12 hours is friction with no security benefit for the owner).
    Reps still get 12 hours since they may share devices or work remote. */
 const absoluteTimeout = {
-  MAX_MS_REP: 12 * 60 * 60 * 1000,        /* 12 hours */
+  MAX_MS_REP: 24 * 60 * 60 * 1000,        /* 24 hours — covers a full sales day
+                                             end-to-end so reps don't get kicked
+                                             mid-visit. Was 12h. */
   MAX_MS_ADMIN: 30 * 24 * 60 * 60 * 1000, /* 30 days */
   KEY: 'reflectco.session_started_at',
   _interval: null,
@@ -4142,7 +4178,7 @@ const absoluteTimeout = {
       if(Date.now() - started > absoluteTimeout._cap()){
         clearInterval(absoluteTimeout._interval); absoluteTimeout._interval = null;
         localStorage.removeItem(absoluteTimeout.KEY);
-        const days = cache.me?.role === 'admin' ? '30 days' : '12 hours';
+        const days = cache.me?.role === 'admin' ? '30 days' : '24 hours';
         alert(`Your session has reached the ${days} maximum. Signing you out for security.`);
         auth.logout();
       }
@@ -4347,6 +4383,14 @@ const productsAdmin = {
   async setField(sku, field, rawValue, inputEl){
     let value = rawValue;
     if(field === 'price'){
+      /* When Shopify is the source of truth, block local price edits — they
+         get silently reverted on next pull_products. Force the admin to
+         change the price in Shopify instead. */
+      if(typeof shopify !== 'undefined' && shopify.mode && shopify.mode() === 'live'){
+        ui.toast('Price is managed in Shopify when integration is live. Update it there and re-sync.');
+        productsAdmin.render();
+        return;
+      }
       value = Number(rawValue);
       if(!isFinite(value) || value < 0){ ui.toast('Price must be ≥ 0.'); productsAdmin.render(); return; }
     } else if(field === 'stock'){
@@ -4362,10 +4406,15 @@ const productsAdmin = {
     }
     const orig = inputEl?.style.background;
     if(inputEl) inputEl.style.background = 'rgba(250,200,80,0.15)';
-    const { error } = await sb.from('products').update({ [field]: value }).eq('sku', sku);
-    if(error){
+    const r = await sb.from('products').update({ [field]: value }).eq('sku', sku).select();
+    if(r.error){
       if(inputEl){ inputEl.style.background = 'rgba(220,80,80,0.25)'; setTimeout(()=>inputEl.style.background = orig||'', 2500); }
-      ui.err(error);
+      ui.err(r.error);
+      return;
+    }
+    if(!r.data || r.data.length === 0){
+      if(inputEl){ inputEl.style.background = 'rgba(220,80,80,0.25)'; setTimeout(()=>inputEl.style.background = orig||'', 2500); }
+      ui.toast('Save did not go through — check your admin role.');
       return;
     }
     if(inputEl){

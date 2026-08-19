@@ -9,6 +9,9 @@
      - products/update          -> refresh product name/price/stock
      - orders/fulfilled         -> set order tracking + status
      - orders/updated           -> sync order financial/fulfillment status
+     - orders/paid              -> mark as paid
+     - orders/cancelled         -> mark CRM order cancelled
+     - refunds/create           -> mark CRM order refunded
    ===================================================================== */
 
 // deno-lint-ignore-file no-explicit-any
@@ -41,6 +44,7 @@ serve(async (req: Request): Promise<Response> => {
 
   const db = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
 
+  let handlerFailed = false;
   try {
     switch (topic) {
       case "inventory_levels/update":
@@ -54,6 +58,14 @@ serve(async (req: Request): Promise<Response> => {
       case "orders/paid":
         await onOrderUpdate(db, data);
         break;
+      case "orders/cancelled":
+        await onOrderTerminal(db, data, "cancelled");
+        break;
+      case "refunds/create":
+        /* Refund payloads are shaped differently — data.order_id is the
+           parent order. Look up by that and mark refunded. */
+        await onRefund(db, data);
+        break;
       default:
         /* Unhandled topic — acknowledge so Shopify doesn't retry forever */
         break;
@@ -63,14 +75,18 @@ serve(async (req: Request): Promise<Response> => {
       detail: { id: data?.id ?? null },
     });
   } catch (e: any) {
+    handlerFailed = true;
     await db.from("shopify_sync_log").insert({
       action: `webhook:${topic}`, status: "error",
       detail: { message: String(e?.message || e) },
     });
-    /* Still return 200 so Shopify doesn't hammer retries for a transient issue */
   }
 
-  return new Response("ok", { status: 200 });
+  /* Return 500 for genuine handler failures so Shopify retries with backoff.
+     Previously we always returned 200 → a persistent bug in the receiver
+     silently dropped events forever. Auth/HMAC/parse failures already
+     returned non-200 codes above; this catches the runtime path. */
+  return new Response(handlerFailed ? "handler error" : "ok", { status: handlerFailed ? 500 : 200 });
 });
 
 /* HMAC-SHA256 verification of the raw body against the shared secret */
@@ -120,6 +136,22 @@ async function onProductUpdate(db: any, data: any) {
   }
 }
 
+/* Stable precedence for shopify_status — a stronger state must never regress
+   to a weaker one. Higher number = further along the lifecycle. */
+const STATUS_RANK: Record<string, number> = {
+  "": 0, "open": 1, "pending": 2, "partially_paid": 3,
+  "authorized": 4, "paid": 5, "partially_fulfilled": 6,
+  "fulfilled": 7, "refunded": 8, "voided": 8, "cancelled": 9,
+};
+
+function nextShopifyStatus(current: string | null | undefined, incoming: string | null | undefined): string {
+  const cur = String(current || "").toLowerCase();
+  const inc = String(incoming || "open").toLowerCase();
+  const curRank = STATUS_RANK[cur] ?? 0;
+  const incRank = STATUS_RANK[inc] ?? 0;
+  return incRank >= curRank ? inc : cur;
+}
+
 async function onOrderUpdate(db: any, data: any) {
   /* data is a full order object. Match to a CRM order by shopify_order_id
      or by the draft-order id it originated from. */
@@ -130,24 +162,71 @@ async function onOrderUpdate(db: any, data: any) {
     .flatMap((f: any) => f.tracking_numbers || [])
     .filter(Boolean);
 
-  const update: any = {
-    shopify_order_id: orderId,
-    shopify_status: data.fulfillment_status || data.financial_status || "open",
-  };
-  if (tracking.length) update.tracking = tracking.join(", ");
-  if (data.fulfillment_status === "fulfilled") update.status = "finalized";
-
   /* Try matching by shopify_order_id first */
-  let { data: matched } = await db.from("orders").select("id").eq("shopify_order_id", orderId).maybeSingle();
+  let { data: matched } = await db.from("orders").select("id, status, shopify_status")
+    .eq("shopify_order_id", orderId).maybeSingle();
 
   /* Else match by the draft order it was created from */
   if (!matched && data.draft_order_id) {
-    const r = await db.from("orders").select("id")
+    const r = await db.from("orders").select("id, status, shopify_status")
       .eq("shopify_draft_order_id", String(data.draft_order_id)).maybeSingle();
     matched = r.data;
   }
 
-  if (matched) {
-    await db.from("orders").update(update).eq("id", matched.id);
+  if (!matched) return;
+
+  /* Build the incoming status from the strongest signal Shopify sent. */
+  const incoming =
+    data.fulfillment_status ||
+    data.financial_status ||
+    "open";
+
+  const update: any = {
+    shopify_order_id: orderId,
+    /* Never regress a stronger state. Prevents the paid → open flap when a
+       later orders/updated arrives with fulfillment_status=null. */
+    shopify_status: nextShopifyStatus(matched.shopify_status, incoming),
+  };
+  if (tracking.length) update.tracking = tracking.join(", ");
+
+  /* Only lift status to 'finalized' if the CRM order is still in a
+     pre-terminal state. Never overwrite a 'cancelled' or 'refunded' order
+     back to 'finalized' — Shopify sometimes replays a fulfilled event after
+     a cancellation and we must not resurrect the order. */
+  if (data.fulfillment_status === "fulfilled" &&
+      (matched.status === "draft" || matched.status === "finalized")) {
+    update.status = "finalized";
   }
+
+  await db.from("orders").update(update).eq("id", matched.id);
+}
+
+async function onOrderTerminal(db: any, data: any, terminalStatus: "cancelled" | "refunded") {
+  const orderId = data?.id ? String(data.id) : null;
+  if (!orderId) return;
+  let { data: matched } = await db.from("orders").select("id, status")
+    .eq("shopify_order_id", orderId).maybeSingle();
+  if (!matched && data.draft_order_id) {
+    const r = await db.from("orders").select("id, status")
+      .eq("shopify_draft_order_id", String(data.draft_order_id)).maybeSingle();
+    matched = r.data;
+  }
+  if (!matched) return;
+  await db.from("orders").update({
+    status: terminalStatus,
+    shopify_status: terminalStatus,
+  }).eq("id", matched.id);
+}
+
+async function onRefund(db: any, refund: any) {
+  /* refunds/create payload: { id, order_id, ... }. Look up the parent order. */
+  const parentOrderId = refund?.order_id ? String(refund.order_id) : null;
+  if (!parentOrderId) return;
+  const { data: matched } = await db.from("orders").select("id, status")
+    .eq("shopify_order_id", parentOrderId).maybeSingle();
+  if (!matched) return;
+  await db.from("orders").update({
+    status: "refunded",
+    shopify_status: "refunded",
+  }).eq("id", matched.id);
 }

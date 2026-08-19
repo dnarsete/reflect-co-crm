@@ -295,6 +295,9 @@ async function pullProducts(db: any) {
   const products: any[] = [];
   let pageInfo: string | null = null;
   let pages = 0;
+  /* Raised cap: 100 pages × 250 = 25,000 variants. Also expose hit_cap so
+     admins know when Shopify has more products than we pulled. */
+  const MAX_PAGES = 100;
   do {
     pages++;
     const path = pageInfo
@@ -303,7 +306,8 @@ async function pullProducts(db: any) {
     const { body, headers } = await shopifyFetch(db, path);
     products.push(...(body?.products || []));
     pageInfo = nextPageInfo(headers.get("Link"));
-  } while (pageInfo && pages < 20);
+  } while (pageInfo && pages < MAX_PAGES);
+  const hit_cap = !!(pageInfo && pages >= MAX_PAGES);
 
   const variants: any[] = [];
   for (const p of products) {
@@ -331,7 +335,31 @@ async function pullProducts(db: any) {
     }
   }
 
+  /* Detect SKU collisions BEFORE the upsert so we don't silently overwrite one
+     variant with another. Log the collision to shopify_sync_log so an admin
+     can rename the SKUs in Shopify. */
+  const seenSku = new Map<string, any>();
+  const collisions: any[] = [];
+  for (const v of variants) {
+    if (!v.sku) continue;
+    if (seenSku.has(v.sku)) {
+      collisions.push({ sku: v.sku, first: seenSku.get(v.sku).shopify_variant_id, dupe: v.shopify_variant_id });
+    } else {
+      seenSku.set(v.sku, v);
+    }
+  }
+  if (collisions.length) {
+    try {
+      await db.from("shopify_sync_log").insert({
+        action: "pull_products:sku_collisions",
+        status: "error",
+        detail: { collisions },
+      });
+    } catch (_) { /* logging must never break */ }
+  }
+
   let upserted = 0, skippedNoSku = 0;
+  const pulledSkus: string[] = [];
   const nowIso = new Date().toISOString();
   for (const v of variants) {
     if (!v.sku) { skippedNoSku++; continue; }
@@ -347,15 +375,41 @@ async function pullProducts(db: any) {
       shopify_inventory_item_id: v.shopify_inventory_item_id,
       synced_at: nowIso,
     }, { onConflict: "sku" });
-    if (!error) upserted++;
+    if (!error) { upserted++; pulledSkus.push(v.sku); }
   }
+
+  /* Detect products that were deleted in Shopify: any DB row with a
+     shopify_variant_id that we DIDN'T see this pull. Soft-delete them
+     by setting active=false so reps stop being offered them, but keep
+     the row for order-history reference. */
+  let deactivated = 0;
+  try {
+    const linked = await db.from("products").select("sku")
+      .not("shopify_variant_id", "is", null).eq("active", true);
+    const stalePulled = new Set(pulledSkus);
+    const stale = (linked.data || []).filter((r: any) => !stalePulled.has(r.sku));
+    if (stale.length) {
+      const staleSkus = stale.map((r: any) => r.sku);
+      await db.from("products").update({ active: false, synced_at: nowIso }).in("sku", staleSkus);
+      deactivated = stale.length;
+    }
+  } catch (_) { /* non-fatal */ }
 
   await db.from("settings").upsert({ key: "shopify_connected", value: true });
   await db.from("settings").upsert({ key: "shopify_store_url", value: storeHost() });
   await db.from("settings").upsert({ key: "shopify_last_product_sync", value: nowIso });
   await db.from("settings").upsert({ key: "shopify_product_count", value: upserted });
 
-  return { products_found: products.length, variants_found: variants.length, upserted, skipped_no_sku: skippedNoSku, synced_at: nowIso };
+  return {
+    products_found: products.length,
+    variants_found: variants.length,
+    upserted,
+    deactivated,
+    skipped_no_sku: skippedNoSku,
+    sku_collisions: collisions.length,
+    hit_cap,
+    synced_at: nowIso,
+  };
 }
 
 async function pushAccount(db: any, payload: any) {
@@ -695,6 +749,8 @@ async function registerWebhooks(db: any) {
     "ORDERS_PAID",
     "ORDERS_FULFILLED",
     "ORDERS_UPDATED",
+    "ORDERS_CANCELLED",
+    "REFUNDS_CREATE",
     "PRODUCTS_UPDATE",
     "INVENTORY_LEVELS_UPDATE",
   ];

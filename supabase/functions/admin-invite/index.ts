@@ -45,6 +45,25 @@ function corsHeaders(req: Request): HeadersInit {
   };
 }
 
+/* Paginated email lookup — walks auth.users 200 at a time until it finds a
+   match or exhausts pages. Scales past the 1000-user limit of a single listUsers
+   call. Returns the matching user object or null. */
+async function findUserByEmail(admin: any, targetEmail: string): Promise<any | null> {
+  const needle = targetEmail.toLowerCase();
+  const perPage = 200;
+  const maxPages = 100; /* backstop — 20,000 users covers Dan's foreseeable scale */
+  for (let page = 1; page <= maxPages; page++) {
+    const res = await admin.auth.admin.listUsers({ page, perPage });
+    if (res.error) return null;
+    const users = res.data?.users || [];
+    if (!users.length) return null;
+    const found = users.find((u: any) => (u.email || "").toLowerCase() === needle);
+    if (found) return found;
+    if (users.length < perPage) return null; /* last page */
+  }
+  return null;
+}
+
 serve(async (req: Request): Promise<Response> => {
   const cors = corsHeaders(req);
   const json = (obj: any, status = 200) =>
@@ -110,15 +129,36 @@ serve(async (req: Request): Promise<Response> => {
   if (mode === "update_email") {
     const userId = String(body?.user_id || "");
     if (!userId) return json({ error: "user_id required for update_email" }, 400);
+
+    /* Pre-flight: refuse if the new email is already owned by another user.
+       updateUserById would fail with a cryptic message; give a clear one instead. */
+    const clashCheck = await findUserByEmail(admin, email);
+    if (clashCheck && clashCheck.id !== userId) {
+      return json({ error: `Cannot change email — another user already exists with ${email}.` }, 409);
+    }
+
+    /* Look up the OLD email so we can clean any stale pending_invites for it. */
+    const admDb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
+    const oldProf = await admDb.from("profiles").select("email").eq("id", userId).maybeSingle();
+    const oldEmail = (oldProf.data?.email || "").toLowerCase();
+
     const upd = await admin.auth.admin.updateUserById(userId, {
       email,
       email_confirm: true,
     });
     if (upd.error) return json({ error: "Auth email update failed: " + upd.error.message }, 500);
     /* Also update the profiles.email column so the app stays in sync */
-    const admDb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
     const profUpd = await admDb.from("profiles").update({ email }).eq("id", userId);
     if (profUpd.error) return json({ error: "Profile email update failed: " + profUpd.error.message }, 500);
+
+    /* Clean up any pending_invites rows for the OLD or NEW email — they're
+       stale now and would let a fresh admin add re-use unexpected data. */
+    try {
+      const emailsToClean = [email];
+      if (oldEmail && oldEmail !== email) emailsToClean.push(oldEmail);
+      await admDb.from("pending_invites").delete().in("email", emailsToClean);
+    } catch (_) { /* non-fatal */ }
+
     /* Return a fresh magic link for the new email */
     const linkRes = await admin.auth.admin.generateLink({
       type: "magiclink",
@@ -132,8 +172,10 @@ serve(async (req: Request): Promise<Response> => {
 
   /* --- Mode: invite (default) --- create user if new + generate magic link --- */
   let isNewUser = false;
-  const listRes = await admin.auth.admin.listUsers({ page: 1, perPage: 1000 });
-  const existing = listRes.data?.users?.find((u: any) => (u.email || "").toLowerCase() === email);
+  /* Paginate through auth.users instead of relying on a single 1000-user page.
+     Previously beyond 1000 users this would fail to detect an existing user
+     and hit "email already registered" on createUser. */
+  const existing = await findUserByEmail(admin, email);
 
   if (!existing) {
     /* Create the user auto-confirmed (no email verification step) */
