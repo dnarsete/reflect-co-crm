@@ -990,7 +990,14 @@ const accounts = {
     ui.closeModal(); ui.toast(isNew?'Account created':'Saved'); accounts.render(); dashboard.render();
   },
   async remove(id){
-    if(!confirm('Delete this account? Orders will keep their reference.')) return;
+    /* Look up whether this account is linked to a Shopify customer so we can
+       warn the admin about the orphan risk before they delete. */
+    const linkCheck = await sb.from('accounts').select('shopify_customer_id').eq('id', id).maybeSingle();
+    const isLinked = !!linkCheck.data?.shopify_customer_id;
+    const warning = isLinked
+      ? 'Delete this account?\n\nOrders keep their reference, but the linked Shopify customer record is NOT deleted — it stays in Shopify with its order history. If a rep later re-creates an account with the same email, a duplicate Shopify customer will be created unless the CRM already dedupes on email.'
+      : 'Delete this account? Orders will keep their reference.';
+    if(!confirm(warning)) return;
     /* .select() so we can see which rows Supabase actually deleted.
        If RLS silently blocks the delete, it returns [] (no error, no rows).
        Without this check we'd falsely tell the user "Deleted" while the
@@ -1283,10 +1290,32 @@ const orders = {
     const sel = document.getElementById('o-sku');
     const opt = sel.selectedOptions[0]; if(!opt) return;
     const qty = Math.max(1, parseInt(document.getElementById('o-qty').value||'1',10));
+    const stock = parseInt(opt.dataset.stock || '0', 10);
+    /* Stock warning — reps see a caution when ordering more than what's in
+       stock so they don't accidentally oversell. Admin sees the same warning
+       but can proceed. Non-admin gets a hard block. */
+    if(stock >= 0 && qty > stock){
+      const msg = `Only ${stock} units of ${opt.dataset.name} in stock. Ordering ${qty} exceeds available inventory.`;
+      if(!auth.isAdmin()){ ui.toast(msg); return; }
+      if(!confirm(msg + '\n\nProceed anyway?')) return;
+    }
     (orders._draft.items ||= []).push({sku:opt.value, name:opt.dataset.name, price:parseFloat(opt.dataset.price), qty});
     orders.renderItems(); orders.recompute();
   },
-  setQty(i,v){ orders._draft.items[i].qty = Math.max(1, parseInt(v||'1',10)); orders.renderItems(); orders.recompute(); },
+  setQty(i,v){
+    const newQty = Math.max(1, parseInt(v||'1',10));
+    const item = orders._draft.items[i];
+    /* Same stock guard applies when the qty is edited later. */
+    const prod = cache.products?.find(p => p.sku === item?.sku);
+    const stock = prod ? Number(prod.stock || 0) : -1;
+    if(stock >= 0 && newQty > stock){
+      const msg = `Only ${stock} units of ${item.name} in stock. ${newQty} exceeds available inventory.`;
+      if(!auth.isAdmin()){ ui.toast(msg); orders.renderItems(); return; }
+      if(!confirm(msg + '\n\nProceed anyway?')) { orders.renderItems(); return; }
+    }
+    item.qty = newQty;
+    orders.renderItems(); orders.recompute();
+  },
   removeItem(i){ orders._draft.items.splice(i,1); orders.renderItems(); orders.recompute(); },
   applyPromo(){
     const code = (document.getElementById('o-promo').value||'').trim().toUpperCase();
@@ -1441,7 +1470,11 @@ const orders = {
     if(!confirm(confirmText)) return;
 
     d.status='finalized';
-    d.payment.authorized = true;
+    /* payment.authorized should only be true when the rep actually captured
+       a signature (or the rep is admin, who can bypass). Setting it true
+       unconditionally made the field meaningless — no signature backing on
+       disputes. */
+    d.payment.authorized = !!(d.payment?.signature) || auth.isAdmin();
     const payload = orders.buildPayload(d);
     if(inTestMode) payload.is_test = true;
     let q;
@@ -1552,6 +1585,13 @@ const orders = {
         }
       }
       orders.render();
+      /* If the order detail modal is still open on this order, re-open it so
+         the freshly-populated Shopify badge/invoice link is visible without
+         a manual close/reopen. */
+      const modalOpen = document.getElementById('modal-back')?.classList.contains('show');
+      if(modalOpen && orders._draft && orders._draft.id === id){
+        try { await orders.open(id, false); } catch(_){}
+      }
     } catch(e){ ui.err(e); }
     ui.busy(false);
   },
@@ -3880,8 +3920,26 @@ const security = {
   async listFactors(){
     const r = await sb.auth.mfa.listFactors();
     if(r.error) throw r.error;
-    /* Normalize: combine all factors then split by type */
-    const all = (r.data?.all || r.data?.totp || []).concat(r.data?.phone || []);
+    /* Explicitly gather every known factor slot rather than relying on
+       r.data.all — if a Supabase-JS bump stops populating that combined
+       field, enrolled passkeys/phone factors would silently disappear
+       from the Security modal. Building the set slot-by-slot is durable. */
+    const buckets = [
+      r.data?.all || [],
+      r.data?.totp || [],
+      r.data?.phone || [],
+      r.data?.webauthn || [],
+    ];
+    /* Dedupe by id in case r.data.all overlaps the per-type buckets. */
+    const seen = new Set();
+    const all = [];
+    for(const b of buckets){
+      for(const f of b){
+        if(!f || !f.id || seen.has(f.id)) continue;
+        seen.add(f.id);
+        all.push(f);
+      }
+    }
     const verified = all.filter(f => f.status === 'verified');
     return {
       raw: r.data,

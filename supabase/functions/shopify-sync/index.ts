@@ -420,6 +420,20 @@ async function pushAccount(db: any, payload: any) {
   if (acc.shopify_customer_id) {
     return { already_linked: true, shopify_customer_id: acc.shopify_customer_id };
   }
+  /* Dedupe: if a Shopify customer already exists with this email (e.g. the
+     account was deleted and re-created, or a Shopify customer existed
+     before the CRM), link to it instead of creating a duplicate. */
+  if (acc.email) {
+    try {
+      const search = await shopifyFetch(db, `customers/search.json?query=${encodeURIComponent("email:" + acc.email)}`);
+      const found = (search.body?.customers || [])[0];
+      if (found?.id) {
+        const shopifyId = String(found.id);
+        await db.from("accounts").update({ shopify_customer_id: shopifyId }).eq("id", accountId);
+        return { deduped: true, shopify_customer_id: shopifyId };
+      }
+    } catch (_) { /* fall through and create fresh if search fails */ }
+  }
   const nameParts = (acc.billing_name || acc.business_name || "").trim().split(/\s+/);
   /* Build a STRUCTURED address so Shopify can use it for checkout,
      tax calc, and shipping-zone matching. A single-line string used to
