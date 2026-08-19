@@ -823,12 +823,18 @@ const accounts = {
   },
   async deleteNote(noteId, accountId){
     if(!confirm('Delete this note? This cannot be undone.')) return;
-    const r = await sb.from('account_notes').delete().eq('id', noteId);
+    const r = await sb.from('account_notes').delete().eq('id', noteId).select();
     if(r.error){
       const msg = /row-level security|permission/i.test(r.error.message)
         ? 'Cannot delete this note — past the 24-hour window or not your note.'
         : r.error.message;
       ui.err({ message: msg });
+      return;
+    }
+    /* Supabase returns [] with no error when RLS silently blocks (past 24h window
+       or not your note). Surface that instead of pretending it worked. */
+    if(!r.data || r.data.length === 0){
+      ui.err({ message: 'Cannot delete this note — past the 24-hour window or not your note.' });
       return;
     }
     accounts.renderNotes(accountId);
@@ -949,11 +955,20 @@ const accounts = {
       }
     }
     if(q.error){ ui.err(q.error); return; }
-    /* If Shopify integration is live, mirror the account as a Shopify customer.
-       Non-blocking — CRM save is authoritative. Errors just log. */
-    if(isNew && shopify.mode() === 'live'){
+    /* If Shopify integration is live AND the current rep is NOT in test mode,
+       mirror the account as a Shopify customer. Test-mode reps must never
+       create real Shopify customers (matches the order-push gate). */
+    const inTestMode = !!(cache.me && cache.me.test_mode && cache.me.role !== 'admin');
+    if(isNew && shopify.mode() === 'live' && !inTestMode){
       try { await shopify.call('push_account', { account_id: q.data.id }); }
       catch(e){ console.warn('shopify push_account failed:', e); }
+    }
+    /* On UPDATE (not isNew), if the account has a shopify_customer_id, push the
+       updated fields so Shopify stays in sync. Fixes the class of bug where
+       adding an email to an existing account never reached Shopify. */
+    else if(!isNew && shopify.mode() === 'live' && !inTestMode && q.data.shopify_customer_id){
+      try { await shopify.call('update_account', { account_id: q.data.id }); }
+      catch(e){ console.warn('shopify update_account failed:', e); }
     }
     ui.closeModal(); ui.toast(isNew?'Account created':'Saved'); accounts.render(); dashboard.render();
   },
@@ -1479,6 +1494,32 @@ const orders = {
   },
   async pushToShopify(id){
     if(shopify.mode() !== 'live'){ ui.toast('Shopify integration is off. Enable it in config.js first.'); return; }
+    /* Verify this order isn't marked as a test order before touching Shopify.
+       The Finalize button hides for test-mode reps, but an admin viewing the
+       same order sees the Push button — without this gate an admin could
+       push a rep's test order and generate a real invoice. */
+    const chk = await sb.from('orders').select('is_test, account_id, status').eq('id', id).single();
+    if(chk.data?.is_test === true){
+      alert('This order is marked TEST. Cannot push to Shopify — test orders must never reach production.');
+      return;
+    }
+    /* Same shipping-address gate as finalize. Without a full address Shopify
+       returns 'Record is invalid' or checkout fails with 'Shipping not available'. */
+    if(chk.data?.account_id){
+      const acctRes = await sb.from('accounts')
+        .select('business_name, business_street, business_address, business_city, business_state, business_zip')
+        .eq('id', chk.data.account_id).single();
+      const a = acctRes.data || {};
+      const missing = [];
+      if(!(a.business_street || a.business_address)) missing.push('Street address');
+      if(!a.business_city)  missing.push('City');
+      if(!a.business_state) missing.push('State');
+      if(!a.business_zip)   missing.push('ZIP');
+      if(missing.length){
+        alert(`Cannot push to Shopify: ${a.business_name||'account'} is missing ${missing.join(', ')}.\n\nOpen the account and fill in the missing fields, then try again.`);
+        return;
+      }
+    }
     ui.busy(true);
     try {
       const r = await shopify.call('create_draft_order', { order_id: id });
@@ -1497,9 +1538,19 @@ const orders = {
     ui.busy(false);
   },
   async remove(id){
-    if(!confirm('Delete this order?')) return;
-    const r = await sb.from('orders').delete().eq('id', id);
+    /* Local guard: RLS only allows deleting drafts. Show the reason up front
+       rather than silently no-op when the delete hits the DB. */
+    if(orders._draft && orders._draft.id === id && orders._draft.status !== 'draft'){
+      alert('Only draft orders can be deleted. This one is ' + orders._draft.status + '.');
+      return;
+    }
+    if(!confirm('Delete this order? Any linked Shopify draft will become orphaned unless you also delete it in Shopify.')) return;
+    const r = await sb.from('orders').delete().eq('id', id).select();
     if(r.error){ ui.err(r.error); return; }
+    if(!r.data || r.data.length === 0){
+      alert('Delete did not go through — the database blocked it. Likely because the order isn\'t a draft, or it belongs to another rep.');
+      return;
+    }
     ui.closeModal(); ui.toast('Deleted'); orders.render();
   }
 };
@@ -1693,8 +1744,12 @@ const promos = {
   },
   async remove(id){
     if(!confirm('Delete promotion?')) return;
-    const r = await sb.from('promotions').delete().eq('id', id);
+    const r = await sb.from('promotions').delete().eq('id', id).select();
     if(r.error){ ui.err(r.error); return; }
+    if(!r.data || r.data.length === 0){
+      alert('Delete did not go through. Promotions are admin-only — confirm your role is admin.');
+      return;
+    }
     ui.closeModal(); promos.render();
   }
 };
@@ -2924,8 +2979,12 @@ const forecasts = {
   },
   async remove(id){
     if(!confirm('Delete this forecast?')) return;
-    const r = await sb.from('forecasts').delete().eq('id', id);
+    const r = await sb.from('forecasts').delete().eq('id', id).select();
     if(r.error){ ui.err(r.error); return; }
+    if(!r.data || r.data.length === 0){
+      alert('Delete did not go through. This forecast may belong to another rep.');
+      return;
+    }
     ui.closeModal(); ui.toast('Deleted'); forecasts.render();
   },
   async exportCsv(){
@@ -3164,15 +3223,17 @@ const messages = {
     dashboard.render();
   },
   async toggleArchive(id, archived){
-    const r = await sb.from('rep_messages').update({archived}).eq('id', id);
+    const r = await sb.from('rep_messages').update({archived}).eq('id', id).select();
     if(r.error){ ui.err(r.error); return; }
+    if(!r.data || r.data.length === 0){ ui.toast('Nothing changed — check your admin role.'); return; }
     messages.renderAdmin();
     dashboard.render();
   },
   async remove(id){
     if(!confirm('Delete this message permanently?')) return;
-    const r = await sb.from('rep_messages').delete().eq('id', id);
+    const r = await sb.from('rep_messages').delete().eq('id', id).select();
     if(r.error){ ui.err(r.error); return; }
+    if(!r.data || r.data.length === 0){ ui.toast('Delete did not go through — check your admin role.'); return; }
     messages.renderAdmin();
     dashboard.render();
   }

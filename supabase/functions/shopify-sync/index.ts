@@ -125,13 +125,13 @@ serve(async (req: Request): Promise<Response> => {
         }
       }
     }
-    if (action === "push_account") {
+    if (action === "push_account" || action === "update_account") {
       const accountId = payload?.account_id;
       if (accountId) {
         const { data: acc } = await userClient.from("accounts").select("id, rep_id").eq("id", accountId).maybeSingle();
         if (!acc) return json({ error: "Account not found or not accessible to you." }, 403);
         if (profile.rep_id && acc.rep_id !== profile.rep_id) {
-          return json({ error: "You can only push your own accounts to Shopify." }, 403);
+          return json({ error: "You can only sync your own accounts to Shopify." }, 403);
         }
       }
     }
@@ -143,6 +143,7 @@ serve(async (req: Request): Promise<Response> => {
       case "test_connection":    result = await testConnection(db); break;
       case "pull_products":      result = await pullProducts(db); break;
       case "push_account":       result = await pushAccount(db, payload); break;
+      case "update_account":     result = await updateAccount(db, payload); break;
       case "create_draft_order": result = await createDraftOrder(db, payload); break;
       case "get_order_status":   result = await getOrderStatus(db, payload); break;
       case "register_webhooks":  result = await registerWebhooks(db); break;
@@ -403,6 +404,73 @@ async function pushAccount(db: any, payload: any) {
   return { created: true, shopify_customer_id: shopifyId };
 }
 
+async function updateAccount(db: any, payload: any) {
+  const accountId = payload?.account_id;
+  if (!accountId) throw new Error("payload.account_id required");
+  const { data: acc, error } = await db.from("accounts").select("*").eq("id", accountId).single();
+  if (error || !acc) throw new Error("Account not found");
+  if (!acc.shopify_customer_id) {
+    /* No Shopify link yet — fall through to push_account to create it. */
+    return await pushAccount(db, payload);
+  }
+
+  const nameParts = (acc.billing_name || acc.business_name || "").trim().split(/\s+/);
+  const bizStreet = acc.business_street || acc.business_address || null;
+  const structuredAddress = (bizStreet && acc.business_city && acc.business_state && acc.business_zip) ? {
+    address1: bizStreet,
+    address2: acc.business_suite || undefined,
+    city: acc.business_city,
+    province: acc.business_state,
+    zip: acc.business_zip,
+    country_code: "US",
+    first_name: nameParts[0] || acc.business_name || "Account",
+    last_name: nameParts.slice(1).join(" ") || "",
+    company: acc.business_name || undefined,
+    phone: acc.business_phone || acc.cell || undefined,
+    default: true,
+  } : null;
+
+  const customer: any = {
+    id: Number(acc.shopify_customer_id),
+    first_name: nameParts[0] || acc.business_name || "Account",
+    last_name: nameParts.slice(1).join(" ") || "",
+    email: acc.email || undefined,
+    phone: acc.business_phone || acc.cell || undefined,
+    note: `CRM account ${acc.account_number} · type ${acc.type || "—"} · rep ${acc.rep_id || "—"}`,
+    tags: ["reflect-crm", acc.type || ""].filter(Boolean).join(", "),
+  };
+
+  const { body } = await shopifyFetch(db, `customers/${acc.shopify_customer_id}.json`, {
+    method: "PUT",
+    body: JSON.stringify({ customer }),
+  });
+
+  /* PUT customer doesn't accept address changes — those go through a separate
+     endpoint. Update the default address explicitly if we have one. */
+  if (structuredAddress && body?.customer?.default_address?.id) {
+    try {
+      await shopifyFetch(db, `customers/${acc.shopify_customer_id}/addresses/${body.customer.default_address.id}.json`, {
+        method: "PUT",
+        body: JSON.stringify({ address: structuredAddress }),
+      });
+    } catch (e: any) {
+      console.error("[shopify-sync] Address update failed:", e?.message || String(e));
+    }
+  } else if (structuredAddress) {
+    /* No default address yet — create one. */
+    try {
+      await shopifyFetch(db, `customers/${acc.shopify_customer_id}/addresses.json`, {
+        method: "POST",
+        body: JSON.stringify({ address: { ...structuredAddress, default: true } }),
+      });
+    } catch (e: any) {
+      console.error("[shopify-sync] Address create failed:", e?.message || String(e));
+    }
+  }
+
+  return { updated: true, shopify_customer_id: acc.shopify_customer_id };
+}
+
 async function createDraftOrder(db: any, payload: any) {
   const orderId = payload?.order_id;
   if (!orderId) throw new Error("payload.order_id required");
@@ -433,8 +501,12 @@ async function createDraftOrder(db: any, payload: any) {
        causing Shopify's opaque "Record is invalid" 422s in certain
        account/address combinations. Explicit customer+email is enough. */
   };
+  /* ALWAYS attach the CRM email to the draft. Previously we only set draft.email
+     when there was no customer.id — that left drafts without an email whenever
+     the linked Shopify customer record was missing/stale on the Shopify side.
+     Setting draft.email in both cases guarantees the invoice has a send target. */
   if (ord.account?.shopify_customer_id) draft.customer = { id: Number(ord.account.shopify_customer_id) };
-  else if (ord.account?.email) draft.email = ord.account.email;
+  if (ord.account?.email) draft.email = ord.account.email;
   if (ord.promo_code) draft.note += ` · promo ${ord.promo_code}`;
 
   /* SEND the account's structured shipping + billing address on the draft.
