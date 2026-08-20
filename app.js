@@ -16,6 +16,23 @@ const todayISO = () => new Date().toISOString().slice(0,10);
 const startOfMonth = () => { const d=new Date(); return new Date(d.getFullYear(),d.getMonth(),1).toISOString().slice(0,10) };
 const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
+/* US-only phone normalization. Called from onblur on every phone input.
+   Accepts any input (dashes, parens, dots, spaces, leading +1) and rewrites
+   to a canonical XXX-XXX-XXXX. 11 digits starting with 1 → drop the 1.
+   Anything else → left as typed so we don't destroy in-progress entries. */
+function normalizeUSPhone(inputEl){
+  if(!inputEl) return;
+  const raw = String(inputEl.value || '').trim();
+  if(!raw) return;
+  const digits = raw.replace(/\D/g, '');
+  let ten = digits;
+  if(digits.length === 11 && digits.startsWith('1')) ten = digits.slice(1);
+  if(ten.length !== 10) return; /* leave weird lengths alone — user may still be typing */
+  inputEl.value = ten.slice(0,3) + '-' + ten.slice(3,6) + '-' + ten.slice(6);
+}
+/* Expose globally so inline onblur can call it without adding another prefix. */
+window.normalizeUSPhone = normalizeUSPhone;
+
 /* Return a signature data URL only if it's a valid inline image; empty string otherwise.
    Prevents XSS via an attacker-controlled orders.payment.signature (see security audit). */
 const safeSignature = s => (typeof s === 'string' && /^data:image\/(png|jpe?g);base64,[A-Za-z0-9+/=]+$/.test(s)) ? s : '';
@@ -720,8 +737,8 @@ const accounts = {
         <div><label>Account type</label><select id="f-type">${typeOpts}</select></div>
         <div><label>Billing responsible person</label><input id="f-rn" value="${esc(acc.billing_name)}"/></div>
         <div><label>Account email</label><input id="f-em" type="email" value="${esc(acc.email)}"/></div>
-        <div><label>Cell (responsible)</label><input id="f-cell" value="${esc(acc.cell)}"/></div>
-        <div><label>Business phone</label><input id="f-bp" value="${esc(acc.business_phone)}"/></div>
+        <div><label>Cell (responsible)</label><input id="f-cell" type="tel" autocomplete="tel" inputmode="tel" placeholder="555-555-5555" value="${esc(acc.cell)}" onblur="normalizeUSPhone(this)"/></div>
+        <div><label>Business phone</label><input id="f-bp" type="tel" autocomplete="tel" inputmode="tel" placeholder="555-555-5555" value="${esc(acc.business_phone)}" onblur="normalizeUSPhone(this)"/></div>
         <div style="grid-column:1/-1"><label>Website</label><input id="f-web" type="url" value="${esc(acc.website||'')}" placeholder="https://…" autocapitalize="none" spellcheck="false"/></div>
       </div>
 
@@ -737,6 +754,7 @@ const accounts = {
           <div><label>State</label><input id="f-b-state" value="${esc(acc.business_state||'')}" autocomplete="address-level1" placeholder="CO"/></div>
           <div><label>ZIP</label><input id="f-b-zip" value="${esc(acc.business_zip||'')}" autocomplete="postal-code"/></div>
         </div>
+        <div class="muted" style="font-size:11px;margin-top:6px">🇺🇸 United States</div>
       </div>
 
       <!-- "Same as" checkbox + billing block -->
@@ -758,6 +776,7 @@ const accounts = {
           <div><label>State</label><input id="f-l-state" value="${esc(acc.billing_state||'')}" autocomplete="address-level1" placeholder="CO"/></div>
           <div><label>ZIP</label><input id="f-l-zip" value="${esc(acc.billing_zip||'')}" autocomplete="postal-code"/></div>
         </div>
+        <div class="muted" style="font-size:11px;margin-top:6px">🇺🇸 United States</div>
       </div>
 
       <div class="grid-2" style="margin-top:12px">
@@ -3541,7 +3560,7 @@ const adminPanel = {
       <div class="grid-2">
         <div><label>Email ${isNew?'':'<span class="muted" style="font-size:11px">(edit updates login)</span>'}</label><input id="r-email" type="email" value="${esc(prof.email)}" autocapitalize="none"/></div>
         <div><label>Full name</label><input id="r-name" value="${esc(prof.name||'')}"/></div>
-        <div><label>Cell phone</label><input id="r-cell" value="${esc(prof.cell||'')}" placeholder="555-555-5555"/></div>
+        <div><label>Cell phone</label><input id="r-cell" type="tel" autocomplete="tel" inputmode="tel" placeholder="555-555-5555" value="${esc(prof.cell||'')}" onblur="normalizeUSPhone(this)"/></div>
         <div><label>Company (optional)</label><input id="r-company" value="${esc(prof.company||'')}"/></div>
         <div><label>Tax ID / EIN (optional)</label><input id="r-tax-id" value="${esc(prof.tax_id||'')}" placeholder="For 1099 purposes"/></div>
         <div></div>

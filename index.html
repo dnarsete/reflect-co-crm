@@ -98,7 +98,7 @@
       <div id="signup-extras" class="hide" style="margin-top:8px">
         <div class="grid-2">
           <div><label>Full name <span class="muted" style="font-size:11px">*</span></label><input id="su-name" autocomplete="name"/></div>
-          <div><label>Cell phone <span class="muted" style="font-size:11px">*</span></label><input id="su-cell" type="tel" autocomplete="tel" placeholder="555-555-5555"/></div>
+          <div><label>Cell phone <span class="muted" style="font-size:11px">*</span></label><input id="su-cell" type="tel" autocomplete="tel" inputmode="tel" placeholder="555-555-5555" onblur="normalizeUSPhone(this)"/></div>
           <div style="grid-column:1/-1"><label>Company (optional)</label><input id="su-company" autocomplete="organization"/></div>
           <div style="grid-column:1/-1"><label>Street address</label><input id="su-street" autocomplete="street-address"/></div>
           <div><label>City</label><input id="su-city" autocomplete="address-level2"/></div>
@@ -335,7 +335,7 @@
         <div class="grid-2">
           <div><label>Full name <span style="color:var(--brand)">*</span></label><input id="p-name" autocomplete="name"/></div>
           <div><label>Email <span class="muted" style="font-size:11px">(changing requires verification)</span></label><input id="p-email" type="email" autocomplete="email" autocapitalize="none"/></div>
-          <div><label>Cell phone <span style="color:var(--brand)">*</span></label><input id="p-cell" type="tel" autocomplete="tel" placeholder="555-555-5555"/></div>
+          <div><label>Cell phone <span style="color:var(--brand)">*</span></label><input id="p-cell" type="tel" autocomplete="tel" inputmode="tel" placeholder="555-555-5555" onblur="normalizeUSPhone(this)"/></div>
           <div><label>Company (optional)</label><input id="p-company" autocomplete="organization"/></div>
           <div><label>Tax ID / EIN (optional)</label><input id="p-tax-id" placeholder="For 1099 purposes"/></div>
           <div></div>
