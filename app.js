@@ -1383,7 +1383,12 @@ const orders = {
     /* Stock warning — reps see a caution when ordering more than what's in
        stock so they don't accidentally oversell. Admin sees the same warning
        but can proceed. Non-admin gets a hard block. */
-    if(stock >= 0 && qty > stock){
+    /* Only warn when stock is a POSITIVE number being exceeded. stock=0 is
+       ambiguous — could mean "actually out" or "inventory tracking disabled in
+       Shopify" or "sync ran before stock was entered." Blocking on 0 caused
+       reps to be locked out of ordering perfectly-available items. Merchant
+       controls oversell prevention in Shopify itself. */
+    if(stock > 0 && qty > stock){
       const msg = `Only ${stock} units of ${opt.dataset.name} in stock. Ordering ${qty} exceeds available inventory.`;
       if(!auth.isAdmin()){ ui.toast(msg); return; }
       if(!confirm(msg + '\n\nProceed anyway?')) return;
@@ -1397,7 +1402,8 @@ const orders = {
     /* Same stock guard applies when the qty is edited later. */
     const prod = cache.products?.find(p => p.sku === item?.sku);
     const stock = prod ? Number(prod.stock || 0) : -1;
-    if(stock >= 0 && newQty > stock){
+    /* Same rule as addItem: stock=0 is ambiguous, only warn on positive stock. */
+    if(stock > 0 && newQty > stock){
       const msg = `Only ${stock} units of ${item.name} in stock. ${newQty} exceeds available inventory.`;
       if(!auth.isAdmin()){ ui.toast(msg); orders.renderItems(); return; }
       if(!confirm(msg + '\n\nProceed anyway?')) { orders.renderItems(); return; }
