@@ -33,6 +33,34 @@ function normalizeUSPhone(inputEl){
 /* Expose globally so inline onblur can call it without adding another prefix. */
 window.normalizeUSPhone = normalizeUSPhone;
 
+/* US state list — used to render dropdowns everywhere the CRM asks for a
+   state. A dropdown eliminates typos, kills the browser-autofill hijack
+   that was defaulting empty state fields to the user's saved profile
+   state (which showed up in Shopify as e.g. "Colorado" on an Arizona
+   address), and drops the placeholder-vs-value confusion entirely. */
+const US_STATES = [
+  ['AL','Alabama'],['AK','Alaska'],['AZ','Arizona'],['AR','Arkansas'],
+  ['CA','California'],['CO','Colorado'],['CT','Connecticut'],['DE','Delaware'],
+  ['DC','District of Columbia'],['FL','Florida'],['GA','Georgia'],['HI','Hawaii'],
+  ['ID','Idaho'],['IL','Illinois'],['IN','Indiana'],['IA','Iowa'],
+  ['KS','Kansas'],['KY','Kentucky'],['LA','Louisiana'],['ME','Maine'],
+  ['MD','Maryland'],['MA','Massachusetts'],['MI','Michigan'],['MN','Minnesota'],
+  ['MS','Mississippi'],['MO','Missouri'],['MT','Montana'],['NE','Nebraska'],
+  ['NV','Nevada'],['NH','New Hampshire'],['NJ','New Jersey'],['NM','New Mexico'],
+  ['NY','New York'],['NC','North Carolina'],['ND','North Dakota'],['OH','Ohio'],
+  ['OK','Oklahoma'],['OR','Oregon'],['PA','Pennsylvania'],['RI','Rhode Island'],
+  ['SC','South Carolina'],['SD','South Dakota'],['TN','Tennessee'],['TX','Texas'],
+  ['UT','Utah'],['VT','Vermont'],['VA','Virginia'],['WA','Washington'],
+  ['WV','West Virginia'],['WI','Wisconsin'],['WY','Wyoming'],
+  ['PR','Puerto Rico'],['VI','US Virgin Islands'],['GU','Guam'],['AS','American Samoa'],['MP','Northern Mariana Islands'],
+];
+function usStateOptions(selectedCode){
+  const sel = String(selectedCode || '').toUpperCase();
+  return '<option value="">— select —</option>' +
+    US_STATES.map(([c,n]) => `<option value="${c}" ${c===sel?'selected':''}>${c} — ${n}</option>`).join('');
+}
+window.usStateOptions = usStateOptions;
+
 /* Return a signature data URL only if it's a valid inline image; empty string otherwise.
    Prevents XSS via an attacker-controlled orders.payment.signature (see security audit). */
 const safeSignature = s => (typeof s === 'string' && /^data:image\/(png|jpe?g);base64,[A-Za-z0-9+/=]+$/.test(s)) ? s : '';
@@ -751,7 +779,7 @@ const accounts = {
         </div>
         <div class="grid-3" style="margin-top:8px">
           <div><label>City</label><input id="f-b-city" value="${esc(acc.business_city||'')}" autocomplete="address-level2"/></div>
-          <div><label>State</label><input id="f-b-state" value="${esc(acc.business_state||'')}" autocomplete="address-level1" placeholder="CO"/></div>
+          <div><label>State</label><select id="f-b-state" autocomplete="address-level1">${usStateOptions(acc.business_state)}</select></div>
           <div><label>ZIP</label><input id="f-b-zip" value="${esc(acc.business_zip||'')}" autocomplete="postal-code"/></div>
         </div>
         <div class="muted" style="font-size:11px;margin-top:6px">🇺🇸 United States</div>
@@ -773,7 +801,7 @@ const accounts = {
         </div>
         <div class="grid-3" style="margin-top:8px">
           <div><label>City</label><input id="f-l-city" value="${esc(acc.billing_city||'')}" autocomplete="address-level2"/></div>
-          <div><label>State</label><input id="f-l-state" value="${esc(acc.billing_state||'')}" autocomplete="address-level1" placeholder="CO"/></div>
+          <div><label>State</label><select id="f-l-state" autocomplete="address-level1">${usStateOptions(acc.billing_state)}</select></div>
           <div><label>ZIP</label><input id="f-l-zip" value="${esc(acc.billing_zip||'')}" autocomplete="postal-code"/></div>
         </div>
         <div class="muted" style="font-size:11px;margin-top:6px">🇺🇸 United States</div>
@@ -781,7 +809,7 @@ const accounts = {
 
       <div class="grid-2" style="margin-top:12px">
         <div><label>Sales tax license #</label><input id="f-stl" value="${esc(acc.sales_tax_license)}"/></div>
-        <div><label>License state</label><input id="f-sts" value="${esc(acc.sales_tax_state)}" placeholder="CO"/></div>
+        <div><label>License state</label><select id="f-sts">${usStateOptions(acc.sales_tax_state)}</select></div>
         <div><label>Tax exempt</label>
           <label class="toggle"><input type="checkbox" id="f-exempt" ${acc.tax_exempt?'checked':''}/> <span>Do not charge sales tax</span></label>
         </div>
@@ -3580,7 +3608,7 @@ const adminPanel = {
         <div><label>Territory (comma-separated)</label><input id="r-terr" value="${esc((prof.territory||[]).join(', '))}" placeholder="Denver Metro, Boulder, Colorado Springs"/></div>
         <div style="grid-column:1/-1"><label>Street address</label><input id="r-street" value="${esc(prof.street||'')}"/></div>
         <div><label>City</label><input id="r-city" value="${esc(prof.city||'')}"/></div>
-        <div><label>State</label><input id="r-state" value="${esc(prof.state||'')}" placeholder="CO"/></div>
+        <div><label>State</label><select id="r-state">${usStateOptions(prof.state)}</select></div>
         <div><label>ZIP</label><input id="r-zip" value="${esc(prof.zip||'')}"/></div>
         <div style="grid-column:1/-1;padding:10px;border:1px solid var(--line);background:rgba(212,160,23,0.08);border-radius:8px;margin-top:6px">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
@@ -4889,6 +4917,22 @@ const welcome = {
     ui.toast('Welcome overlay reset — sign out + back in to see it.');
   }
 };
+
+/* Populate any statically-rendered state <select> elements in index.html
+   (signup form, profile form) — the HTML file can't run JS at parse time
+   so the options are injected here. Runs both immediately (in case the DOM
+   is already ready) and on DOMContentLoaded (in case it isn't). */
+(function populateStaticStateSelects(){
+  const fill = () => {
+    document.querySelectorAll('#su-state, #p-state').forEach(sel => {
+      if(!sel || sel.options.length > 2) return; /* already populated */
+      const current = sel.value || '';
+      sel.innerHTML = usStateOptions(current);
+    });
+  };
+  if(document.readyState !== 'loading') fill();
+  else document.addEventListener('DOMContentLoaded', fill);
+})();
 
 sb.auth.onAuthStateChange((event) => {
   if(event === 'SIGNED_OUT') { location.reload(); return; }
