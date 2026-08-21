@@ -1232,7 +1232,18 @@ const orders = {
             </div>
             <div class="muted" id="o-promo-msg" style="font-size:12px;margin-top:4px">${esc(orders._draft.promo_effect||'No code applied')}</div>
           </div>
-          <div><label>Shipping ($)</label><input id="o-ship" type="number" step="0.01" value="${orders._draft.shipping}" onchange="orders.recompute()"/></div>
+          <div><label>Shipping <span class="muted" style="font-size:11px">(pick a preset or type custom on the right)</span></label>
+            <div class="row" style="gap:6px;align-items:stretch">
+              <select id="o-ship-preset" style="flex:1" onchange="orders._shipPresetChanged()">
+                ${orders._shipOptions(orders._draft.shipping)}
+              </select>
+              <input id="o-ship" type="number" step="0.01" min="0" placeholder="Or $"
+                     style="width:100px"
+                     value="${(orders._draft.shipping!=null && !orders._isShipPreset(orders._draft.shipping)) ? Number(orders._draft.shipping) : ''}"
+                     onchange="orders.recompute()"
+                     oninput="orders.recompute()"/>
+            </div>
+          </div>
           <div><label>Tax (auto)</label><input id="o-tax" readonly value="${Number(orders._draft.tax||0).toFixed(2)}"/></div>
         </div>
         <div class="muted" id="o-tax-note" style="font-size:12px;margin-top:6px"></div>
@@ -1436,15 +1447,54 @@ const orders = {
     document.getElementById('o-promo-msg').textContent = orders._draft.promo_effect;
     orders.recompute();
   },
+  /* --- Shipping presets --- common wholesale amounts. If none of these fit
+     the rep types a custom amount in the small input next to the dropdown. */
+  _SHIP_PRESETS: [0, 15, 25, 30, 50, 75, 100],
+  _isShipPreset(v){
+    const n = Number(v || 0);
+    return orders._SHIP_PRESETS.some(p => Math.abs(p - n) < 0.005);
+  },
+  _shipOptions(currentVal){
+    const cur = Number(currentVal || 0);
+    const isCustom = currentVal != null && !orders._isShipPreset(currentVal);
+    const opts = orders._SHIP_PRESETS.map(p => {
+      const sel = (!isCustom && Math.abs(cur - p) < 0.005) ? 'selected' : '';
+      const label = p === 0 ? 'No charge (free)' : `$${p.toFixed(2)}`;
+      return `<option value="${p}" ${sel}>${label}</option>`;
+    }).join('');
+    return opts + `<option value="__custom" ${isCustom?'selected':''}>Custom (type on the right →)</option>`;
+  },
+  _shipPresetChanged(){
+    const sel = document.getElementById('o-ship-preset');
+    if(!sel) return;
+    if(sel.value === '__custom'){
+      const custom = document.getElementById('o-ship');
+      if(custom){ custom.focus(); }
+    } else {
+      /* Preset picked — clear the custom input so it defers to the preset. */
+      const custom = document.getElementById('o-ship');
+      if(custom) custom.value = '';
+    }
+    orders.recompute();
+  },
   recompute(){
     const d = orders._draft; if(!d) return;
     const items = d.items || [];
     const sub = items.reduce((s,i)=>s+i.qty*i.price,0);
     const p = cache.promotions.find(x=>x.code===d.promo_code);
-    /* Shipping: whatever the rep typed wins. Blank OR 0 = no charge. Do NOT
-       fall back to shipDefault on empty input — that was overriding an
-       intentional $0 with $30. */
-    let disc = 0, ship = parseFloat(document.getElementById('o-ship').value) || 0;
+    /* Shipping resolution: custom input wins if filled; otherwise use the
+       dropdown preset. Blank/0 = no charge. Never falls back to shipDefault. */
+    const customRaw = document.getElementById('o-ship')?.value ?? '';
+    const presetRaw = document.getElementById('o-ship-preset')?.value ?? '';
+    let ship;
+    if(customRaw !== ''){
+      ship = parseFloat(customRaw) || 0;
+    } else if(presetRaw && presetRaw !== '__custom'){
+      ship = parseFloat(presetRaw) || 0;
+    } else {
+      ship = 0;
+    }
+    let disc = 0;
     if(p?.kind==='percent') disc = sub * (Number(p.value)/100);
     if(p?.kind==='shipping') ship = 0;
     const taxable = Math.max(0, sub - disc);
@@ -1464,7 +1514,13 @@ const orders = {
     const d = orders._draft;
     d.account_id = document.getElementById('o-acc').value || null;
     d.rep_id = document.getElementById('o-rep').value || auth.repId();
-    d.shipping = parseFloat(document.getElementById('o-ship').value||0);
+    /* Same resolution rule as recompute: custom input wins if filled;
+       else preset dropdown; else 0. */
+    const cShipCustom = document.getElementById('o-ship')?.value ?? '';
+    const cShipPreset = document.getElementById('o-ship-preset')?.value ?? '';
+    if(cShipCustom !== '') d.shipping = parseFloat(cShipCustom) || 0;
+    else if(cShipPreset && cShipPreset !== '__custom') d.shipping = parseFloat(cShipPreset) || 0;
+    else d.shipping = 0;
     const pm = orders._draft.payment || {};
     pm.method = document.getElementById('o-pay-method').value;
     pm.last4 = document.getElementById('o-pay-l4').value;
