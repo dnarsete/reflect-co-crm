@@ -1441,7 +1441,10 @@ const orders = {
     const items = d.items || [];
     const sub = items.reduce((s,i)=>s+i.qty*i.price,0);
     const p = cache.promotions.find(x=>x.code===d.promo_code);
-    let disc = 0, ship = parseFloat(document.getElementById('o-ship').value||ref.shipDefault());
+    /* Shipping: whatever the rep typed wins. Blank OR 0 = no charge. Do NOT
+       fall back to shipDefault on empty input — that was overriding an
+       intentional $0 with $30. */
+    let disc = 0, ship = parseFloat(document.getElementById('o-ship').value) || 0;
     if(p?.kind==='percent') disc = sub * (Number(p.value)/100);
     if(p?.kind==='shipping') ship = 0;
     const taxable = Math.max(0, sub - disc);
