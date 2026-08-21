@@ -1447,22 +1447,26 @@ const orders = {
     document.getElementById('o-promo-msg').textContent = orders._draft.promo_effect;
     orders.recompute();
   },
-  /* --- Shipping presets --- common wholesale amounts. If none of these fit
-     the rep types a custom amount in the small input next to the dropdown. */
-  _SHIP_PRESETS: [0, 15, 25, 30, 50, 75, 100],
+  /* --- Shipping presets --- $0, $30 (minimum), $50 (expedited), and Other
+     for anything else. "Other" reveals focus on the small text input next
+     to the dropdown so the rep can type any amount. */
+  _SHIP_PRESETS: [
+    { value: 0,  label: 'Free ($0.00)' },
+    { value: 30, label: 'Minimum ($30.00)' },
+    { value: 50, label: 'Expedited ($50.00)' },
+  ],
   _isShipPreset(v){
     const n = Number(v || 0);
-    return orders._SHIP_PRESETS.some(p => Math.abs(p - n) < 0.005);
+    return orders._SHIP_PRESETS.some(p => Math.abs(p.value - n) < 0.005);
   },
   _shipOptions(currentVal){
     const cur = Number(currentVal || 0);
-    const isCustom = currentVal != null && !orders._isShipPreset(currentVal);
+    const isCustom = currentVal != null && currentVal !== '' && !orders._isShipPreset(currentVal);
     const opts = orders._SHIP_PRESETS.map(p => {
-      const sel = (!isCustom && Math.abs(cur - p) < 0.005) ? 'selected' : '';
-      const label = p === 0 ? 'No charge (free)' : `$${p.toFixed(2)}`;
-      return `<option value="${p}" ${sel}>${label}</option>`;
+      const sel = (!isCustom && Math.abs(cur - p.value) < 0.005) ? 'selected' : '';
+      return `<option value="${p.value}" ${sel}>${p.label}</option>`;
     }).join('');
-    return opts + `<option value="__custom" ${isCustom?'selected':''}>Custom (type on the right →)</option>`;
+    return opts + `<option value="__custom" ${isCustom?'selected':''}>Other (type on the right →)</option>`;
   },
   _shipPresetChanged(){
     const sel = document.getElementById('o-ship-preset');
