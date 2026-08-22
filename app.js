@@ -2552,7 +2552,7 @@ const reports = {
 /* ---------- MARKETING MATERIALS (Supabase Storage) ---------- */
 const materials = {
   BUCKET: 'materials',
-  CATEGORIES: ['Product Sheets', 'Sell Sheets', 'Brand Assets', 'Order Forms', 'Training', 'Other'],
+  CATEGORIES: ['Product Sheets', 'Sell Sheets', 'Brand Assets', 'Order Forms', 'Training', 'Social Media', 'Other'],
   _files: [],
 
   /* Load all files across every category folder. Signed download URLs are
