@@ -2614,7 +2614,7 @@ const materials = {
               <div class="meta">${esc(cat)}${kb?' · '+esc(kb):''}${when?' · uploaded '+esc(when):''}</div>
             </div>
             <button class="icon-btn primary" onclick="materials.view('${p}')">👁 View</button>
-            ${auth.isAdmin()?`<button class="icon-btn" onclick="materials.download('${p}')">⬇ Download</button>`:''}
+            <button class="icon-btn" onclick="materials.download('${p}')">⬇ Download</button>
             ${auth.isAdmin()?`<select class="icon-btn" style="padding:6px 8px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;cursor:pointer" onchange="materials.recategorize('${p}', this.value); this.value='__edit'">
               <option value="__edit">✏️ Edit category…</option>
               ${materials.CATEGORIES.map(c => `<option value="${esc(c)}" ${c===cat?'disabled':''}>${esc(c)}${c===cat?' (current)':''}</option>`).join('')}
@@ -2703,10 +2703,10 @@ const materials = {
   },
 
   /* Download — forces the browser to save the file locally rather than
-     open inline. Admin-only. Uses the ?download query param that Supabase
-     Storage honors to set Content-Disposition: attachment. */
+     open inline. Available to reps (so they can save a PDF to send a
+     customer). Uses the ?download query param that Supabase Storage
+     honors to set Content-Disposition: attachment. */
   async download(path){
-    if(!auth.isAdmin()){ ui.toast('Admin only — use View to open.'); return; }
     const filename = path.split('/').pop() || 'file';
     const { data, error } = await sb.storage.from(materials.BUCKET).createSignedUrl(path, 300, { download: filename });
     if(error){ ui.err(error); return; }
