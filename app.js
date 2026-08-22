@@ -2613,13 +2613,13 @@ const materials = {
               <div class="title">${icon} ${esc(f.name)}</div>
               <div class="meta">${esc(cat)}${kb?' · '+esc(kb):''}${when?' · uploaded '+esc(when):''}</div>
             </div>
-            <button class="icon-btn primary" onclick="materials.view('${p}')">👁 View</button>
-            <button class="icon-btn" onclick="materials.download('${p}')">⬇ Download</button>
-            ${auth.isAdmin()?`<select class="icon-btn" style="padding:6px 8px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;cursor:pointer;width:auto;flex:0 0 auto" onchange="materials.recategorize('${p}', this.value); this.value='__edit'">
+            <button class="icon-btn primary" style="width:100px;text-align:center;flex:0 0 auto" onclick="materials.view('${p}')">👁 View</button>
+            <button class="icon-btn" style="width:100px;text-align:center;flex:0 0 auto" onclick="materials.download('${p}')">⬇ Save</button>
+            ${auth.isAdmin()?`<select class="icon-btn" style="width:100px;text-align:center;padding:6px 8px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;cursor:pointer;flex:0 0 auto" onchange="materials.recategorize('${p}', this.value); this.value='__edit'">
               <option value="__edit">✏️ Edit</option>
               ${materials.CATEGORIES.map(c => `<option value="${esc(c)}" ${c===cat?'disabled':''}>${esc(c)}${c===cat?' (current)':''}</option>`).join('')}
             </select>`:''}
-            ${auth.isAdmin()?`<button class="icon-btn danger" onclick="materials.remove('${p}')">Delete</button>`:''}
+            ${auth.isAdmin()?`<button class="icon-btn danger" style="width:100px;text-align:center;flex:0 0 auto" onclick="materials.remove('${p}')">Delete</button>`:''}
           </div>`;
         }).join('')}
       </div>
