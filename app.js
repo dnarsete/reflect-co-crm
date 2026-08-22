@@ -2615,7 +2615,10 @@ const materials = {
             </div>
             <button class="icon-btn primary" onclick="materials.view('${p}')">👁 View</button>
             ${auth.isAdmin()?`<button class="icon-btn" onclick="materials.download('${p}')">⬇ Download</button>`:''}
-            ${auth.isAdmin()?`<button class="icon-btn" onclick="materials.recategorize('${p}')">📂 Move</button>`:''}
+            ${auth.isAdmin()?`<select class="icon-btn" style="padding:6px 8px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;cursor:pointer" onchange="materials.recategorize('${p}', this.value); this.value='__edit'">
+              <option value="__edit">✏️ Edit category…</option>
+              ${materials.CATEGORIES.map(c => `<option value="${esc(c)}" ${c===cat?'disabled':''}>${esc(c)}${c===cat?' (current)':''}</option>`).join('')}
+            </select>`:''}
             ${auth.isAdmin()?`<button class="icon-btn danger" onclick="materials.remove('${p}')">Delete</button>`:''}
           </div>`;
         }).join('')}
@@ -2724,48 +2727,23 @@ const materials = {
     materials.render();
   },
 
-  /* Recategorize — move a material from one category folder to another.
-     Storage paths are ${category}/${filename}; changing category means
-     moving the file. Uses Supabase Storage's move() which is atomic on
-     their side (no download+re-upload) and preserves signed-URL cache
-     invalidation for the source path. */
-  async recategorize(path){
+  /* Recategorize — inline dropdown on each row triggers this. Admin picks
+     a new category from the "Edit category" dropdown and it applies
+     immediately with a confirm. Uses Supabase Storage move() which is
+     atomic on their side (no download/reupload) and preserves metadata. */
+  async recategorize(oldPath, newCat){
     if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
-    const filename = path.split('/').pop() || '';
-    const currentCat = path.split('/').slice(0, -1).join('/') || '(root)';
-    ui.modal(`
-      <h3>Move material</h3>
-      <p class="muted" style="font-size:13px;margin:0 0 12px">
-        Moving <b>${esc(filename)}</b> from <b>${esc(currentCat)}</b> to a new category.
-      </p>
-      <div>
-        <label>New category</label>
-        <select id="mat-move-cat">
-          ${materials.CATEGORIES.map(c => `<option value="${esc(c)}" ${c===currentCat?'selected':''}>${esc(c)}</option>`).join('')}
-        </select>
-      </div>
-      <div id="mat-move-err" class="alert err hide" style="margin-top:10px"></div>
-      <div class="row" style="gap:8px;margin-top:12px">
-        <button class="icon-btn primary" onclick="materials._doRecategorize('${esc(path).replace(/'/g,'&#39;')}')">Move</button>
-        <button class="icon-btn ghost" onclick="ui.closeModal()">Cancel</button>
-      </div>
-    `);
-  },
-
-  async _doRecategorize(oldPath){
-    const errEl = document.getElementById('mat-move-err');
-    const show = m => { errEl.textContent = m; errEl.classList.remove('hide'); };
-    const newCat = document.getElementById('mat-move-cat')?.value || '';
-    if(!newCat){ show('Pick a category.'); return; }
+    if(!newCat || newCat === '__edit') return;  /* placeholder option picked */
     const filename = oldPath.split('/').pop() || '';
     const oldCat = oldPath.split('/').slice(0, -1).join('/');
-    if(newCat === oldCat){ show('Already in that category — nothing to move.'); return; }
+    if(newCat === oldCat) return;  /* no-op */
+    if(!confirm(`Move "${filename}" from ${oldCat} to ${newCat}?`)) return;
     const newPath = `${newCat}/${filename}`;
     ui.busy(true);
     const { error } = await sb.storage.from(materials.BUCKET).move(oldPath, newPath);
     ui.busy(false);
-    if(error){ show('Move failed: ' + error.message); return; }
-    ui.closeModal(); ui.toast(`Moved to ${newCat}`);
+    if(error){ ui.err({ message: 'Move failed: ' + error.message }); return; }
+    ui.toast(`Moved to ${newCat}`);
     materials.render();
   }
 };
