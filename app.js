@@ -2615,8 +2615,8 @@ const materials = {
             </div>
             <button class="icon-btn primary" onclick="materials.view('${p}')">👁 View</button>
             <button class="icon-btn" onclick="materials.download('${p}')">⬇ Download</button>
-            ${auth.isAdmin()?`<select class="icon-btn" style="padding:6px 8px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;cursor:pointer" onchange="materials.recategorize('${p}', this.value); this.value='__edit'">
-              <option value="__edit">✏️ Edit category…</option>
+            ${auth.isAdmin()?`<select class="icon-btn" style="padding:6px 8px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;cursor:pointer;width:auto;flex:0 0 auto" onchange="materials.recategorize('${p}', this.value); this.value='__edit'">
+              <option value="__edit">✏️ Edit</option>
               ${materials.CATEGORIES.map(c => `<option value="${esc(c)}" ${c===cat?'disabled':''}>${esc(c)}${c===cat?' (current)':''}</option>`).join('')}
             </select>`:''}
             ${auth.isAdmin()?`<button class="icon-btn danger" onclick="materials.remove('${p}')">Delete</button>`:''}
