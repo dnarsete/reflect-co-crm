@@ -2615,6 +2615,7 @@ const materials = {
             </div>
             <button class="icon-btn primary" style="width:100px;text-align:center;flex:0 0 auto" onclick="materials.view('${p}')">👁 View</button>
             <button class="icon-btn" style="width:100px;text-align:center;flex:0 0 auto" onclick="materials.download('${p}')">⬇ Save</button>
+            <button class="icon-btn" style="width:100px;text-align:center;flex:0 0 auto" onclick="materials.email('${p}')">📧 Email</button>
             ${auth.isAdmin()?`<select class="icon-btn" style="width:100px;text-align:center;padding:6px 8px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;cursor:pointer;flex:0 0 auto" onchange="materials.recategorize('${p}', this.value); this.value='__edit'">
               <option value="__edit">✏️ Edit</option>
               ${materials.CATEGORIES.map(c => `<option value="${esc(c)}" ${c===cat?'disabled':''}>${esc(c)}${c===cat?' (current)':''}</option>`).join('')}
@@ -2725,6 +2726,160 @@ const materials = {
     if(error){ ui.err(error); return; }
     ui.toast('Deleted');
     materials.render();
+  },
+
+  /* Email — opens the user's default mail app pre-filled with the material's
+     signed download link, sender info (rep's profile email), and a template
+     body. Recipient enters the To address. Works with any mail client the
+     user has set as default (Mac Mail, Outlook, Gmail-as-default, etc). */
+  async email(path){
+    const filename = path.split('/').pop() || 'file';
+    const cat = path.split('/').slice(0, -1).join('/') || '';
+    /* 7-day signed URL — long enough that the recipient has time to click. */
+    const { data, error } = await sb.storage.from(materials.BUCKET)
+      .createSignedUrl(path, 7 * 24 * 60 * 60);
+    if(error){ ui.err(error); return; }
+    const shareUrl = data.signedUrl;
+    const repEmail = cache.me?.email || '';
+    const repName = cache.me?.name || 'The Reflect Co Team';
+    const cleanName = filename.replace(/\.[^.]+$/, '').replace(/[_\-]+/g, ' ');
+    const subject = `The Reflect Co: ${cleanName}`;
+    const body =
+      `Hi,\n\n${repName} sent you this from The Reflect Co:\n\n` +
+      `${cleanName}\n${shareUrl}\n\n` +
+      `The link works for 7 days. Let me know if you have any questions.\n\n` +
+      `— ${repName}\n${repEmail}`;
+    ui.modal(`
+      <h3>📧 Email material</h3>
+      <p class="muted" style="font-size:13px;margin:0 0 12px">
+        Opens your default mail app pre-filled with a download link to
+        <b>${esc(filename)}</b>. Link is valid for 7 days.
+      </p>
+      <div class="grid-2">
+        <div style="grid-column:1/-1">
+          <label>To (recipient email)</label>
+          <input id="mat-email-to" type="email" placeholder="customer@example.com" autofocus/>
+        </div>
+        <div style="grid-column:1/-1">
+          <label>From <span class="muted" style="font-size:11px">(from your Reflect Co profile — mail app may override with its own sender)</span></label>
+          <input id="mat-email-from" type="email" value="${esc(repEmail)}" readonly style="opacity:0.7"/>
+        </div>
+        <div style="grid-column:1/-1">
+          <label>Subject</label>
+          <input id="mat-email-subject" value="${esc(subject)}"/>
+        </div>
+        <div style="grid-column:1/-1">
+          <label>Message</label>
+          <textarea id="mat-email-body" rows="7" style="font-family:inherit">${esc(body)}</textarea>
+        </div>
+      </div>
+      <div id="mat-email-err" class="alert err hide" style="margin-top:10px"></div>
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="icon-btn primary" onclick="materials._sendEmail()">Open in mail app</button>
+        <button class="icon-btn" onclick="materials._copyEmailBody()">📋 Copy body</button>
+        <button class="icon-btn ghost" onclick="ui.closeModal()">Cancel</button>
+      </div>
+    `);
+  },
+
+  async _sendEmail(){
+    const to = (document.getElementById('mat-email-to')?.value || '').trim();
+    const subject = (document.getElementById('mat-email-subject')?.value || '').trim();
+    const body = document.getElementById('mat-email-body')?.value || '';
+    const errEl = document.getElementById('mat-email-err');
+    if(!to || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)){
+      errEl.textContent = 'Enter a valid recipient email.';
+      errEl.classList.remove('hide');
+      return;
+    }
+    const url = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    window.location.href = url;
+    ui.closeModal();
+    ui.toast('Opening mail app…');
+  },
+
+  async _copyEmailBody(){
+    const body = document.getElementById('mat-email-body')?.value || '';
+    try {
+      await navigator.clipboard.writeText(body);
+      ui.toast('Copied to clipboard.');
+    } catch (_) {
+      const ta = document.getElementById('mat-email-body');
+      if(ta){ ta.select(); document.execCommand('copy'); ui.toast('Copied.'); }
+    }
+  },
+
+  /* Admin bulk email — assembles a message body listing EVERY material
+     with its own 7-day signed download link, then opens the user's mail
+     app with that body pre-filled. Recipient supplies To. */
+  async emailAll(){
+    if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
+    ui.busy(true);
+    const links = [];
+    try {
+      for(const cat of materials.CATEGORIES){
+        const { data: files } = await sb.storage.from(materials.BUCKET).list(cat);
+        for(const f of (files || [])){
+          const path = `${cat}/${f.name}`;
+          const { data: signed, error } = await sb.storage.from(materials.BUCKET)
+            .createSignedUrl(path, 7 * 24 * 60 * 60);
+          if(!error && signed?.signedUrl){
+            links.push({ cat, name: f.name, url: signed.signedUrl });
+          }
+        }
+      }
+    } catch (e) {
+      ui.busy(false);
+      ui.err(e);
+      return;
+    }
+    ui.busy(false);
+    if(!links.length){ ui.toast('No materials to send.'); return; }
+
+    const repEmail = cache.me?.email || '';
+    const repName = cache.me?.name || 'The Reflect Co Team';
+    const subject = `The Reflect Co: complete materials library`;
+    const grouped = {};
+    links.forEach(l => { (grouped[l.cat] ||= []).push(l); });
+    let body = `Hi,\n\n${repName} sent you the complete Reflect Co materials library. Every link works for 7 days.\n\n`;
+    for(const cat of Object.keys(grouped)){
+      body += `━━━ ${cat.toUpperCase()} ━━━\n`;
+      for(const l of grouped[cat]){
+        const clean = l.name.replace(/\.[^.]+$/, '').replace(/[_\-]+/g, ' ');
+        body += `• ${clean}\n  ${l.url}\n`;
+      }
+      body += `\n`;
+    }
+    body += `— ${repName}\n${repEmail}`;
+
+    ui.modal(`
+      <h3>📧 Email all materials</h3>
+      <p class="muted" style="font-size:13px;margin:0 0 12px">
+        Opens your default mail app with download links to <b>${links.length}</b>
+        material${links.length===1?'':'s'} across ${Object.keys(grouped).length}
+        categor${Object.keys(grouped).length===1?'y':'ies'}. Links valid for 7 days.
+      </p>
+      <div class="grid-2">
+        <div style="grid-column:1/-1">
+          <label>To (recipient email)</label>
+          <input id="mat-email-to" type="email" placeholder="partner@example.com" autofocus/>
+        </div>
+        <div style="grid-column:1/-1">
+          <label>Subject</label>
+          <input id="mat-email-subject" value="${esc(subject)}"/>
+        </div>
+        <div style="grid-column:1/-1">
+          <label>Message</label>
+          <textarea id="mat-email-body" rows="12" style="font-family:inherit">${esc(body)}</textarea>
+        </div>
+      </div>
+      <div id="mat-email-err" class="alert err hide" style="margin-top:10px"></div>
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="icon-btn primary" onclick="materials._sendEmail()">Open in mail app</button>
+        <button class="icon-btn" onclick="materials._copyEmailBody()">📋 Copy body</button>
+        <button class="icon-btn ghost" onclick="ui.closeModal()">Cancel</button>
+      </div>
+    `);
   },
 
   /* Recategorize — inline dropdown on each row triggers this. Admin picks
