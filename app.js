@@ -1190,17 +1190,79 @@ const accounts = {
     let wb;
     try { wb = window.XLSX.read(buf, { type: 'array' }); }
     catch(e){ statusEl.textContent = 'Could not read the file: ' + e.message; return; }
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const rows = window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
-    /* Skip fully-empty rows */
-    const nonEmpty = rows.filter(r => r.some(v => String(v || '').trim() !== ''));
-    if(nonEmpty.length < 2){
-      statusEl.textContent = 'The file appears to be empty or has no data rows.';
+    /* Preview every sheet so we can show row counts in the picker. Skip
+       sheets that are empty (no data rows) so they don't appear as choices. */
+    const sheets = wb.SheetNames.map(name => {
+      const ws = wb.Sheets[name];
+      const rows = window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
+      const nonEmpty = rows.filter(r => r.some(v => String(v || '').trim() !== ''));
+      return { name, rows: nonEmpty };
+    }).filter(s => s.rows.length >= 2);
+    if(!sheets.length){
+      statusEl.textContent = 'No sheet in that file has any data rows.';
       return;
     }
-    const headers = nonEmpty[0].map(h => String(h || '').trim());
-    const dataRows = nonEmpty.slice(1);
-    accounts._importState = { headers, rows: dataRows, filename: file.name };
+    accounts._importState = { workbookSheets: sheets, filename: file.name };
+    /* Single sheet — skip the picker step. Multiple sheets — show picker. */
+    if(sheets.length === 1){
+      accounts._importPickSheet(0);
+    } else {
+      accounts._importShowSheetPicker();
+    }
+  },
+
+  _importShowSheetPicker(){
+    const { workbookSheets, filename } = accounts._importState;
+    const rows = workbookSheets.map((s, i) => `
+      <tr>
+        <td style="padding:8px 10px"><input type="radio" name="imp-sheet" value="${i}" ${i===0?'checked':''}/></td>
+        <td style="padding:8px 10px;font-weight:600">${esc(s.name)}</td>
+        <td style="padding:8px 10px;font-size:12px;color:var(--muted)">${s.rows.length - 1} data row${s.rows.length - 1 === 1 ? '' : 's'}, ${s.rows[0].length} column${s.rows[0].length === 1 ? '' : 's'}</td>
+      </tr>`).join('');
+    ui.modal(`
+      <h3>Step 1.5: pick a sheet</h3>
+      <p class="muted" style="font-size:13px;margin:0 0 12px">
+        <b>${esc(filename)}</b> has ${workbookSheets.length} sheets with data.
+        Pick the one that contains your accounts.
+      </p>
+      <div style="border:1px solid var(--line);border-radius:6px;max-height:280px;overflow:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead style="position:sticky;top:0;background:var(--panel-2)">
+            <tr>
+              <th style="padding:6px 10px;text-align:left"></th>
+              <th style="padding:6px 10px;text-align:left">Sheet name</th>
+              <th style="padding:6px 10px;text-align:left">Contents</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <p class="muted" style="font-size:11px;margin-top:8px">
+        Importing accounts from multiple sheets at once isn't supported —
+        combine them into a single sheet first (or import each one separately).
+      </p>
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="icon-btn ghost" onclick="accounts.openImport()">← Back</button>
+        <div class="grow"></div>
+        <button class="icon-btn primary" onclick="accounts._importPickSheetFromRadio()">Next →</button>
+      </div>
+    `);
+  },
+
+  _importPickSheetFromRadio(){
+    const picked = document.querySelector('input[name="imp-sheet"]:checked');
+    if(!picked) return;
+    accounts._importPickSheet(parseInt(picked.value, 10));
+  },
+
+  _importPickSheet(sheetIndex){
+    const s = accounts._importState.workbookSheets[sheetIndex];
+    if(!s) return;
+    const headers = s.rows[0].map(h => String(h || '').trim());
+    const dataRows = s.rows.slice(1);
+    accounts._importState.headers = headers;
+    accounts._importState.rows = dataRows;
+    accounts._importState.sheetName = s.name;
     accounts._importShowMapping();
   },
 
@@ -1219,9 +1281,11 @@ const accounts = {
   },
 
   _importShowMapping(){
-    const { headers, rows, filename } = accounts._importState;
+    const { headers, rows, filename, sheetName, workbookSheets } = accounts._importState;
     const guess = accounts._importGuessMapping();
     accounts._importState.mapping = { ...guess };
+    const sheetLabel = sheetName ? ` · sheet: <b>${esc(sheetName)}</b>` : '';
+    const backAction = (workbookSheets && workbookSheets.length > 1) ? 'accounts._importShowSheetPicker()' : 'accounts.openImport()';
     const rowsHtml = accounts.CRM_FIELDS.map(f => {
       const current = guess[f.key];
       const opts = headers.map((h, i) =>
@@ -1240,7 +1304,7 @@ const accounts = {
     ui.modal(`
       <h3>Step 2: map columns</h3>
       <p class="muted" style="font-size:13px;margin:0 0 12px">
-        <b>${esc(filename)}</b> — ${rows.length} data row${rows.length===1?'':'s'} found.
+        <b>${esc(filename)}</b>${sheetLabel} — ${rows.length} data row${rows.length===1?'':'s'} found.
         I auto-matched the columns I could recognize. Adjust anything that's wrong.
       </p>
       <p class="muted" style="font-size:12px;margin:0 0 12px">
@@ -1257,7 +1321,7 @@ const accounts = {
         </table>
       </div>
       <div class="row" style="gap:8px;margin-top:12px">
-        <button class="icon-btn ghost" onclick="accounts.openImport()">← Back</button>
+        <button class="icon-btn ghost" onclick="${backAction}">← Back</button>
         <div class="grow"></div>
         <button class="icon-btn primary" onclick="accounts._importShowPreview()">Preview →</button>
       </div>
