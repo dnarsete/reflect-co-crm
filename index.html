@@ -165,7 +165,10 @@
     <section id="view-accounts" class="view hide">
       <div class="section-h">
         <h1>Accounts</h1>
-        <button class="icon-btn primary" onclick="accounts.openNew()">+ New</button>
+        <div class="row" style="gap:8px">
+          <button class="icon-btn" onclick="accounts.openImport()">📤 Import from Excel</button>
+          <button class="icon-btn primary" onclick="accounts.openNew()">+ New</button>
+        </div>
       </div>
       <div class="card">
         <div class="row" style="gap:8px;margin-bottom:8px">

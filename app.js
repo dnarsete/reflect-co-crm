@@ -1118,6 +1118,400 @@ const accounts = {
     /* Refresh the modal by re-opening the account edit */
     ui.closeModal();
     accounts.open(id);
+  },
+
+  /* ==================== EXCEL IMPORT ==================== */
+  /* Bulk-import accounts from a spreadsheet. Flow: file pick → column mapping
+     (auto-guessed) → preview + validation → confirm insert. Reps' uploads are
+     always tagged with their own rep_id (RLS ensures other reps can't see).
+     Admin uploads may use per-row Rep IDs from a mapped column. */
+
+  CRM_FIELDS: [
+    { key: 'business_name',    label: 'Business name',         aliases: ['business name','business','company','company name','account','account name','name of business','practice','practice name'] },
+    { key: 'type',             label: 'Account type',          aliases: ['account type','type','category'] },
+    { key: 'billing_name',     label: 'Billing responsible person', aliases: ['contact','contact name','billing name','owner','responsible','manager'] },
+    { key: 'email',            label: 'Account email',         aliases: ['email','e-mail','email address'] },
+    { key: 'cell',             label: 'Cell phone',            aliases: ['cell','mobile','cell phone','mobile phone'] },
+    { key: 'business_phone',   label: 'Business phone',        aliases: ['phone','business phone','office','office phone','work phone','telephone'] },
+    { key: 'website',          label: 'Website',               aliases: ['website','url','web','www'] },
+    { key: 'business_street',  label: 'Street address',        aliases: ['street','street address','address','address 1','address line 1','addr'] },
+    { key: 'business_suite',   label: 'Suite / Apt / Unit',    aliases: ['suite','ste','apt','apartment','unit','address 2','address line 2'] },
+    { key: 'business_city',    label: 'City',                  aliases: ['city','town'] },
+    { key: 'business_state',   label: 'State',                 aliases: ['state','province','region'] },
+    { key: 'business_zip',     label: 'ZIP',                   aliases: ['zip','zip code','postal code','postal'] },
+    { key: 'sales_tax_license',label: 'Sales tax license #',   aliases: ['sales tax license','tax license','license number','license #','stl'] },
+    { key: 'sales_tax_state',  label: 'License state',         aliases: ['license state','tax state'] },
+    { key: 'rep_id',           label: 'Rep ID',                aliases: ['rep','rep id','sales rep','rep #','assigned rep'] },
+  ],
+
+  async openImport(){
+    if(!auth.isAdmin() && !auth.repId()){
+      alert("Your profile doesn't have a Rep ID yet — you need one to import accounts. Ask your admin.");
+      return;
+    }
+    ui.modal(`
+      <h3>📤 Import accounts from Excel</h3>
+      <p class="muted" style="font-size:13px;margin:0 0 12px">
+        Upload an .xlsx, .xls, or .csv file with your accounts. You'll be able to
+        map its columns to the CRM's fields before anything is imported.
+        Duplicates (same business name + city) are skipped automatically.
+      </p>
+      <div>
+        <label>Spreadsheet file</label>
+        <input id="imp-file" type="file" accept=".xlsx,.xls,.csv,.ods" onchange="accounts._importParse()"/>
+      </div>
+      <div id="imp-status" class="muted" style="font-size:12px;margin-top:8px"></div>
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="icon-btn ghost" onclick="ui.closeModal()">Cancel</button>
+      </div>
+    `);
+  },
+
+  async _importLoadXLSX(){
+    if(window.XLSX) return;
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+      s.onload = resolve;
+      s.onerror = () => reject(new Error('Failed to load spreadsheet parser. Check your internet connection.'));
+      document.head.appendChild(s);
+    });
+  },
+
+  async _importParse(){
+    const file = document.getElementById('imp-file')?.files?.[0];
+    if(!file) return;
+    const statusEl = document.getElementById('imp-status');
+    statusEl.textContent = 'Loading parser…';
+    try { await accounts._importLoadXLSX(); }
+    catch(e){ statusEl.textContent = e.message; return; }
+    statusEl.textContent = 'Reading file…';
+    const buf = await file.arrayBuffer();
+    let wb;
+    try { wb = window.XLSX.read(buf, { type: 'array' }); }
+    catch(e){ statusEl.textContent = 'Could not read the file: ' + e.message; return; }
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
+    /* Skip fully-empty rows */
+    const nonEmpty = rows.filter(r => r.some(v => String(v || '').trim() !== ''));
+    if(nonEmpty.length < 2){
+      statusEl.textContent = 'The file appears to be empty or has no data rows.';
+      return;
+    }
+    const headers = nonEmpty[0].map(h => String(h || '').trim());
+    const dataRows = nonEmpty.slice(1);
+    accounts._importState = { headers, rows: dataRows, filename: file.name };
+    accounts._importShowMapping();
+  },
+
+  _importGuessMapping(){
+    const { headers } = accounts._importState;
+    const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const normHeaders = headers.map(norm);
+    const mapping = {};
+    for(const field of accounts.CRM_FIELDS){
+      for(const alias of field.aliases){
+        const idx = normHeaders.indexOf(norm(alias));
+        if(idx !== -1){ mapping[field.key] = idx; break; }
+      }
+    }
+    return mapping;
+  },
+
+  _importShowMapping(){
+    const { headers, rows, filename } = accounts._importState;
+    const guess = accounts._importGuessMapping();
+    accounts._importState.mapping = { ...guess };
+    const rowsHtml = accounts.CRM_FIELDS.map(f => {
+      const current = guess[f.key];
+      const opts = headers.map((h, i) =>
+        `<option value="${i}" ${current===i?'selected':''}>${esc(h||'(column '+(i+1)+')')}</option>`
+      ).join('');
+      return `<tr>
+        <td style="padding:6px 8px;font-weight:600;color:var(--ink)">${esc(f.label)}</td>
+        <td style="padding:6px 8px">
+          <select data-imp-field="${esc(f.key)}" onchange="accounts._importUpdateMap('${esc(f.key)}', this.value)" style="width:100%;padding:4px 6px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:4px">
+            <option value="">— not in sheet —</option>
+            ${opts}
+          </select>
+        </td>
+      </tr>`;
+    }).join('');
+    ui.modal(`
+      <h3>Step 2: map columns</h3>
+      <p class="muted" style="font-size:13px;margin:0 0 12px">
+        <b>${esc(filename)}</b> — ${rows.length} data row${rows.length===1?'':'s'} found.
+        I auto-matched the columns I could recognize. Adjust anything that's wrong.
+      </p>
+      <p class="muted" style="font-size:12px;margin:0 0 12px">
+        Any column left as "not in sheet" will be blank in the imported accounts —
+        except <b>Suite/City/State/ZIP</b>, which are auto-split from the Street
+        address if it looks like a full address string.
+      </p>
+      <div style="max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:6px">
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead style="position:sticky;top:0;background:var(--panel-2)">
+            <tr><th style="padding:6px 8px;text-align:left">CRM field</th><th style="padding:6px 8px;text-align:left">Column in your spreadsheet</th></tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="icon-btn ghost" onclick="accounts.openImport()">← Back</button>
+        <div class="grow"></div>
+        <button class="icon-btn primary" onclick="accounts._importShowPreview()">Preview →</button>
+      </div>
+    `);
+  },
+
+  _importUpdateMap(field, value){
+    accounts._importState.mapping[field] = value === '' ? undefined : parseInt(value, 10);
+  },
+
+  /* --- Value extraction helpers --- */
+  _EMAIL_RE: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+  _PHONE_RE: /(?:\+?1[\s.-]?)?\(?(\d{3})\)?[\s.-]?(\d{3})[\s.-]?(\d{4})/,
+  _SUITE_RE: /[,\s]+(?:ste|suite|apt|apartment|unit|#)\s*([\w-]+)\s*$/i,
+
+  _extractEmail(v){
+    const s = String(v || '').trim();
+    return accounts._EMAIL_RE.test(s) ? s.toLowerCase() : '';
+  },
+  _extractPhone(v){
+    const m = String(v || '').match(accounts._PHONE_RE);
+    return m ? `${m[1]}-${m[2]}-${m[3]}` : '';
+  },
+  _splitStreetSuite(street){
+    const s = String(street || '').trim();
+    const m = s.match(accounts._SUITE_RE);
+    if(!m) return { street: s, suite: '' };
+    return { street: s.slice(0, m.index).replace(/,\s*$/, '').trim(), suite: m[0].replace(/^[,\s]+/, '').trim() };
+  },
+  _tryAutoSplitAddress(raw){
+    /* Same logic used by _splitAddressIfPasted — extracts street/city/state/zip from
+       a single comma-separated address string. Returns null if it can't parse. */
+    const s = String(raw || '').trim();
+    if(!s || s.split(',').length < 3) return null;
+    let parts = s.split(',').map(x => x.trim()).filter(Boolean);
+    if(/^(usa|united states|us)$/i.test(parts[parts.length-1] || '')) parts.pop();
+    if(parts.length < 3) return null;
+    let zip = '', state = '', city = '', suite = '';
+    const lastZip = /^(\d{5})(?:-\d{4})?$/.exec(parts[parts.length-1] || '');
+    if(lastZip){ zip = lastZip[0]; parts.pop(); }
+    else {
+      const combined = /^([A-Z]{2})\s+(\d{5})(?:-\d{4})?$/i.exec(parts[parts.length-1] || '');
+      if(combined){
+        state = combined[1].toUpperCase(); zip = combined[2]; parts.pop();
+        city = parts.pop() || '';
+        if(parts.length >= 2){ suite = parts.pop(); }
+        return { street: parts.join(', '), suite, city, state, zip };
+      }
+      return null;
+    }
+    if(parts.length < 2) return null;
+    if(/^[A-Za-z]{2}$/.test(parts[parts.length-1] || '')){
+      state = parts.pop().toUpperCase();
+    } else return null;
+    if(!parts.length) return null;
+    city = parts.pop();
+    if(parts.length >= 2){ suite = parts.pop(); }
+    return { street: parts.join(', '), suite, city, state, zip };
+  },
+
+  _importParseRow(row){
+    const { mapping } = accounts._importState;
+    const cell = (k) => (mapping[k] !== undefined ? String(row[mapping[k]] ?? '').trim() : '');
+    const out = {
+      business_name: cell('business_name'),
+      type: cell('type') || 'Medical Spa',
+      billing_name: cell('billing_name'),
+      email: accounts._extractEmail(cell('email')),
+      cell: accounts._extractPhone(cell('cell')),
+      business_phone: accounts._extractPhone(cell('business_phone')),
+      website: cell('website'),
+      business_street: cell('business_street'),
+      business_suite: cell('business_suite'),
+      business_city: cell('business_city'),
+      business_state: (cell('business_state') || '').toUpperCase(),
+      business_zip: cell('business_zip'),
+      sales_tax_license: cell('sales_tax_license'),
+      sales_tax_state: (cell('sales_tax_state') || '').toUpperCase(),
+      rep_id: cell('rep_id'),
+    };
+    /* Auto-split full address string if street looks like one and city/state/zip are empty */
+    if(out.business_street && !out.business_city && !out.business_state && !out.business_zip){
+      const split = accounts._tryAutoSplitAddress(out.business_street);
+      if(split){
+        out.business_street = split.street;
+        out.business_suite = out.business_suite || split.suite;
+        out.business_city = split.city;
+        out.business_state = split.state;
+        out.business_zip = split.zip;
+      }
+    }
+    /* Suite auto-detect from trailing suite text in the street */
+    if(out.business_street && !out.business_suite){
+      const ss = accounts._splitStreetSuite(out.business_street);
+      if(ss.suite){ out.business_street = ss.street; out.business_suite = ss.suite; }
+    }
+    /* Defaults */
+    out.tax_exempt = true;
+    out.billing_same_as_business = true;
+    out.billing_street = out.business_street;
+    out.billing_suite = out.business_suite;
+    out.billing_city = out.business_city;
+    out.billing_state = out.business_state;
+    out.billing_zip = out.business_zip;
+    return out;
+  },
+
+  async _importShowPreview(){
+    const state = accounts._importState;
+    /* Parse every row into a normalized account payload */
+    const parsed = state.rows.map(r => accounts._importParseRow(r));
+    /* Fetch existing accounts for duplicate check */
+    ui.busy(true);
+    const existRes = await sb.from('accounts').select('id, business_name, business_city');
+    ui.busy(false);
+    const existing = new Set(
+      (existRes.data || []).map(a =>
+        `${String(a.business_name || '').toLowerCase().trim()}|${String(a.business_city || '').toLowerCase().trim()}`
+      )
+    );
+    const validReps = new Set((cache.repsFull || cache.reps || []).map(r => (r.rep_id || '').toUpperCase()).filter(Boolean));
+    const isAdmin = auth.isAdmin();
+    const myRepId = auth.repId();
+
+    /* Classify each row: OK / duplicate / error, and finalize rep_id */
+    const results = parsed.map((p, i) => {
+      const errors = [];
+      if(!p.business_name) errors.push('Missing business name');
+      const dupKey = `${p.business_name.toLowerCase().trim()}|${(p.business_city || '').toLowerCase().trim()}`;
+      const isDup = p.business_name && existing.has(dupKey);
+      /* Rep assignment: reps force self; admin uses sheet value if valid, else self */
+      let assigned;
+      if(!isAdmin){
+        assigned = myRepId;
+      } else {
+        const wantId = (p.rep_id || '').toUpperCase();
+        assigned = (wantId && validReps.has(wantId)) ? wantId : (myRepId || null);
+      }
+      p.rep_id = assigned;
+      return { row: p, index: i, errors, isDup };
+    });
+
+    const okCount = results.filter(r => !r.errors.length && !r.isDup).length;
+    const dupCount = results.filter(r => r.isDup).length;
+    const errCount = results.filter(r => r.errors.length && !r.isDup).length;
+    accounts._importState.results = results;
+
+    const previewRows = results.slice(0, 15).map(r => {
+      const p = r.row;
+      const badge = r.isDup
+        ? '<span class="badge" style="background:rgba(250,200,80,0.2);color:#c48a10">duplicate — skip</span>'
+        : r.errors.length
+          ? `<span class="badge err">${esc(r.errors[0])}</span>`
+          : '<span class="badge ok">will import</span>';
+      const addr = [p.business_street, p.business_suite].filter(Boolean).join(' ');
+      const csz = [p.business_city, p.business_state, p.business_zip].filter(Boolean).join(', ');
+      return `<tr>
+        <td style="padding:6px 8px">${badge}</td>
+        <td style="padding:6px 8px">${esc(p.business_name || '—')}</td>
+        <td style="padding:6px 8px;font-size:11px;color:var(--muted)">${esc(addr)}<br/>${esc(csz)}</td>
+        <td style="padding:6px 8px;font-size:11px">${esc(p.email || '')}<br/>${esc(p.business_phone || p.cell || '')}</td>
+        <td style="padding:6px 8px;font-size:11px">${esc(p.rep_id || '(admin)')}</td>
+      </tr>`;
+    }).join('');
+
+    ui.modal(`
+      <h3>Step 3: preview</h3>
+      <div class="row" style="gap:12px;margin:0 0 10px">
+        <span class="badge ok">${okCount} will import</span>
+        <span class="badge" style="background:rgba(250,200,80,0.2);color:#c48a10">${dupCount} duplicate${dupCount===1?'':'s'} — skip</span>
+        ${errCount ? `<span class="badge err">${errCount} error${errCount===1?'':'s'} — skip</span>` : ''}
+      </div>
+      <p class="muted" style="font-size:12px;margin:0 0 12px">
+        First 15 rows shown. All ${results.length} will be processed on confirm.
+        Every imported account defaults to <b>tax-exempt</b> with the billing
+        address matching the business address.
+        ${!isAdmin ? `<br/><b>All ${okCount} account${okCount===1?'':'s'} will be assigned to you (Rep ${myRepId}).</b>` : ''}
+      </p>
+      <div style="max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:6px">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead style="position:sticky;top:0;background:var(--panel-2)">
+            <tr>
+              <th style="padding:6px 8px;text-align:left">Status</th>
+              <th style="padding:6px 8px;text-align:left">Business</th>
+              <th style="padding:6px 8px;text-align:left">Address</th>
+              <th style="padding:6px 8px;text-align:left">Contact</th>
+              <th style="padding:6px 8px;text-align:left">Rep</th>
+            </tr>
+          </thead>
+          <tbody>${previewRows}</tbody>
+        </table>
+      </div>
+      <div id="imp-status" class="muted" style="font-size:12px;margin-top:8px"></div>
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="icon-btn ghost" onclick="accounts._importShowMapping()">← Back</button>
+        <div class="grow"></div>
+        <button class="icon-btn primary" ${okCount===0?'disabled':''} onclick="accounts._importCommit()">Confirm import (${okCount})</button>
+      </div>
+    `);
+  },
+
+  async _importCommit(){
+    const results = accounts._importState.results || [];
+    const toInsert = results.filter(r => !r.errors.length && !r.isDup).map(r => {
+      const p = r.row;
+      /* Strip our internal fields not on the accounts table */
+      const { rep_id, ...rest } = p;
+      /* Concatenated legacy address for compatibility with pre-migration fields */
+      const businessAddressLine = [
+        [p.business_street, p.business_suite].filter(Boolean).join(', '),
+        [p.business_city, p.business_state].filter(Boolean).join(', '),
+        p.business_zip,
+      ].filter(Boolean).join(', ');
+      return {
+        ...rest,
+        rep_id,
+        business_address: businessAddressLine,
+        billing_address: businessAddressLine,
+      };
+    });
+    if(!toInsert.length){ ui.toast('Nothing to import.'); return; }
+
+    const statusEl = document.getElementById('imp-status');
+    ui.busy(true);
+    /* Insert in chunks so a partial failure gives clearer info than one giant batch */
+    const CHUNK = 25;
+    let inserted = 0, failed = 0;
+    const failedMsgs = [];
+    for(let i = 0; i < toInsert.length; i += CHUNK){
+      const chunk = toInsert.slice(i, i + CHUNK);
+      const { data, error } = await sb.from('accounts').insert(chunk).select('id');
+      if(error){
+        /* Fall back to per-row inserts so one bad row doesn't kill the batch */
+        for(const row of chunk){
+          const one = await sb.from('accounts').insert(row).select('id');
+          if(one.error){ failed++; failedMsgs.push(`${row.business_name}: ${one.error.message}`); }
+          else inserted++;
+        }
+      } else {
+        inserted += (data || []).length;
+      }
+      if(statusEl) statusEl.textContent = `Imported ${inserted} of ${toInsert.length}…`;
+    }
+    ui.busy(false);
+    const dupCount = results.filter(r => r.isDup).length;
+    const errCount = results.filter(r => r.errors.length && !r.isDup).length;
+    ui.closeModal();
+    let summary = `Imported ${inserted} account${inserted===1?'':'s'}.`;
+    if(dupCount) summary += ` Skipped ${dupCount} duplicate${dupCount===1?'':'s'}.`;
+    if(errCount) summary += ` Skipped ${errCount} with errors.`;
+    if(failed) summary += ` ${failed} failed on insert.`;
+    alert(summary + (failedMsgs.length ? '\n\nFirst failure:\n' + failedMsgs[0] : ''));
+    accounts.render();
+    dashboard.render();
   }
 };
 
