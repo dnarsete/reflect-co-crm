@@ -1142,6 +1142,7 @@ const accounts = {
     { key: 'sales_tax_license',label: 'Sales tax license #',   aliases: ['sales tax license','tax license','license number','license #','stl'] },
     { key: 'sales_tax_state',  label: 'License state',         aliases: ['license state','tax state'] },
     { key: 'rep_id',           label: 'Rep ID',                aliases: ['rep','rep id','sales rep','rep #','assigned rep'] },
+    { key: 'notes',            label: 'Notes / Call log',      aliases: ['notes','note','comments','comment','remarks','description','call log','visit log'] },
   ],
 
   async openImport(){
@@ -1401,6 +1402,7 @@ const accounts = {
       sales_tax_license: cell('sales_tax_license'),
       sales_tax_state: (cell('sales_tax_state') || '').toUpperCase(),
       rep_id: cell('rep_id'),
+      notes: cell('notes'),
     };
     /* Auto-split full address string if street looks like one and city/state/zip are empty */
     if(out.business_street && !out.business_city && !out.business_state && !out.business_zip){
@@ -1525,51 +1527,92 @@ const accounts = {
 
   async _importCommit(){
     const results = accounts._importState.results || [];
-    const toInsert = results.filter(r => !r.errors.length && !r.isDup).map(r => {
+    /* Build a parallel list of {payload, notes, rep_id} so we can post
+       matching notes to account_notes after each account is created. */
+    const inserts = results.filter(r => !r.errors.length && !r.isDup).map(r => {
       const p = r.row;
-      /* Strip our internal fields not on the accounts table */
-      const { rep_id, ...rest } = p;
-      /* Concatenated legacy address for compatibility with pre-migration fields */
+      const { rep_id, notes, ...rest } = p;
       const businessAddressLine = [
         [p.business_street, p.business_suite].filter(Boolean).join(', '),
         [p.business_city, p.business_state].filter(Boolean).join(', '),
         p.business_zip,
       ].filter(Boolean).join(', ');
       return {
-        ...rest,
+        payload: {
+          ...rest,
+          rep_id,
+          business_address: businessAddressLine,
+          billing_address: businessAddressLine,
+        },
+        notes: (notes || '').trim(),
         rep_id,
-        business_address: businessAddressLine,
-        billing_address: businessAddressLine,
       };
     });
-    if(!toInsert.length){ ui.toast('Nothing to import.'); return; }
+    if(!inserts.length){ ui.toast('Nothing to import.'); return; }
 
     const statusEl = document.getElementById('imp-status');
     ui.busy(true);
-    /* Insert in chunks so a partial failure gives clearer info than one giant batch */
+    const userId = (await sb.auth.getUser()).data.user.id;
+
+    /* Chunk-insert accounts. If a chunk fails, fall back to per-row so one
+       bad row doesn't kill the batch. Notes are inserted right after each
+       successful account so the account_id / note stay linked. */
     const CHUNK = 25;
-    let inserted = 0, failed = 0;
+    let inserted = 0, failed = 0, notesInserted = 0;
     const failedMsgs = [];
-    for(let i = 0; i < toInsert.length; i += CHUNK){
-      const chunk = toInsert.slice(i, i + CHUNK);
-      const { data, error } = await sb.from('accounts').insert(chunk).select('id');
+
+    for(let i = 0; i < inserts.length; i += CHUNK){
+      const chunk = inserts.slice(i, i + CHUNK);
+      const payloads = chunk.map(x => x.payload);
+      const { data, error } = await sb.from('accounts').insert(payloads).select('id');
+
       if(error){
-        /* Fall back to per-row inserts so one bad row doesn't kill the batch */
-        for(const row of chunk){
-          const one = await sb.from('accounts').insert(row).select('id');
-          if(one.error){ failed++; failedMsgs.push(`${row.business_name}: ${one.error.message}`); }
-          else inserted++;
+        for(const item of chunk){
+          const one = await sb.from('accounts').insert(item.payload).select('id').single();
+          if(one.error){
+            failed++;
+            failedMsgs.push(`${item.payload.business_name}: ${one.error.message}`);
+          } else {
+            inserted++;
+            if(item.notes){
+              const n = await sb.from('account_notes').insert({
+                account_id: one.data.id,
+                text: item.notes,
+                author_id: userId,
+                rep_id: item.rep_id || null,
+              });
+              if(!n.error) notesInserted++;
+            }
+          }
         }
       } else {
-        inserted += (data || []).length;
+        /* Supabase preserves insert order in the returned .select() rows,
+           so we can zip returned ids to our chunk items 1:1. */
+        const ids = (data || []).map(d => d.id);
+        inserted += ids.length;
+        const noteRows = chunk
+          .map((item, idx) => ({ item, id: ids[idx] }))
+          .filter(x => x.item.notes && x.id)
+          .map(x => ({
+            account_id: x.id,
+            text: x.item.notes,
+            author_id: userId,
+            rep_id: x.item.rep_id || null,
+          }));
+        if(noteRows.length){
+          const n = await sb.from('account_notes').insert(noteRows);
+          if(!n.error) notesInserted += noteRows.length;
+        }
       }
-      if(statusEl) statusEl.textContent = `Imported ${inserted} of ${toInsert.length}…`;
+      if(statusEl) statusEl.textContent = `Imported ${inserted} of ${inserts.length}…`;
     }
+
     ui.busy(false);
     const dupCount = results.filter(r => r.isDup).length;
     const errCount = results.filter(r => r.errors.length && !r.isDup).length;
     ui.closeModal();
     let summary = `Imported ${inserted} account${inserted===1?'':'s'}.`;
+    if(notesInserted) summary += ` Attached ${notesInserted} note${notesInserted===1?'':'s'} to the Call / visit log.`;
     if(dupCount) summary += ` Skipped ${dupCount} duplicate${dupCount===1?'':'s'}.`;
     if(errCount) summary += ` Skipped ${errCount} with errors.`;
     if(failed) summary += ` ${failed} failed on insert.`;
