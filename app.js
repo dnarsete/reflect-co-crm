@@ -33,6 +33,34 @@ function normalizeUSPhone(inputEl){
 /* Expose globally so inline onblur can call it without adding another prefix. */
 window.normalizeUSPhone = normalizeUSPhone;
 
+/* Global search normalizer — used by every search box in the CRM
+   (accounts, orders, reps, materials, order-form's account picker).
+   Makes searches symbol-tolerant: typing "Dans" matches "Dan's",
+   "medspa wellness" matches "Medspa & Wellness", "cafe" matches
+   "Café", "ACC0025" matches "ACC-0025", etc.
+
+   Both sides of the compare pass through this — the search query AND
+   the haystack — so mismatched punctuation, dashes, quotes, accents,
+   and whitespace can never make a match fail. */
+function normSearch(s){
+  return String(s || '')
+    .toLowerCase()
+    /* Fold quote / dash variants first, before stripping anything. */
+    .replace(/[‘’ʼ′]/g, "'")
+    .replace(/[“”″]/g, '"')
+    .replace(/[–—−]/g, '-')
+    /* Fold diacritics: "café" → "cafe". */
+    .normalize('NFKD').replace(/[̀-ͯ]/g, '')
+    /* Symbol tolerance — collapse any non-alphanumeric to a space so
+       "Dan's" and "Dans" and "Dan-s" all normalize to "dan s" (then
+       whitespace collapse below merges to "dans" when used as a word).
+       Word-boundary matching in the callers handles the rest. */
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+window.normSearch = normSearch;
+
 /* US state list — used to render dropdowns everywhere the CRM asks for a
    state. A dropdown eliminates typos, kills the browser-autofill hijack
    that was defaulting empty state fields to the user's saved profile
@@ -722,11 +750,13 @@ const accounts = {
     const cur = tf.value;
     tf.innerHTML = '<option value="">All types</option>' + cache.accountTypeList().map(t=>`<option ${cur===t?'selected':''}>${t}</option>`).join('');
 
-    const q = (document.getElementById('acc-search').value||'').toLowerCase();
+    const q = normSearch(document.getElementById('acc-search').value || '');
+    const words = q ? q.split(/\s+/).filter(Boolean) : [];
     const type = tf.value;
     const list = (await accounts.list()).filter(a=>{
-      const hay = [a.business_name,a.billing_name,a.business_address,a.email,a.account_number].join(' ').toLowerCase();
-      return (!q || hay.includes(q)) && (!type || a.type===type);
+      const hay = normSearch([a.business_name,a.billing_name,a.business_address,a.business_city,a.email,a.account_number].filter(Boolean).join(' '));
+      const matchesQ = !words.length || words.every(w => hay.includes(w));
+      return matchesQ && (!type || a.type===type);
     });
 
     const wrap = document.getElementById('acc-list');
@@ -1655,13 +1685,14 @@ const orders = {
     return data || [];
   },
   async render(){
-    const q = (document.getElementById('ord-search').value||'').toLowerCase();
+    const q = normSearch(document.getElementById('ord-search').value || '');
+    const words = q ? q.split(/\s+/).filter(Boolean) : [];
     const accts = await accounts.list();
     const acctMap = {}; accts.forEach(a=>acctMap[a.id]=a);
     const list = (await orders.listAll()).filter(o=>{
       const a = acctMap[o.account_id];
-      const hay = [o.order_number||'', a?.business_name, a?.account_number, o.rep_id].join(' ').toLowerCase();
-      return !q || hay.includes(q);
+      const hay = normSearch([o.order_number||'', a?.business_name, a?.account_number, a?.business_city, o.rep_id].filter(Boolean).join(' '));
+      return !words.length || words.every(w => hay.includes(w));
     });
     const wrap = document.getElementById('ord-list');
     if(!list.length){ wrap.innerHTML='<div class="muted">No orders yet.</div>'; return; }
@@ -3219,12 +3250,14 @@ const materials = {
     try { await materials.loadAll(); }
     catch(e){ wrap.innerHTML = `<div class="alert err">Load failed: ${esc(e.message||e)}</div>`; return; }
 
-    const q = (document.getElementById('mat-search')?.value||'').toLowerCase().trim();
+    const q = normSearch(document.getElementById('mat-search')?.value || '');
+    const words = q ? q.split(/\s+/).filter(Boolean) : [];
     const catF = document.getElementById('mat-cat-filter')?.value || '';
     const filtered = materials._files.filter(f => {
       if(catF && f.category !== catF) return false;
-      if(!q) return true;
-      return (f.name+' '+f.category).toLowerCase().includes(q);
+      if(!words.length) return true;
+      const hay = normSearch(f.name + ' ' + f.category);
+      return words.every(w => hay.includes(w));
     });
     if(!filtered.length){
       wrap.innerHTML = `<div class="muted">${materials._files.length===0 ? 'No materials uploaded yet.' : 'No materials match the search / filter.'}</div>`;
@@ -4444,7 +4477,8 @@ const adminPanel = {
     const me = cache.me;
 
     /* Read search + filter (only present in the Reps view; safe defaults for admin view) */
-    const search = (document.getElementById('reps-search')?.value || '').toLowerCase().trim();
+    const search = normSearch(document.getElementById('reps-search')?.value || '');
+    const searchWords = search ? search.split(/\s+/).filter(Boolean) : [];
     const filter = document.getElementById('reps-filter')?.value || 'all';
 
     /* Admin needs full rows (cell/address/commission) — reps_public doesn't include those. */
@@ -4454,10 +4488,10 @@ const adminPanel = {
       if(filter === 'disabled' && !r.disabled) return false;
       if(filter === 'admin'    && r.role !== 'admin') return false;
       if(filter === 'rep'      && r.role !== 'rep') return false;
-      if(!search) return true;
-      const hay = [r.name, r.email, r.rep_id, r.cell, r.city, r.state, r.zip, (r.territory||[]).join(' ')]
-        .filter(Boolean).join(' ').toLowerCase();
-      return hay.includes(search);
+      if(!searchWords.length) return true;
+      const hay = normSearch([r.name, r.email, r.rep_id, r.cell, r.city, r.state, r.zip, (r.territory||[]).join(' ')]
+        .filter(Boolean).join(' '));
+      return searchWords.every(w => hay.includes(w));
     });
 
     /* Stats (always reflect ALL reps, not the filtered subset) */
