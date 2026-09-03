@@ -424,6 +424,16 @@ const profiles = {
     }
     if(error) throw error;
     cache.reps = data || [];
+    /* Belt-and-suspenders — even if the reps_public RPC or a fallback query
+       ever returns other reps' rows to a non-admin (misconfigured migration,
+       stale RLS, whatever), force cache.reps to self-only here. Every UI
+       dropdown / lookup that iterates cache.reps then only ever sees the
+       calling rep. Zero visibility into other reps' rep_ids, names, or
+       emails. Admins are unaffected — they still get the full list. */
+    if(cache.me && cache.me.role !== 'admin'){
+      const uid = (await sb.auth.getUser()).data.user?.id;
+      cache.reps = cache.reps.filter(r => r.id === uid);
+    }
     /* Admins also fetch the full rows so commission math and management views work. */
     if(cache.me && cache.me.role === 'admin'){
       const full = await sb.from('profiles').select('*').order('name');
