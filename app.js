@@ -2091,36 +2091,53 @@ const orders = {
       await sb.from('accounts').update(next).eq('id', d.account_id);
     }
   },
-  /* Live filter for the account picker on the New / Edit order modal. Reads
-     every option's data-search attribute (lowercase name + account# + city +
-     email) and hides options that don't match. Preserves selection if the
-     current one is still visible; otherwise selects the first visible match. */
+  /* Live filter for the account picker on the New / Edit order modal.
+     Rebuilds the <select>'s options on every keystroke — filtered from the
+     cached orders._accountList — because iOS Safari doesn't reliably honor
+     option.hidden. Preserves the current selection if it survives the
+     filter; otherwise selects the first match (or clears + shows a
+     placeholder if nothing matches). Match is case-insensitive AND across
+     name / account # / city / email. */
   _filterAccounts(){
     const q = (document.getElementById('o-acc-search')?.value || '').toLowerCase().trim();
     const sel = document.getElementById('o-acc');
     if(!sel) return;
+    const list = orders._accountList || [];
     const currentValue = sel.value;
-    let visibleCount = 0;
-    let firstVisibleValue = '';
-    Array.from(sel.options).forEach(opt => {
-      if(!opt.value){ opt.hidden = false; return; } /* keep the placeholder */
-      const hay = opt.dataset.search || opt.textContent.toLowerCase();
-      const match = !q || q.split(/\s+/).every(w => hay.includes(w));
-      opt.hidden = !match;
-      if(match){ visibleCount++; if(!firstVisibleValue) firstVisibleValue = opt.value; }
+
+    /* Build the searchable haystack once per account so we don't recompute
+       during every keystroke's iteration. */
+    const words = q ? q.split(/\s+/).filter(Boolean) : [];
+    const matches = !words.length ? list : list.filter(a => {
+      const hay = (
+        (a.business_name || '') + ' ' +
+        (a.account_number || '') + ' ' +
+        (a.business_city || '') + ' ' +
+        (a.email || '')
+      ).toLowerCase();
+      return words.every(w => hay.includes(w));
     });
-    /* If the currently-selected option is now hidden, jump to first visible. */
-    const currentOpt = sel.querySelector(`option[value="${CSS.escape(currentValue)}"]`);
-    if(currentOpt && currentOpt.hidden && firstVisibleValue){
-      sel.value = firstVisibleValue;
-      orders.refresh();
+
+    /* Rebuild the select. Preserve current selection if it survived. */
+    const selectedStillPresent = matches.some(a => a.id === currentValue);
+    const nextSelected = selectedStillPresent
+      ? currentValue
+      : (matches[0]?.id || '');
+    if(!matches.length){
+      sel.innerHTML = '<option value="">(no accounts match — clear the search)</option>';
+    } else {
+      sel.innerHTML = matches.map(a =>
+        `<option value="${esc(a.id)}"${a.id===nextSelected?' selected':''}>${esc(a.account_number)} — ${esc(a.business_name||'(unnamed)')}${a.business_city?' · '+esc(a.business_city):''}</option>`
+      ).join('');
     }
+    /* If selection changed, refresh anything downstream (tax rate, etc.) */
+    if(nextSelected !== currentValue) orders.refresh();
+
     const countEl = document.getElementById('o-acc-count');
     if(countEl){
-      const total = orders._accountList?.length || 0;
       countEl.textContent = q
-        ? `${visibleCount} of ${total} match${visibleCount===1?'':'es'}`
-        : `${total} account${total===1?'':'s'}`;
+        ? `${matches.length} of ${list.length} match${matches.length===1?'':'es'}`
+        : `${list.length} account${list.length===1?'':'s'}`;
     }
   },
 
