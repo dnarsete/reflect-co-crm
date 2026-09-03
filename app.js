@@ -2083,21 +2083,54 @@ const orders = {
       await sb.from('accounts').update(next).eq('id', d.account_id);
     }
   },
-  async saveDraft(id, isNew){
-    const d = orders.collect(); d.status='draft';
-    const payload = orders.buildPayload(d);
-    let q;
-    if(isNew){
-      payload.created_by = (await sb.auth.getUser()).data.user.id;
-      q = await sb.from('orders').insert(payload).select().single();
-    } else {
-      q = await sb.from('orders').update(payload).eq('id', id).select().single();
+  /* Grabs the button that fired the current event (if any) and disables it
+     until `done` resolves. Prevents double-submit — visual signal to the rep
+     that the request is in flight, and physically blocks a second click.
+     Falls back gracefully if no event/button is present. */
+  async _guardClick(action){
+    if(orders._writing){
+      ui.toast('Working on it… please wait a moment before clicking again.');
+      return;
     }
-    if(q.error){ ui.err(q.error); return; }
-    await orders.syncTaxToAccount(d);
-    ui.closeModal(); ui.toast('Draft saved'); orders.render();
+    orders._writing = true;
+    const btn = (typeof event !== 'undefined') ? event.target?.closest?.('button') : null;
+    let prevText, prevDisabled;
+    if(btn){
+      prevText = btn.innerHTML; prevDisabled = btn.disabled;
+      btn.disabled = true;
+      btn.dataset._origHtml = prevText;
+      btn.innerHTML = '⏳ Working…';
+    }
+    try { await action(); }
+    finally {
+      orders._writing = false;
+      if(btn){
+        btn.disabled = prevDisabled || false;
+        btn.innerHTML = btn.dataset._origHtml || prevText || btn.innerHTML;
+      }
+    }
+  },
+
+  async saveDraft(id, isNew){
+    return orders._guardClick(async () => {
+      const d = orders.collect(); d.status='draft';
+      const payload = orders.buildPayload(d);
+      let q;
+      if(isNew){
+        payload.created_by = (await sb.auth.getUser()).data.user.id;
+        q = await sb.from('orders').insert(payload).select().single();
+      } else {
+        q = await sb.from('orders').update(payload).eq('id', id).select().single();
+      }
+      if(q.error){ ui.err(q.error); return; }
+      await orders.syncTaxToAccount(d);
+      ui.closeModal(); ui.toast('Draft saved'); orders.render();
+    });
   },
   async finalize(id, isNew){
+    return orders._guardClick(async () => orders._finalizeInner(id, isNew));
+  },
+  async _finalizeInner(id, isNew){
     const d = orders.collect();
     if(!d.account_id){ ui.toast('Pick an account first'); return; }
     if(!(d.items||[]).length){ ui.toast('Add at least one item'); return; }
@@ -2224,6 +2257,9 @@ const orders = {
     dashboard.render(); orders.render();
   },
   async pushToShopify(id){
+    return orders._guardClick(async () => orders._pushToShopifyInner(id));
+  },
+  async _pushToShopifyInner(id){
     if(shopify.mode() !== 'live'){ ui.toast('Shopify integration is off. Enable it in config.js first.'); return; }
     /* Verify this order isn't marked as a test order before touching Shopify.
        The Finalize button hides for test-mode reps, but an admin viewing the
