@@ -1167,22 +1167,22 @@ const accounts = {
      Admin uploads may use per-row Rep IDs from a mapped column. */
 
   CRM_FIELDS: [
-    { key: 'business_name',    label: 'Business name',         aliases: ['business name','business','company','company name','account','account name','name of business','practice','practice name','clinic','clinic name','office','office name','facility','facility name','establishment','organization','provider','provider name','name'] },
-    { key: 'type',             label: 'Account type',          aliases: ['account type','type','category'] },
-    { key: 'billing_name',     label: 'Billing responsible person', aliases: ['contact','contact name','billing name','owner','responsible','manager'] },
-    { key: 'email',            label: 'Account email',         aliases: ['email','e-mail','email address'] },
-    { key: 'cell',             label: 'Cell phone',            aliases: ['cell','mobile','cell phone','mobile phone'] },
-    { key: 'business_phone',   label: 'Business phone',        aliases: ['phone','business phone','office','office phone','work phone','telephone'] },
-    { key: 'website',          label: 'Website',               aliases: ['website','url','web','www'] },
-    { key: 'business_street',  label: 'Street address',        aliases: ['street','street address','address','address 1','address line 1','addr'] },
-    { key: 'business_suite',   label: 'Suite / Apt / Unit',    aliases: ['suite','ste','apt','apartment','unit','address 2','address line 2'] },
-    { key: 'business_city',    label: 'City',                  aliases: ['city','town'] },
-    { key: 'business_state',   label: 'State',                 aliases: ['state','province','region'] },
-    { key: 'business_zip',     label: 'ZIP',                   aliases: ['zip','zip code','postal code','postal'] },
-    { key: 'sales_tax_license',label: 'Sales tax license #',   aliases: ['sales tax license','tax license','license number','license #','stl'] },
-    { key: 'sales_tax_state',  label: 'License state',         aliases: ['license state','tax state'] },
-    { key: 'rep_id',           label: 'Rep ID',                aliases: ['rep','rep id','sales rep','rep #','assigned rep'] },
-    { key: 'notes',            label: 'Notes / Call log',      aliases: ['notes','note','comments','comment','remarks','description','call log','visit log'] },
+    { key: 'business_name',    label: 'Business name',         aliases: ['business name','business','company','company name','account','account name','name of business','practice','practice name','practice name / dba','dba','clinic','clinic name','office','office name','facility','facility name','establishment','organization','provider','provider name','medspa','med spa','spa','spa name','location','location name','name'] },
+    { key: 'type',             label: 'Account type',          aliases: ['account type','type','category','specialty','specialization'] },
+    { key: 'billing_name',     label: 'Billing responsible person', aliases: ['billing responsible person','billing contact','contact','contact name','primary contact','point of contact','poc','billing name','owner','owner name','responsible','manager','physician','physician name','doctor','doctor name','dr','dr.','md','provider contact','attention'] },
+    { key: 'email',            label: 'Account email',         aliases: ['email','e-mail','email address','contact email','account email','primary email'] },
+    { key: 'cell',             label: 'Cell phone',            aliases: ['cell','mobile','cell phone','mobile phone','cell number','mobile number'] },
+    { key: 'business_phone',   label: 'Business phone',        aliases: ['phone','business phone','office','office phone','work phone','telephone','tel','main phone','main line','contact phone','phone number'] },
+    { key: 'website',          label: 'Website',               aliases: ['website','url','web','www','homepage','site','web site'] },
+    { key: 'business_street',  label: 'Street address',        aliases: ['street','street address','address','address 1','address line 1','addr','addr 1','full address','mailing address'] },
+    { key: 'business_suite',   label: 'Suite / Apt / Unit',    aliases: ['suite','ste','apt','apartment','unit','address 2','address line 2','addr 2','floor'] },
+    { key: 'business_city',    label: 'City',                  aliases: ['city','town','municipality'] },
+    { key: 'business_state',   label: 'State',                 aliases: ['state','province','region','st'] },
+    { key: 'business_zip',     label: 'ZIP',                   aliases: ['zip','zip code','postal code','postal','postcode','zipcode'] },
+    { key: 'sales_tax_license',label: 'Sales tax license #',   aliases: ['sales tax license','tax license','license number','license #','stl','resale certificate','resale number'] },
+    { key: 'sales_tax_state',  label: 'License state',         aliases: ['license state','tax state','resale state'] },
+    { key: 'rep_id',           label: 'Rep ID',                aliases: ['rep','rep id','sales rep','rep #','assigned rep','territory rep','representative'] },
+    { key: 'notes',            label: 'Notes / Call log',      aliases: ['notes','note','comments','comment','remarks','description','call log','visit log','call notes','visit notes','history','details'] },
   ],
 
   async openImport(){
@@ -1312,12 +1312,50 @@ const accounts = {
     const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     const normHeaders = headers.map(norm);
     const mapping = {};
+    const usedIdxs = new Set();
+
+    /* Pass 1 — exact match (highest confidence). One header can only
+       claim one CRM field. */
     for(const field of accounts.CRM_FIELDS){
       for(const alias of field.aliases){
-        const idx = normHeaders.indexOf(norm(alias));
-        if(idx !== -1){ mapping[field.key] = idx; break; }
+        const na = norm(alias);
+        const idx = normHeaders.findIndex((nh, i) => nh === na && !usedIdxs.has(i));
+        if(idx !== -1){
+          mapping[field.key] = idx;
+          usedIdxs.add(idx);
+          break;
+        }
       }
     }
+    /* Pass 2 — substring fallback. Catches headers like "Practice Name /
+       DBA", "Phone Number", "Contact Person" that don't exactly match any
+       alias. Only aliases 4+ chars qualify (avoids "st" matching "state"
+       being too eager). Sort aliases longest-first so the most specific
+       alias wins per field. */
+    for(const field of accounts.CRM_FIELDS){
+      if(mapping[field.key] !== undefined) continue;
+      const sortedAliases = [...field.aliases].sort((a, b) => b.length - a.length);
+      for(const alias of sortedAliases){
+        const na = norm(alias);
+        if(na.length < 4) continue;
+        const idx = normHeaders.findIndex((nh, i) => nh.includes(na) && !usedIdxs.has(i));
+        if(idx !== -1){
+          mapping[field.key] = idx;
+          usedIdxs.add(idx);
+          break;
+        }
+      }
+    }
+    /* Diagnostic — log what we matched vs missed so a rep who's confused
+       can share console output without me having to guess. */
+    try {
+      console.log('[import] Headers:', headers);
+      console.log('[import] Auto-mapped:', Object.fromEntries(
+        Object.entries(mapping).map(([k, v]) => [k, headers[v]])
+      ));
+      console.log('[import] Not matched:', accounts.CRM_FIELDS
+        .filter(f => mapping[f.key] === undefined).map(f => f.key));
+    } catch(_){}
     return mapping;
   },
 
