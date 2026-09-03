@@ -2122,22 +2122,11 @@ const orders = {
       await sb.from('accounts').update(next).eq('id', d.account_id);
     }
   },
-  /* Normalizer used on both the search query AND the searchable haystack.
-     macOS silently rewrites straight apostrophes to curly ones (U+2019) in
-     most text inputs. If the account name was typed with a curly apostrophe
-     and the search box gave a straight one (or the reverse), a plain
-     substring compare misses. Also normalize smart quotes, en/em dashes,
-     non-breaking spaces, and strip diacritics so "café" matches "cafe". */
-  _normalizeSearch(s){
-    return String(s || '')
-      .toLowerCase()
-      .replace(/[‘’ʼ′]/g, "'")   /* curly + prime → straight ' */
-      .replace(/[“”″]/g, '"')          /* smart quotes → straight " */
-      .replace(/[–—−]/g, '-')          /* en/em/minus dashes → - */
-      .normalize('NFKD').replace(/[̀-ͯ]/g, '') /* strip diacritics */
-      .replace(/[ \s]+/g, ' ')                    /* any whitespace → single */
-      .trim();
-  },
+  /* Local shim - delegates to the global normSearch() defined at the top
+     of the file. Kept so existing callers on the orders object don't need
+     to be rewritten. Symbol-tolerant: 'Dans' matches 'Dan\'s', 'ACC0025'
+     matches 'ACC-0025', 'cafe' matches 'café'. */
+  _normalizeSearch(s){ return normSearch(s); },
 
   /* Live filter for the account picker on the New / Edit order modal.
      Rebuilds the <select>'s options on every keystroke — filtered from the
