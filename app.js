@@ -1758,8 +1758,24 @@ const orders = {
       return `<option value="${p.sku}" data-price="${p.price}" data-name="${esc(p.name)}"${stockAttr}>${p.sku} · ${esc(p.name)} · ${fmt$(p.price)}${stockLabel}</option>`;
     }).join('');
 
+    /* If we just came back from a re-send action, show a persistent banner
+       at the top of the modal with the result. Consume the notice so it
+       doesn't reappear on the next open. */
+    const noticeBanner = (() => {
+      const n = orders._pendingResendNotice;
+      orders._pendingResendNotice = null;
+      if(!n) return '';
+      const bg = n.ok ? 'rgba(80,200,120,0.15)' : 'rgba(220,80,80,0.18)';
+      const border = n.ok ? '#5ac879' : '#e05555';
+      const icon = n.ok ? '✅' : '⚠️';
+      return `<div style="background:${bg};border:1px solid ${border};border-radius:6px;padding:10px 12px;margin:0 0 10px;font-size:13px">
+        ${icon} ${esc(n.msg)}
+      </div>`;
+    })();
+
     ui.modal(`
       <h3>${isNew?'New order':'Order · '+esc(orders._draft.order_number||'(draft)')}</h3>
+      ${noticeBanner}
       <div class="grid-2">
         <div>
           <label>Account</label>
@@ -2400,21 +2416,31 @@ const orders = {
 
   async _doResendInvoice(id){
     return orders._guardClick(async () => {
+      /* Track exactly what happened so we can reopen the order modal with
+         a persistent banner instead of a fleeting toast that vanishes right
+         after the confirm dialog closed. */
+      let outcome = null;
       try {
         const r = await shopify.call('create_draft_order', { order_id: id, force_resend: true });
+        console.log('[resend invoice] Edge Function response:', r);
         if(r.invoice_sent){
-          ui.toast('Invoice re-sent to the customer.');
+          outcome = { ok: true, msg: 'Invoice re-sent. The customer should receive it in the next few minutes. Check spam if it doesn\'t arrive within 15 minutes.' };
         } else if(r.invoice_send_error){
-          ui.err({ message: 'Re-send failed: ' + r.invoice_send_error });
+          outcome = { ok: false, msg: 'Re-send failed: ' + r.invoice_send_error };
         } else if(!r.resent){
-          /* Edge Function hasn't been updated with force_resend support yet.
-             Still safe — it just returned already_linked and did nothing. */
-          ui.err({ message: 'Re-send action not yet available. Redeploy the shopify-sync Edge Function to enable it.' });
+          outcome = { ok: false, msg: 'Re-send action not yet available on the Edge Function. Redeploy shopify-sync/index.ts on Supabase and try again.' };
         } else {
-          ui.toast('Re-send requested — check the customer inbox in a minute.');
+          outcome = { ok: true, msg: 'Re-send accepted by Shopify — the invoice should arrive shortly.' };
         }
-        orders.render();
-      } catch(e){ ui.err(e); }
+      } catch(e){
+        console.error('[resend invoice] threw:', e);
+        outcome = { ok: false, msg: 'Re-send failed: ' + (e?.message || String(e)) };
+      }
+      /* Reopen the SAME order detail so the rep isn't dumped on the general
+         orders list. Attach a persistent banner at the top showing what
+         happened — much harder to miss than a toast. */
+      orders._pendingResendNotice = outcome;
+      try { await orders.open(id, false); } catch(_) {}
     });
   },
   async _pushToShopifyInner(id){
