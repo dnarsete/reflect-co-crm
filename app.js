@@ -1704,7 +1704,15 @@ const orders = {
     const repOpts = cache.reps.length
       ? cache.reps.map(r=>`<option value="${esc(r.rep_id||'')}" ${orders._draft.rep_id===r.rep_id?'selected':''}>${esc(r.name||r.email)} (${esc(r.rep_id||'no id')})</option>`).join('')
       : `<option>${esc(auth.repId()||'')}</option>`;
-    const prodOpts = cache.products.map(p=>`<option value="${p.sku}" data-price="${p.price}" data-name="${esc(p.name)}">${p.sku} · ${esc(p.name)} · ${fmt$(p.price)} (stock ${p.stock})</option>`).join('');
+    /* Reps must NOT see stock counts (admin only). We still emit data-stock
+       for the admin path so their stock warnings continue to work; for reps
+       we omit data-stock entirely so the guard in addItem/setQty is skipped. */
+    const showStock = auth.isAdmin();
+    const prodOpts = cache.products.map(p => {
+      const stockAttr = showStock ? ` data-stock="${p.stock}"` : '';
+      const stockLabel = showStock ? ` (stock ${p.stock})` : '';
+      return `<option value="${p.sku}" data-price="${p.price}" data-name="${esc(p.name)}"${stockAttr}>${p.sku} · ${esc(p.name)} · ${fmt$(p.price)}${stockLabel}</option>`;
+    }).join('');
 
     ui.modal(`
       <h3>${isNew?'New order':'Order · '+esc(orders._draft.order_number||'(draft)')}</h3>
@@ -1900,7 +1908,10 @@ const orders = {
        Shopify" or "sync ran before stock was entered." Blocking on 0 caused
        reps to be locked out of ordering perfectly-available items. Merchant
        controls oversell prevention in Shopify itself. */
-    if(stock > 0 && qty > stock){
+    /* Only trigger the stock guard for admins — reps don't see stock at all,
+       so they must not see stock-related warnings either. stock === null (data
+       attribute omitted for reps) also short-circuits this. */
+    if(auth.isAdmin() && stock > 0 && qty > stock){
       const msg = `Only ${stock} units of ${opt.dataset.name} in stock. Ordering ${qty} exceeds available inventory.`;
       if(!auth.isAdmin()){ ui.toast(msg); return; }
       if(!confirm(msg + '\n\nProceed anyway?')) return;
@@ -1915,7 +1926,7 @@ const orders = {
     const prod = cache.products?.find(p => p.sku === item?.sku);
     const stock = prod ? Number(prod.stock || 0) : -1;
     /* Same rule as addItem: stock=0 is ambiguous, only warn on positive stock. */
-    if(stock > 0 && newQty > stock){
+    if(auth.isAdmin() && stock > 0 && newQty > stock){
       const msg = `Only ${stock} units of ${item.name} in stock. ${newQty} exceeds available inventory.`;
       if(!auth.isAdmin()){ ui.toast(msg); orders.renderItems(); return; }
       if(!confirm(msg + '\n\nProceed anyway?')) { orders.renderItems(); return; }
@@ -3100,7 +3111,26 @@ const materials = {
     /* Group by category for display */
     const groups = {};
     filtered.forEach(f => { (groups[f.category] = groups[f.category]||[]).push(f); });
-    wrap.innerHTML = Object.keys(groups).sort().map(cat => `
+
+    /* Preserve selection across renders (checkbox state stays sticky). */
+    materials._selected = materials._selected || new Set();
+    /* Prune any selected paths that no longer exist (e.g. after a delete). */
+    const validPaths = new Set(filtered.map(f => f.path));
+    [...materials._selected].forEach(p => { if(!validPaths.has(p)) materials._selected.delete(p); });
+
+    const isAdmin = auth.isAdmin();
+
+    /* Selection banner (visible when any checkbox is checked) — appears above
+       the category list. Both admin and rep get the bulk email; admin also
+       gets the ability to bulk-select from the header 'Select all shown'. */
+    const banner = `<div id="mat-select-bar" style="display:${materials._selected.size?'flex':'none'};gap:10px;align-items:center;padding:10px 12px;background:rgba(191,90,42,0.12);border:1px solid var(--brand);border-radius:8px;margin-bottom:12px">
+      <b><span id="mat-select-count">${materials._selected.size}</span> selected</b>
+      <div class="grow"></div>
+      <button class="icon-btn primary" onclick="materials.emailSelected()">📧 Email selected</button>
+      <button class="icon-btn ghost" onclick="materials._clearSelection()">Clear</button>
+    </div>`;
+
+    wrap.innerHTML = banner + Object.keys(groups).sort().map(cat => `
       <div style="margin-bottom:14px">
         <h3 style="margin:0 0 6px 0;font-size:14px;color:var(--muted)">${esc(cat)}</h3>
         ${groups[cat].map(f => {
@@ -3109,23 +3139,125 @@ const materials = {
           const kb = f.metadata?.size ? (f.metadata.size < 1024*1024 ? (f.metadata.size/1024).toFixed(0)+' KB' : (f.metadata.size/1024/1024).toFixed(1)+' MB') : '';
           const when = f.created_at ? new Date(f.created_at).toLocaleDateString() : '';
           const p = esc(f.path).replace(/'/g,'&#39;');
+          /* Rep-restricted items: internal rep training materials (name contains
+             both "training" and "rep") or the 12-Reasons deck (name contains
+             "12" and "reason"). Reps get View + Save only — no email, no
+             checkbox — so these never leave the practice. Admin sees them
+             unrestricted. */
+          const nameNormal = f.name.toLowerCase().replace(/[_\-.]/g, ' ');
+          const isRepOnly = (/\btraining\b/.test(nameNormal) && /\brep/.test(nameNormal))
+                         || /\b12\b.*\breason/.test(nameNormal);
+          const repHidden = !isAdmin && isRepOnly;
+          const isChecked = materials._selected.has(f.path);
+          const cbCell = repHidden
+            ? `<div style="width:22px;flex:0 0 22px"></div>`
+            : `<input type="checkbox" style="flex:0 0 auto;width:18px;height:18px;cursor:pointer" ${isChecked?'checked':''} data-mat-path="${p}" onchange="materials._toggleSelection('${p}', this.checked)"/>`;
           return `<div class="list-item">
+            ${cbCell}
             <div class="grow">
-              <div class="title">${icon} ${esc(f.name)}</div>
+              <div class="title">${icon} ${esc(f.name)}${repHidden?' <span class="muted" style="font-size:11px;font-style:italic">· internal — View/Save only</span>':''}</div>
               <div class="meta">${esc(cat)}${kb?' · '+esc(kb):''}${when?' · uploaded '+esc(when):''}</div>
             </div>
             <button class="icon-btn primary" style="width:100px;text-align:center;flex:0 0 auto" onclick="materials.view('${p}')">👁 View</button>
             <button class="icon-btn" style="width:100px;text-align:center;flex:0 0 auto" onclick="materials.download('${p}')">⬇ Save</button>
-            <button class="icon-btn" style="width:100px;text-align:center;flex:0 0 auto" onclick="materials.email('${p}')">📧 Email</button>
-            ${auth.isAdmin()?`<select class="icon-btn" style="width:100px;text-align:center;padding:6px 8px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;cursor:pointer;flex:0 0 auto" onchange="materials.recategorize('${p}', this.value); this.value='__edit'">
+            ${repHidden ? '' : `<button class="icon-btn" style="width:100px;text-align:center;flex:0 0 auto" onclick="materials.email('${p}')">📧 Email</button>`}
+            ${isAdmin?`<select class="icon-btn" style="width:100px;text-align:center;padding:6px 8px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;cursor:pointer;flex:0 0 auto" onchange="materials.recategorize('${p}', this.value); this.value='__edit'">
               <option value="__edit">✏️ Edit</option>
               ${materials.CATEGORIES.map(c => `<option value="${esc(c)}" ${c===cat?'disabled':''}>${esc(c)}${c===cat?' (current)':''}</option>`).join('')}
             </select>`:''}
-            ${auth.isAdmin()?`<button class="icon-btn danger" style="width:100px;text-align:center;flex:0 0 auto" onclick="materials.remove('${p}')">Delete</button>`:''}
+            ${isAdmin?`<button class="icon-btn danger" style="width:100px;text-align:center;flex:0 0 auto" onclick="materials.remove('${p}')">Delete</button>`:''}
           </div>`;
         }).join('')}
       </div>
     `).join('');
+  },
+
+  _toggleSelection(path, checked){
+    materials._selected = materials._selected || new Set();
+    if(checked) materials._selected.add(path);
+    else materials._selected.delete(path);
+    const bar = document.getElementById('mat-select-bar');
+    const cnt = document.getElementById('mat-select-count');
+    if(cnt) cnt.textContent = materials._selected.size;
+    if(bar) bar.style.display = materials._selected.size ? 'flex' : 'none';
+  },
+
+  _clearSelection(){
+    materials._selected = new Set();
+    document.querySelectorAll('input[data-mat-path]').forEach(el => el.checked = false);
+    const bar = document.getElementById('mat-select-bar');
+    if(bar) bar.style.display = 'none';
+  },
+
+  async emailSelected(){
+    const sel = [...(materials._selected || [])];
+    if(!sel.length){ ui.toast('Nothing selected.'); return; }
+    ui.busy(true);
+    const links = [];
+    try {
+      for(const path of sel){
+        const { data, error } = await sb.storage.from(materials.BUCKET)
+          .createSignedUrl(path, 7 * 24 * 60 * 60);
+        if(!error && data?.signedUrl){
+          const cat = path.split('/').slice(0, -1).join('/');
+          const name = path.split('/').pop();
+          links.push({ cat, name, url: data.signedUrl });
+        }
+      }
+    } catch(e){ ui.busy(false); ui.err(e); return; }
+    ui.busy(false);
+    if(!links.length){ ui.toast('Could not build download links.'); return; }
+
+    const repEmail = cache.me?.email || '';
+    const repName = cache.me?.name || 'The Reflect Co Team';
+    const subject = links.length === 1
+      ? `The Reflect Co: ${links[0].name.replace(/\.[^.]+$/, '').replace(/[_\-]+/g, ' ')}`
+      : `The Reflect Co: ${links.length} materials`;
+    const grouped = {};
+    links.forEach(l => { (grouped[l.cat] ||= []).push(l); });
+    let body = `Hi,\n\n${repName} sent you ${links.length} material${links.length===1?'':'s'} from The Reflect Co. Every link works for 7 days.\n\n`;
+    for(const cat of Object.keys(grouped)){
+      body += `━━━ ${cat.toUpperCase()} ━━━\n`;
+      for(const l of grouped[cat]){
+        const clean = l.name.replace(/\.[^.]+$/, '').replace(/[_\-]+/g, ' ');
+        body += `• ${clean}\n  ${l.url}\n`;
+      }
+      body += `\n`;
+    }
+    body += `— ${repName}\n${repEmail}`;
+
+    ui.modal(`
+      <h3>📧 Email ${links.length} selected material${links.length===1?'':'s'}</h3>
+      <p class="muted" style="font-size:13px;margin:0 0 12px">
+        Opens your default mail app with download links to all ${links.length}
+        selected item${links.length===1?'':'s'} across ${Object.keys(grouped).length}
+        categor${Object.keys(grouped).length===1?'y':'ies'}. Links valid for 7 days.
+      </p>
+      <div class="grid-2">
+        <div style="grid-column:1/-1">
+          <label>To (recipient email)</label>
+          <input id="mat-email-to" type="email" placeholder="recipient@example.com" autofocus/>
+        </div>
+        <div style="grid-column:1/-1">
+          <label>From <span class="muted" style="font-size:11px">(from your Reflect Co profile)</span></label>
+          <input id="mat-email-from" type="email" value="${esc(repEmail)}" readonly style="opacity:0.7"/>
+        </div>
+        <div style="grid-column:1/-1">
+          <label>Subject</label>
+          <input id="mat-email-subject" value="${esc(subject)}"/>
+        </div>
+        <div style="grid-column:1/-1">
+          <label>Message</label>
+          <textarea id="mat-email-body" rows="12" style="font-family:inherit">${esc(body)}</textarea>
+        </div>
+      </div>
+      <div id="mat-email-err" class="alert err hide" style="margin-top:10px"></div>
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="icon-btn primary" onclick="materials._sendEmail()">Open in mail app</button>
+        <button class="icon-btn" onclick="materials._copyEmailBody()">📋 Copy body</button>
+        <button class="icon-btn ghost" onclick="ui.closeModal()">Cancel</button>
+      </div>
+    `);
   },
 
   openUpload(){
