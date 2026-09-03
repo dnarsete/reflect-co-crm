@@ -1710,7 +1710,10 @@ const orders = {
     };
     orders._lastAccountId = null;
     const accs = await accounts.list();
-    const accOpts = accs.map(a=>`<option value="${a.id}" ${orders._draft.account_id===a.id?'selected':''}>${esc(a.account_number)} — ${esc(a.business_name||'(unnamed)')}</option>`).join('');
+    /* Stash the account list so the live filter can search it without
+       another DB round-trip on every keystroke. */
+    orders._accountList = accs;
+    const accOpts = accs.map(a=>`<option value="${a.id}" data-search="${esc(((a.business_name||'')+' '+(a.account_number||'')+' '+(a.business_city||'')+' '+(a.email||'')).toLowerCase())}" ${orders._draft.account_id===a.id?'selected':''}>${esc(a.account_number)} — ${esc(a.business_name||'(unnamed)')}${a.business_city?' · '+esc(a.business_city):''}</option>`).join('');
     const repOpts = cache.reps.length
       ? cache.reps.map(r=>`<option value="${esc(r.rep_id||'')}" ${orders._draft.rep_id===r.rep_id?'selected':''}>${esc(r.name||r.email)} (${esc(r.rep_id||'no id')})</option>`).join('')
       : `<option>${esc(auth.repId()||'')}</option>`;
@@ -1727,7 +1730,12 @@ const orders = {
     ui.modal(`
       <h3>${isNew?'New order':'Order · '+esc(orders._draft.order_number||'(draft)')}</h3>
       <div class="grid-2">
-        <div><label>Account</label><select id="o-acc" onchange="orders.refresh()">${accOpts || '<option value="">— no accounts —</option>'}</select></div>
+        <div>
+          <label>Account</label>
+          <input id="o-acc-search" placeholder="Search by name, account #, city, email…" oninput="orders._filterAccounts()" style="margin-bottom:6px" autocomplete="off"/>
+          <select id="o-acc" onchange="orders.refresh()" size="1">${accOpts || '<option value="">— no accounts —</option>'}</select>
+          <div id="o-acc-count" class="muted" style="font-size:11px;margin-top:4px">${accs.length} account${accs.length===1?'':'s'}</div>
+        </div>
         <div><label>Rep</label><select id="o-rep" ${auth.isAdmin()?'':'disabled'}>${repOpts}</select></div>
       </div>
 
@@ -2083,6 +2091,39 @@ const orders = {
       await sb.from('accounts').update(next).eq('id', d.account_id);
     }
   },
+  /* Live filter for the account picker on the New / Edit order modal. Reads
+     every option's data-search attribute (lowercase name + account# + city +
+     email) and hides options that don't match. Preserves selection if the
+     current one is still visible; otherwise selects the first visible match. */
+  _filterAccounts(){
+    const q = (document.getElementById('o-acc-search')?.value || '').toLowerCase().trim();
+    const sel = document.getElementById('o-acc');
+    if(!sel) return;
+    const currentValue = sel.value;
+    let visibleCount = 0;
+    let firstVisibleValue = '';
+    Array.from(sel.options).forEach(opt => {
+      if(!opt.value){ opt.hidden = false; return; } /* keep the placeholder */
+      const hay = opt.dataset.search || opt.textContent.toLowerCase();
+      const match = !q || q.split(/\s+/).every(w => hay.includes(w));
+      opt.hidden = !match;
+      if(match){ visibleCount++; if(!firstVisibleValue) firstVisibleValue = opt.value; }
+    });
+    /* If the currently-selected option is now hidden, jump to first visible. */
+    const currentOpt = sel.querySelector(`option[value="${CSS.escape(currentValue)}"]`);
+    if(currentOpt && currentOpt.hidden && firstVisibleValue){
+      sel.value = firstVisibleValue;
+      orders.refresh();
+    }
+    const countEl = document.getElementById('o-acc-count');
+    if(countEl){
+      const total = orders._accountList?.length || 0;
+      countEl.textContent = q
+        ? `${visibleCount} of ${total} match${visibleCount===1?'':'es'}`
+        : `${total} account${total===1?'':'s'}`;
+    }
+  },
+
   /* Grabs the button that fired the current event (if any) and disables it
      until `done` resolves. Prevents double-submit — visual signal to the rep
      that the request is in flight, and physically blocks a second click.
