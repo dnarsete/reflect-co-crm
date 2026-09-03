@@ -539,6 +539,19 @@ async function updateAccount(db: any, payload: any) {
   return { updated: true, shopify_customer_id: acc.shopify_customer_id };
 }
 
+/* Look up the rep-on-file email for an order so we can BCC them on the
+   invoice. Returns null if the order has no rep_id, if no profile matches,
+   or if the profile has no email. Uses maybeSingle() so a missing match is
+   just null rather than an error. */
+async function getRepEmailForOrder(db: any, ord: any): Promise<string | null> {
+  const repId = ord?.rep_id;
+  if (!repId) return null;
+  try {
+    const { data } = await db.from("profiles").select("email").eq("rep_id", repId).maybeSingle();
+    return data?.email || null;
+  } catch (_) { return null; }
+}
+
 async function createDraftOrder(db: any, payload: any) {
   const orderId = payload?.order_id;
   const forceResend = payload?.force_resend === true;
@@ -565,16 +578,27 @@ async function createDraftOrder(db: any, payload: any) {
         };
       }
       try {
+        /* BCC the rep on the invoice so they have a copy in their inbox
+           for records / follow-up, without exposing their email in the
+           customer's To header. Shopify's send_invoice API supports
+           `bcc` (array of strings) but not `cc`, so BCC is the only
+           silent-copy option. */
+        const repEmail = await getRepEmailForOrder(db, ord);
         await shopifyFetch(db, `draft_orders/${draftId}/send_invoice.json`, {
           method: "POST",
           body: JSON.stringify({
-            draft_order_invoice: { to: customerEmail, subject: "Lip TX Invoice" },
+            draft_order_invoice: {
+              to: customerEmail,
+              subject: "Lip TX Invoice",
+              ...(repEmail ? { bcc: [repEmail] } : {}),
+            },
           }),
         });
         return {
           already_linked: true,
           shopify_draft_order_id: draftId,
           invoice_sent: true,
+          bcc_rep: repEmail || null,
           resent: true,
         };
       } catch (e: any) {
@@ -757,10 +781,16 @@ async function createDraftOrder(db: any, payload: any) {
       invoiceSendError = "No customer email on the account — cannot auto-send invoice. Add an email to the account or send it manually from Shopify.";
     } else {
       try {
+        /* BCC the rep-on-file so they get a silent copy of the invoice
+           email in their inbox. See getRepEmailForOrder + notes on the
+           resend path — same rationale, same limitation (Shopify's API
+           supports `bcc` but not `cc`). */
+        const repEmail = await getRepEmailForOrder(db, ord);
         const invoicePayload: any = {
           draft_order_invoice: {
             to: customerEmail,
             subject: "Lip TX Invoice",
+            ...(repEmail ? { bcc: [repEmail] } : {}),
             /* custom_message uses Shopify's default template — subject
                explicitly set to "Lip TX Invoice" per merchant request so
                the recipient's inbox shows a branded, recognizable subject
