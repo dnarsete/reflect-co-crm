@@ -693,9 +693,11 @@ async function createDraftOrder(db: any, payload: any) {
         const invoicePayload: any = {
           draft_order_invoice: {
             to: customerEmail,
-            /* subject and custom_message use Shopify's default template
-               if omitted. Keeping defaults for now — can add branded
-               copy later once we know what the merchant prefers. */
+            subject: "Lip TX Invoice",
+            /* custom_message uses Shopify's default template — subject
+               explicitly set to "Lip TX Invoice" per merchant request so
+               the recipient's inbox shows a branded, recognizable subject
+               line instead of Shopify's default "Invoice from [Shop]". */
           }
         };
         await shopifyFetch(db, `draft_orders/${draftId}/send_invoice.json`, {
