@@ -2812,6 +2812,22 @@ const reports = {
     typeSel.innerHTML = '<option value="">All</option>' + cache.accountTypeList().map(t=>`<option>${esc(t)}</option>`).join('');
     reports.run();
   },
+  /* Classify an order by whether the CUSTOMER HAS ACTUALLY PAID.
+     - 'paid': money in the door (paid, authorized, fulfilled, etc.)
+     - 'void': cancelled/refunded — never was money, or was returned
+     - 'pending': invoice sent but customer hasn't paid yet
+     Anything null/empty (never pushed to Shopify) is treated as 'pending'
+     — safest default; if the merchant collected outside Shopify they can
+     switch the filter to "All finalized" to include it. */
+  _paidStatuses: new Set(['paid','partially_paid','authorized','partially_fulfilled','fulfilled']),
+  _voidStatuses: new Set(['refunded','voided','cancelled']),
+  _paymentStatus(o){
+    const s = String(o.shopify_status || '').toLowerCase();
+    if(reports._paidStatuses.has(s)) return 'paid';
+    if(reports._voidStatuses.has(s)) return 'void';
+    return 'pending';
+  },
+
   async filter(){
     const from = document.getElementById('rep-from').value;
     const to   = document.getElementById('rep-to').value;
@@ -2819,6 +2835,7 @@ const reports = {
     const acct = document.getElementById('rep-acct').value.trim().toUpperCase();
     const ord  = document.getElementById('rep-ord').value.trim().toUpperCase();
     const typ  = document.getElementById('rep-type').value;
+    const payStatus = document.getElementById('rep-pay-status')?.value || 'paid';
     let q = sb.from('orders').select('*, account:accounts(account_number,business_name,type)').eq('status','finalized').not('is_test','is',true);
     /* Both bounds interpreted in America/Denver (the business timezone) so
        a rep setting "today" gets a full Denver day, not a UTC day that
@@ -2829,10 +2846,20 @@ const reports = {
     if(ord) q = q.ilike('order_number', `%${ord}%`);
     const { data, error } = await q.order('placed_at',{ascending:true});
     if(error){ ui.err(error); return []; }
-    return (data||[]).filter(o=>{
+    const preList = (data||[]).filter(o=>{
       if(acct && !((o.account?.account_number||'').toUpperCase().includes(acct))) return false;
       if(typ && o.account?.type!==typ) return false;
       return true;
+    });
+    /* Stash the full pre-payment-filter list so the summary can show
+       "N invoiced-but-unpaid orders ($X) not counted" alongside the
+       paid-only tiles. */
+    reports._lastFullList = preList;
+    return preList.filter(o => {
+      const s = reports._paymentStatus(o);
+      if(payStatus === 'paid')    return s === 'paid';
+      if(payStatus === 'pending') return s === 'pending';
+      return s !== 'void'; /* 'all' — hide cancelled/refunded */
     });
   },
   async run(){
@@ -2846,6 +2873,25 @@ const reports = {
     document.getElementById('rep-k-rev').textContent = fmt$(rev);
     document.getElementById('rep-k-avg').textContent = fmt$(list.length?rev/list.length:0);
     document.getElementById('rep-k-comm').textContent = fmt$(comm);
+
+    /* Payment-status transparency note. If the filter is "paid only" (the
+       default) and there ARE pending invoices in the same period, show
+       exactly how much money is invoiced but not yet collected — so the
+       admin knows the paid-only numbers are a subset. */
+    const noteEl = document.getElementById('rep-pending-note');
+    if(noteEl){
+      const payFilter = document.getElementById('rep-pay-status')?.value || 'paid';
+      const full = reports._lastFullList || [];
+      const pendingList = full.filter(o => reports._paymentStatus(o) === 'pending');
+      const pendingRev = pendingList.reduce((s,o)=>s+Number(o.total||0),0);
+      if(payFilter === 'paid' && pendingList.length){
+        noteEl.classList.remove('hide');
+        noteEl.innerHTML = `📋 <b>${pendingList.length} invoice${pendingList.length===1?'':'s'} in this period totaling ${fmt$(pendingRev)}</b> ${pendingList.length===1?'is':'are'} unpaid and NOT counted above (commission excluded). Switch <b>Payment status</b> to "All finalized" or "Invoiced but unpaid" to see them.`;
+      } else {
+        noteEl.classList.add('hide');
+        noteEl.textContent = '';
+      }
+    }
 
     const grp = {};
     list.forEach(o=>{
@@ -3258,16 +3304,22 @@ const reports = {
     try{ await sb.rpc('log_export', { p_table_name:'orders_report', p_record_count: list.length, p_filter_desc: filterDesc }); } catch(_){}
     const rows = [
       ...csvWatermark(filterDesc),
-      ['Date','Order','AccountNumber','Account','Type','Rep','Subtotal','Discount','Shipping','Tax','Total','Commission']
+      ['Date','Order','AccountNumber','Account','Type','Rep','PaymentStatus','Subtotal','Discount','Shipping','Tax','Total','Commission']
     ];
     list.forEach(o=>{
       const sub = (o.items||[]).reduce((s,i)=>s+i.qty*i.price,0);
       const repPct = profiles.commissionFor(o.rep_id)/100;
-      const comm = (Number(o.total)-Number(o.shipping)-Number(o.tax))*repPct;
+      const payStatus = reports._paymentStatus(o);
+      /* Commission ONLY on paid orders — pending/void get $0.
+         Matches on-screen behavior so the CSV reconciles cleanly. */
+      const comm = payStatus === 'paid'
+        ? (Number(o.total)-Number(o.shipping)-Number(o.tax))*repPct
+        : 0;
       rows.push([
         o.placed_at.slice(0,10), o.order_number||'',
         o.account?.account_number||'', o.account?.business_name||'',
         o.account?.type||'', o.rep_id||'',
+        payStatus,
         sub.toFixed(2), Number(o.discount).toFixed(2),
         Number(o.shipping).toFixed(2), Number(o.tax).toFixed(2),
         Number(o.total).toFixed(2), comm.toFixed(2)

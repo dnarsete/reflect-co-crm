@@ -221,6 +221,15 @@
           <div><label>Order #</label><input id="rep-ord" placeholder="e.g. ORD-1042"/></div>
           <div><label>Account type</label><select id="rep-type"><option value="">All</option></select></div>
         </div>
+        <div class="grid-3" style="margin-top:10px">
+          <div><label>Payment status <span class="muted" style="font-size:11px">(commission only counts paid)</span></label>
+            <select id="rep-pay-status" onchange="reports.run()">
+              <option value="paid" selected>Paid &amp; fulfilled only (default)</option>
+              <option value="all">All finalized (paid + pending)</option>
+              <option value="pending">Invoiced but unpaid only</option>
+            </select>
+          </div>
+        </div>
         <div id="rep-presets" class="row wrap" style="gap:6px;margin-top:10px">
           <button class="icon-btn" data-preset="today" onclick="reports.setRange('today')">Today</button>
           <button class="icon-btn" data-preset="week" onclick="reports.setRange('week')">This Week</button>
@@ -247,6 +256,7 @@
           <div class="tile"><div class="lbl">Avg order</div><div class="val" id="rep-k-avg">$0</div></div>
           <div class="tile"><div class="lbl">Commission</div><div class="val" id="rep-k-comm">$0</div></div>
         </div>
+        <div id="rep-pending-note" class="hide" style="margin-top:8px;padding:8px 12px;border:1px solid var(--line);background:rgba(250,200,80,0.08);border-radius:6px;font-size:12px;color:var(--muted)"></div>
         <div id="rep-yoy-card" class="hide" style="margin-top:14px;padding:12px;border:1px solid var(--line);background:var(--panel-2);border-radius:12px">
           <h2 style="margin:0 0 8px 0">Year over year</h2>
           <div id="rep-yoy-body"></div>
