@@ -541,11 +541,52 @@ async function updateAccount(db: any, payload: any) {
 
 async function createDraftOrder(db: any, payload: any) {
   const orderId = payload?.order_id;
+  const forceResend = payload?.force_resend === true;
   if (!orderId) throw new Error("payload.order_id required");
   const { data: ord, error } = await db
     .from("orders").select("*, account:accounts(*)").eq("id", orderId).single();
   if (error || !ord) throw new Error("Order not found");
   if (ord.shopify_draft_order_id) {
+    /* When the client explicitly asks to re-send an existing draft's invoice
+       (customer says they never got it, etc.), skip the create-new-draft
+       branch entirely and re-fire the send_invoice email against the
+       existing draft. No new draft, no duplicate — same recipient, same
+       "Lip TX Invoice" subject line. */
+    if (forceResend) {
+      const draftId = ord.shopify_draft_order_id;
+      const customerEmail = ord.account?.email || null;
+      if (!customerEmail) {
+        return {
+          already_linked: true,
+          shopify_draft_order_id: draftId,
+          invoice_sent: false,
+          invoice_send_error: "No customer email on the account — cannot re-send invoice.",
+          resent: true,
+        };
+      }
+      try {
+        await shopifyFetch(db, `draft_orders/${draftId}/send_invoice.json`, {
+          method: "POST",
+          body: JSON.stringify({
+            draft_order_invoice: { to: customerEmail, subject: "Lip TX Invoice" },
+          }),
+        });
+        return {
+          already_linked: true,
+          shopify_draft_order_id: draftId,
+          invoice_sent: true,
+          resent: true,
+        };
+      } catch (e: any) {
+        return {
+          already_linked: true,
+          shopify_draft_order_id: draftId,
+          invoice_sent: false,
+          invoice_send_error: "Re-send failed: " + (e?.message || String(e)),
+          resent: true,
+        };
+      }
+    }
     return { already_linked: true, shopify_draft_order_id: ord.shopify_draft_order_id };
   }
 

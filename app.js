@@ -1849,7 +1849,27 @@ const orders = {
       <div class="row" style="gap:8px;margin-top:6px">
         ${orders._draft.status !== 'finalized' ? `<button class="icon-btn" onclick="orders.saveDraft('${orders._draft.id||''}', ${isNew})">Save draft</button>` : ''}
         ${orders._draft.status !== 'finalized' ? `<button class="icon-btn primary" onclick="orders.finalize('${orders._draft.id||''}', ${isNew})">${(cache.me && cache.me.test_mode && cache.me.role !== 'admin') ? '🧪 Complete (test only)' : 'Finalize & invoice'}</button>` : ''}
-        ${!isNew && shopify.mode()==='live' && !(cache.me && cache.me.test_mode && cache.me.role !== 'admin') ? `<button class="icon-btn" onclick="orders.pushToShopify('${orders._draft.id}')">Push to Shopify</button>`:''}
+        ${(() => {
+          /* State-aware Shopify action button on FINALIZED orders. Three cases:
+             (a) Not linked to a Shopify draft yet — auto-push must have failed
+                 or predated integration. Show 'Push to Shopify' (original manual
+                 push flow — creates the draft + sends the invoice).
+             (b) Linked to a Shopify draft — invoice was already sent when the
+                 order was finalized. Show 'Re-send invoice' with an in-CRM
+                 confirmation modal so the rep can't accidentally spam the
+                 customer with duplicates.
+             (c) Draft (not yet finalized) — no button here; Save/Finalize handle it. */
+          if(isNew) return '';
+          if(shopify.mode() !== 'live') return '';
+          if(cache.me && cache.me.test_mode && cache.me.role !== 'admin') return '';
+          if(orders._draft.status !== 'finalized') return '';
+          const hasShopifyDraft = !!orders._draft.shopify_draft_order_id;
+          if(hasShopifyDraft){
+            return `<button class="icon-btn" onclick="orders.resendInvoice('${orders._draft.id}')">📧 Re-send invoice</button>`;
+          } else {
+            return `<button class="icon-btn" onclick="orders.pushToShopify('${orders._draft.id}')">Push to Shopify</button>`;
+          }
+        })()}
         ${!isNew && orders._draft.status === 'draft' ? `<button class="icon-btn danger" onclick="orders.remove('${orders._draft.id}')">Delete</button>`:''}
         <button class="icon-btn ghost" onclick="ui.closeModal()">Close</button>
       </div>
@@ -2354,6 +2374,48 @@ const orders = {
   },
   async pushToShopify(id){
     return orders._guardClick(async () => orders._pushToShopifyInner(id));
+  },
+
+  /* Re-send the invoice on an ALREADY-pushed order. Shows an in-CRM
+     confirmation modal first — the whole point is to avoid the duplicate
+     drafts + duplicate invoice emails class of bug. On confirm, calls the
+     Edge Function with force_resend:true which skips the create-draft
+     step (order.shopify_draft_order_id already exists) and just re-fires
+     the send_invoice email to the same draft. NO new draft, NO duplicate. */
+  async resendInvoice(id){
+    ui.modal(`
+      <h3>📧 Re-send invoice?</h3>
+      <p style="margin:0 0 10px">The invoice for this order was already emailed to the customer when it was finalized.</p>
+      <p style="margin:0 0 10px"><b>Only re-send if the customer says they never received it</b> (link expired, went to spam, wrong email at the time, etc.).</p>
+      <p class="muted" style="font-size:12px;margin:0 0 12px">
+        This will send a SECOND email with the same invoice link — it will NOT create a duplicate Shopify draft.
+      </p>
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="icon-btn ghost" onclick="ui.closeModal()">Cancel</button>
+        <div class="grow"></div>
+        <button class="icon-btn primary" onclick="ui.closeModal();orders._doResendInvoice('${esc(id).replace(/'/g,'&#39;')}')">Yes, re-send</button>
+      </div>
+    `);
+  },
+
+  async _doResendInvoice(id){
+    return orders._guardClick(async () => {
+      try {
+        const r = await shopify.call('create_draft_order', { order_id: id, force_resend: true });
+        if(r.invoice_sent){
+          ui.toast('Invoice re-sent to the customer.');
+        } else if(r.invoice_send_error){
+          ui.err({ message: 'Re-send failed: ' + r.invoice_send_error });
+        } else if(!r.resent){
+          /* Edge Function hasn't been updated with force_resend support yet.
+             Still safe — it just returned already_linked and did nothing. */
+          ui.err({ message: 'Re-send action not yet available. Redeploy the shopify-sync Edge Function to enable it.' });
+        } else {
+          ui.toast('Re-send requested — check the customer inbox in a minute.');
+        }
+        orders.render();
+      } catch(e){ ui.err(e); }
+    });
   },
   async _pushToShopifyInner(id){
     if(shopify.mode() !== 'live'){ ui.toast('Shopify integration is off. Enable it in config.js first.'); return; }
