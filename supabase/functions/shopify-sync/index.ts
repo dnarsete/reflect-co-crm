@@ -578,16 +578,42 @@ async function createDraftOrder(db: any, payload: any) {
           resent: true,
         };
       } catch (e: any) {
-        return {
-          already_linked: true,
-          shopify_draft_order_id: draftId,
-          invoice_sent: false,
-          invoice_send_error: "Re-send failed: " + (e?.message || String(e)),
-          resent: true,
-        };
+        /* Self-heal on 404: the stored draft is gone (completed, deleted,
+           or Shopify-side corrupted). Clear the stale ID on the CRM order
+           and fall through to the normal create-new-draft path below —
+           that path creates a fresh draft AND sends the invoice, so the
+           rep's re-send request still delivers an invoice in one round. */
+        const msg = String(e?.message || e || "");
+        const is404 = msg.includes("404") || /not found/i.test(msg);
+        if (is404) {
+          await db.from("orders").update({
+            shopify_draft_order_id: null,
+            shopify_invoice_url: null,
+            shopify_status: null,
+          }).eq("id", orderId);
+          console.warn("[shopify-sync] Draft " + draftId + " returned 404 — cleared stale link, creating fresh draft.");
+          /* Refresh the in-memory order so ord.shopify_draft_order_id is
+             null below, letting the fall-through create-new path run. */
+          ord.shopify_draft_order_id = null;
+          /* Do NOT return here — flow continues into the create-new-draft
+             logic below, which will create a new draft and send invoice. */
+        } else {
+          return {
+            already_linked: true,
+            shopify_draft_order_id: draftId,
+            invoice_sent: false,
+            invoice_send_error: "Re-send failed: " + msg,
+            resent: true,
+          };
+        }
       }
     }
-    return { already_linked: true, shopify_draft_order_id: ord.shopify_draft_order_id };
+    /* Re-check: the forceResend 404 branch may have cleared this. If it
+       did, DON'T short-circuit here — fall through to the create-new logic
+       below so we make a fresh draft + send its invoice in one round trip. */
+    if (ord.shopify_draft_order_id) {
+      return { already_linked: true, shopify_draft_order_id: ord.shopify_draft_order_id };
+    }
   }
 
   const skus = (ord.items || []).map((i: any) => i.sku);
