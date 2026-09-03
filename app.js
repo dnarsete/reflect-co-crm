@@ -1167,7 +1167,7 @@ const accounts = {
      Admin uploads may use per-row Rep IDs from a mapped column. */
 
   CRM_FIELDS: [
-    { key: 'business_name',    label: 'Business name',         aliases: ['business name','business','company','company name','account','account name','name of business','practice','practice name'] },
+    { key: 'business_name',    label: 'Business name',         aliases: ['business name','business','company','company name','account','account name','name of business','practice','practice name','clinic','clinic name','office','office name','facility','facility name','establishment','organization','provider','provider name','name'] },
     { key: 'type',             label: 'Account type',          aliases: ['account type','type','category'] },
     { key: 'billing_name',     label: 'Billing responsible person', aliases: ['contact','contact name','billing name','owner','responsible','manager'] },
     { key: 'email',            label: 'Account email',         aliases: ['email','e-mail','email address'] },
