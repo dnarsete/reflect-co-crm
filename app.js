@@ -2091,30 +2091,48 @@ const orders = {
       await sb.from('accounts').update(next).eq('id', d.account_id);
     }
   },
+  /* Normalizer used on both the search query AND the searchable haystack.
+     macOS silently rewrites straight apostrophes to curly ones (U+2019) in
+     most text inputs. If the account name was typed with a curly apostrophe
+     and the search box gave a straight one (or the reverse), a plain
+     substring compare misses. Also normalize smart quotes, en/em dashes,
+     non-breaking spaces, and strip diacritics so "café" matches "cafe". */
+  _normalizeSearch(s){
+    return String(s || '')
+      .toLowerCase()
+      .replace(/[‘’ʼ′]/g, "'")   /* curly + prime → straight ' */
+      .replace(/[“”″]/g, '"')          /* smart quotes → straight " */
+      .replace(/[–—−]/g, '-')          /* en/em/minus dashes → - */
+      .normalize('NFKD').replace(/[̀-ͯ]/g, '') /* strip diacritics */
+      .replace(/[ \s]+/g, ' ')                    /* any whitespace → single */
+      .trim();
+  },
+
   /* Live filter for the account picker on the New / Edit order modal.
      Rebuilds the <select>'s options on every keystroke — filtered from the
      cached orders._accountList — because iOS Safari doesn't reliably honor
      option.hidden. Preserves the current selection if it survives the
      filter; otherwise selects the first match (or clears + shows a
-     placeholder if nothing matches). Match is case-insensitive AND across
-     name / account # / city / email. */
+     placeholder if nothing matches). Match is normalized (curly quotes,
+     dashes, diacritics all folded) and works across name / account # /
+     city / email. */
   _filterAccounts(){
-    const q = (document.getElementById('o-acc-search')?.value || '').toLowerCase().trim();
+    const q = orders._normalizeSearch(document.getElementById('o-acc-search')?.value || '');
     const sel = document.getElementById('o-acc');
     if(!sel) return;
     const list = orders._accountList || [];
     const currentValue = sel.value;
 
-    /* Build the searchable haystack once per account so we don't recompute
-       during every keystroke's iteration. */
     const words = q ? q.split(/\s+/).filter(Boolean) : [];
     const matches = !words.length ? list : list.filter(a => {
-      const hay = (
+      /* Normalize the haystack the same way so curly-quote / dash / diacritic
+         mismatches between the DB row and the search input never happen. */
+      const hay = orders._normalizeSearch(
         (a.business_name || '') + ' ' +
         (a.account_number || '') + ' ' +
         (a.business_city || '') + ' ' +
         (a.email || '')
-      ).toLowerCase();
+      );
       return words.every(w => hay.includes(w));
     });
 
