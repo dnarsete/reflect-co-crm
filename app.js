@@ -1729,7 +1729,7 @@ const orders = {
     const acctMap = {}; accts.forEach(a=>acctMap[a.id]=a);
     const list = (await orders.listAll()).filter(o=>{
       const a = acctMap[o.account_id];
-      const hay = normSearch([o.order_number||'', a?.business_name, a?.account_number, a?.business_city, o.rep_id].filter(Boolean).join(' '));
+      const hay = normSearch([o.order_number||'', a?.business_name, a?.billing_name, a?.account_number, a?.business_city, o.rep_id].filter(Boolean).join(' '));
       return !words.length || words.every(w => hay.includes(w));
     });
     const wrap = document.getElementById('ord-list');
@@ -1817,7 +1817,7 @@ const orders = {
       <div class="grid-2">
         <div>
           <label>Account</label>
-          <input id="o-acc-search" placeholder="Search by name, account #, city, email…" oninput="orders._filterAccounts()" style="margin-bottom:6px" autocomplete="off"/>
+          <input id="o-acc-search" placeholder="Search by name, contact, account #, city, email…" oninput="orders._filterAccounts()" style="margin-bottom:6px" autocomplete="off"/>
           <select id="o-acc" onchange="orders.refresh()" size="1">${accOpts || '<option value="">— no accounts —</option>'}</select>
           <div id="o-acc-count" class="muted" style="font-size:11px;margin-top:4px">${accs.length} account${accs.length===1?'':'s'}</div>
         </div>
@@ -2223,6 +2223,7 @@ const orders = {
          mismatches between the DB row and the search input never happen. */
       const hay = orders._normalizeSearch(
         (a.business_name || '') + ' ' +
+        (a.billing_name || '') + ' ' +
         (a.account_number || '') + ' ' +
         (a.business_city || '') + ' ' +
         (a.email || '')
