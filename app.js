@@ -1729,7 +1729,14 @@ const orders = {
     const acctMap = {}; accts.forEach(a=>acctMap[a.id]=a);
     const list = (await orders.listAll()).filter(o=>{
       const a = acctMap[o.account_id];
-      const hay = normSearch([o.order_number||'', a?.business_name, a?.billing_name, a?.account_number, a?.business_city, o.rep_id].filter(Boolean).join(' '));
+      /* Rep name lookup — admin sees all reps in cache.reps, so typing
+         "Dan" or "Dan Johnson" matches every order for R-001 without
+         admin needing to remember the ID. Rep users have self-only
+         cache.reps, which is fine since they only see their own orders. */
+      const rep = (cache.reps || []).find(r => r.rep_id === o.rep_id) ||
+                  (cache.repsFull || []).find(r => r.rep_id === o.rep_id);
+      const repName = rep ? (rep.name || rep.email || '') : '';
+      const hay = normSearch([o.order_number||'', a?.business_name, a?.billing_name, a?.account_number, a?.business_city, o.rep_id, repName].filter(Boolean).join(' '));
       return !words.length || words.every(w => hay.includes(w));
     });
     const wrap = document.getElementById('ord-list');
