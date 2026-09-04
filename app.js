@@ -825,12 +825,14 @@ const accounts = {
         <div class="muted" style="font-size:11px;margin-top:6px">🇺🇸 United States</div>
       </div>
 
-      <!-- "Same as" checkbox + billing block -->
+      <!-- "Same as" checkbox — save-time preference, non-destructive.
+           Both blocks stay independently editable at all times. -->
       <div style="margin-top:8px">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:8px 10px;background:rgba(80,200,120,0.08);border:1px solid var(--line);border-radius:6px">
           <input id="f-billing-same" type="checkbox" ${acc.billing_same_as_business?'checked':''} style="width:auto" onchange="accounts.toggleBillingSame(this.checked)"/>
-          <span><b>Billing address is the same as business address</b> — auto-fills the billing block below when checked.</span>
+          <span><b>Billing address is the same as business address</b> — check to save billing as a copy of the business address (whatever's typed below is ignored).</span>
         </label>
+        <div id="f-billing-hint" class="muted" style="font-size:11px;margin-top:6px;padding:0 4px;display:${acc.billing_same_as_business?'block':'none'}">${acc.billing_same_as_business ? 'When you save, the billing address will be recorded as a copy of the business address above — whatever\\'s typed in these billing fields will be ignored. Uncheck to keep them independent.' : ''}</div>
       </div>
 
       <div id="f-billing-block" style="margin-top:8px;padding:10px;border:1px solid var(--line);background:var(--panel-2);border-radius:8px">
@@ -990,36 +992,22 @@ const accounts = {
      visually disable billing fields so admin knows they mirror.
      When unchecked: re-enable billing fields for independent editing. */
   toggleBillingSame(checked){
-    const bStreet = document.getElementById('f-b-street').value;
-    const bSuite  = document.getElementById('f-b-suite')?.value || '';
-    const bCity   = document.getElementById('f-b-city').value;
-    const bState  = document.getElementById('f-b-state').value;
-    const bZip    = document.getElementById('f-b-zip').value;
-    const ids = ['f-l-street','f-l-suite','f-l-city','f-l-state','f-l-zip'];
+    /* NON-DESTRUCTIVE. Both address blocks are always editable. The
+       checkbox is a save-time preference only: when checked at save, the
+       business address values are copied into billing (see accounts.save).
+       Toggling here just adjusts the visual hint — never touches the
+       billing fields, so typed billing data is never erased. */
+    const block = document.getElementById('f-billing-block');
+    const hint  = document.getElementById('f-billing-hint');
     if(checked){
-      /* Auto-fill billing from business */
-      document.getElementById('f-l-street').value = bStreet;
-      if(document.getElementById('f-l-suite')) document.getElementById('f-l-suite').value = bSuite;
-      document.getElementById('f-l-city').value = bCity;
-      document.getElementById('f-l-state').value = bState;
-      document.getElementById('f-l-zip').value = bZip;
-      ids.forEach(id => {
-        const el = document.getElementById(id);
-        if(!el) return;
-        el.disabled = true;
-        el.style.opacity = '0.55';
-      });
-      const block = document.getElementById('f-billing-block');
       if(block) block.style.borderStyle = 'dashed';
+      if(hint){
+        hint.textContent = 'When you save, the billing address will be recorded as a copy of the business address above — whatever\'s typed in these billing fields will be ignored. Uncheck to keep them independent.';
+        hint.style.display = '';
+      }
     } else {
-      ids.forEach(id => {
-        const el = document.getElementById(id);
-        if(!el) return;
-        el.disabled = false;
-        el.style.opacity = '';
-      });
-      const block = document.getElementById('f-billing-block');
       if(block) block.style.borderStyle = '';
+      if(hint){ hint.textContent = ''; hint.style.display = 'none'; }
     }
   },
   async save(id, isNew){
