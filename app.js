@@ -843,7 +843,7 @@ const accounts = {
           <input id="f-billing-same" type="checkbox" ${acc.billing_same_as_business?'checked':''} style="width:auto" onchange="accounts.toggleBillingSame(this.checked)"/>
           <span><b>Billing address is the same as business address</b> — check to save billing as a copy of the business address (whatever's typed below is ignored).</span>
         </label>
-        <div id="f-billing-hint" class="muted" style="font-size:11px;margin-top:6px;padding:0 4px;display:${acc.billing_same_as_business?'block':'none'}">${acc.billing_same_as_business ? 'When you save, the billing address will be recorded as a copy of the business address above — whatever\\'s typed in these billing fields will be ignored. Uncheck to keep them independent.' : ''}</div>
+        <div id="f-billing-hint" class="muted" style="font-size:11px;margin-top:6px;padding:0 4px;display:${acc.billing_same_as_business?'block':'none'}">${acc.billing_same_as_business ? "When you save, the billing address will be recorded as a copy of the business address above — whatever's typed in these billing fields will be ignored. Uncheck to keep them independent." : ''}</div>
       </div>
 
       <div id="f-billing-block" style="margin-top:8px;padding:10px;border:1px solid var(--line);background:var(--panel-2);border-radius:8px">
