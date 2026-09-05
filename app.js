@@ -357,11 +357,22 @@ const auth = {
     errEl.innerHTML = '✉️ Sign-in link sent to <b>'+esc(email)+'</b>. Open it on this device to sign in. Link expires in 1 hour.';
   },
   async applyRecoveryFlow(){
-    /* Fires ONLY for password-reset links (type=recovery) or the manual
-       #reset hash. Magic-link and invite links also carry access_token
-       in the hash, but they must NOT trigger this modal — reps invited
-       via magic link don't have (or need) a password. */
-    const isRecovery = /(^|[#&])type=recovery(&|$)/.test(location.hash) || location.hash === '#reset';
+    /* Fires ONLY for password-reset links. Supabase now ships THREE URL shapes:
+         legacy hash    →  #access_token=…&type=recovery
+         manual override →  #reset
+         PKCE (current)  →  ?code=…  (Supabase-JS auto-exchanges, then fires
+                                       the PASSWORD_RECOVERY event — the flag
+                                       below is set by that event listener)
+       Magic-link and invite links also carry access_token in the hash, but
+       they must NOT trigger this modal — reps invited via magic link don't
+       have (or need) a password. */
+    /* Do NOT match on ?code= alone — magic-link PKCE also uses ?code=. Rely
+       on Supabase-JS's PASSWORD_RECOVERY event (which fires only after the
+       code exchange has confirmed the token type is recovery). */
+    const isRecovery =
+      auth._recoveryEvent === true ||
+      /(^|[#&])type=recovery(&|$)/.test(location.hash) ||
+      location.hash === '#reset';
     if(!isRecovery) return;
     /* SECURITY: hide both auth screen and app so the dashboard/data is
        not visible under the modal. Restored on submit via location.reload(). */
@@ -6136,7 +6147,7 @@ const welcome = {
 
 sb.auth.onAuthStateChange((event) => {
   if(event === 'SIGNED_OUT') { location.reload(); return; }
-  if(event === 'PASSWORD_RECOVERY') { auth.applyRecoveryFlow(); return; }
+  if(event === 'PASSWORD_RECOVERY') { auth._recoveryEvent = true; auth.applyRecoveryFlow(); return; }
   /* SIGNED_IN fires when Supabase parses an access_token out of the URL hash
      (magic-link click), when a password sign-in completes, and on TOKEN
      refresh. The initial boot() below runs synchronously with the client's
