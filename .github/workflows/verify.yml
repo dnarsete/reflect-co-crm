@@ -1,4 +1,94 @@
-DOM/globals: {'boot': True, 'normalizeUSPhone': True, 'REFLECT_CONFIG': True, 'signinForm': True, 'magicForm': True, 'emailInput': True}
-auth const: object | auth.login: function | auth.magicLink: function
-Critical errors: 0
-✅ Smoke test PASSED
+name: Verify Reflect CRM
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  syntax-check:
+    name: Parse all JS files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Syntax-check app.js
+        run: node --check app.js
+      - name: Syntax-check sw.js
+        run: node --check sw.js
+      - name: Syntax-check config.js
+        run: node --check config.js
+
+  smoke-test:
+    name: Load live site in headless Chrome
+    needs: syntax-check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install Playwright + Chromium
+        run: |
+          npm init -y >/dev/null
+          npm install --save-dev playwright@1 >/dev/null
+          npx playwright install --with-deps chromium
+      - name: Wait for GitHub Pages to serve this commit
+        run: |
+          LOCAL_VER=$(grep -oE "reflect-crm-v[0-9]+" sw.js | head -1)
+          echo "Local SW version: $LOCAL_VER"
+          for i in $(seq 1 40); do
+            DEPLOYED=$(curl -s "https://dnarsete.github.io/reflect-co-crm/sw.js?ts=$(date +%s%N)" | grep -oE "reflect-crm-v[0-9]+" | head -1)
+            echo "Attempt $i: deployed=$DEPLOYED"
+            if [ "$DEPLOYED" = "$LOCAL_VER" ]; then
+              echo "Live"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Pages did not serve $LOCAL_VER within 400s"
+          exit 1
+      - name: Smoke test
+        run: |
+          cat > smoke.js <<'JS'
+          const { chromium } = require('playwright');
+          (async () => {
+            const browser = await chromium.launch();
+            const page = await browser.newPage();
+            const errors = [];
+            page.on('pageerror', e => errors.push('pageerror: ' + String(e.message || e)));
+            page.on('console', msg => {
+              if (msg.type() === 'error') errors.push('console: ' + msg.text());
+            });
+            await page.goto('https://dnarsete.github.io/reflect-co-crm/?smoke=' + Date.now(), { waitUntil: 'networkidle', timeout: 30000 });
+            await page.waitForTimeout(3000);
+            const wired = await page.evaluate(() => ({
+              boot:             typeof window.boot === 'function',
+              normalizeUSPhone: typeof window.normalizeUSPhone === 'function',
+              REFLECT_CONFIG:   typeof window.REFLECT_CONFIG === 'object',
+              signinForm:       !!document.querySelector('#auth-signin-btn'),
+              magicForm:        !!document.querySelector('#auth-magic-btn')
+            }));
+            const authConst = await page.evaluate('typeof auth');
+            const loginFn   = await page.evaluate('typeof auth?.login');
+            const magicFn   = await page.evaluate('typeof auth?.magicLink');
+            const critical = errors.filter(e => !e.includes('frame-ancestors') && !e.includes('unsafe-eval'));
+            console.log('Wired:', JSON.stringify(wired));
+            console.log('auth const:', authConst, '| login:', loginFn, '| magic:', magicFn);
+            console.log('Critical errors:', critical.length);
+            critical.forEach(e => console.log('  ' + e));
+            const bad = !wired.boot || !wired.normalizeUSPhone || !wired.REFLECT_CONFIG || !wired.signinForm || !wired.magicForm || authConst !== 'object' || loginFn !== 'function' || magicFn !== 'function' || critical.length > 0;
+            await browser.close();
+            if (bad) { console.log('Smoke test FAILED'); process.exit(1); }
+            console.log('Smoke test PASSED');
+          })().catch(e => { console.error(e); process.exit(1); });
+          JS
+          node smoke.js
