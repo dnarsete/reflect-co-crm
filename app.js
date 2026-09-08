@@ -752,8 +752,23 @@ const accounts = {
     return count || 0;
   },
   async list(){
-    const { data, error } = await sb.from('accounts').select('*').order('created_at',{ascending:false});
-    if(error){ ui.err(error); return []; }
+    /* Nested select brings the account's non-deleted additional contacts back
+       in one round-trip, so the search hay can match on contact fields
+       without a second query per account. RLS still applies per-row. */
+    const { data, error } = await sb.from('accounts')
+      .select('*, contacts:account_contacts(id, name, title, phone, email, notes, deleted_at)')
+      .order('created_at',{ascending:false});
+    if(error){
+      /* Fallback: if the account_contacts table doesn't exist yet (migration
+         not run), the join returns an error. Fall back to a plain select so
+         nothing else in the CRM breaks. */
+      const fb = await sb.from('accounts').select('*').order('created_at',{ascending:false});
+      if(fb.error){ ui.err(fb.error); return []; }
+      return fb.data || [];
+    }
+    (data || []).forEach(a => {
+      a.contacts = (a.contacts || []).filter(c => !c.deleted_at);
+    });
     return data || [];
   },
   async render(){
@@ -766,7 +781,10 @@ const accounts = {
     const words = q ? q.split(/\s+/).filter(Boolean) : [];
     const type = tf.value;
     const list = (await accounts.list()).filter(a=>{
-      const hay = normSearch([a.business_name,a.billing_name,a.business_address,a.business_city,a.email,a.account_number].filter(Boolean).join(' '));
+      const contactHay = (a.contacts || []).map(c =>
+        `${c.name||''} ${c.title||''} ${c.phone||''} ${c.email||''} ${c.notes||''}`
+      ).join(' ');
+      const hay = normSearch([a.business_name,a.billing_name,a.business_address,a.business_city,a.email,a.account_number,contactHay].filter(Boolean).join(' '));
       const matchesQ = !words.length || words.every(w => hay.includes(w));
       return matchesQ && (!type || a.type===type);
     });
@@ -861,6 +879,13 @@ const accounts = {
         <div class="muted" style="font-size:11px;margin-top:6px">🇺🇸 United States</div>
       </div>
 
+      <div style="margin-top:12px;padding:10px;border:1px solid var(--line);background:var(--panel-2);border-radius:8px">
+        <div style="font-weight:600;font-size:13px;margin-bottom:4px">👥 Additional contacts</div>
+        <div class="muted" style="font-size:11px;margin:0 0 8px">Other people at this account beyond the billing contact. Any field here is searchable — a contact's name, phone, email, title, or notes will match this account in the Accounts search.</div>
+        <div id="f-contacts-list"></div>
+        <button type="button" class="icon-btn ghost" style="margin-top:8px" onclick="accounts.addContactRow()">+ Add contact</button>
+      </div>
+
       <div class="grid-2" style="margin-top:12px">
         <div><label>Sales tax license #</label><input id="f-stl" value="${esc(acc.sales_tax_license)}"/></div>
         <div><label>License state</label><select id="f-sts">${usStateOptions(acc.sales_tax_state)}</select></div>
@@ -908,9 +933,11 @@ const accounts = {
     if(document.getElementById('f-billing-same')?.checked){
       accounts.toggleBillingSame(true);
     }
+    accounts._currentAccountId = isNew ? null : acc.id;
     if(!isNew){
       accounts.renderNotes(acc.id);
       reminders.renderAccountSection(acc.id);
+      accounts._renderContacts(acc.id);
       /* Default the datetime picker to tomorrow 9am local so a
          one-click "Set reminder" without picking a time still lands
          somewhere sensible instead of erroring. */
@@ -920,7 +947,94 @@ const accounts = {
         const pad = n => String(n).padStart(2,'0');
         rw.value = `${t.getFullYear()}-${pad(t.getMonth()+1)}-${pad(t.getDate())}T${pad(t.getHours())}:${pad(t.getMinutes())}`;
       }
+    } else {
+      /* Brand-new account — surface the contacts section with a stub row
+         hint so the user knows contacts can be added after first save. */
+      const cw = document.getElementById('f-contacts-list');
+      if(cw) cw.innerHTML = '<div class="muted" style="font-size:12px">Save the account first, then add contacts here.</div>';
     }
+  },
+  /* --- Additional contacts (soft-deleted, 90-day retention on backend) --- */
+  _contactRowHTML(id, c){
+    const cid = id || `new-${Date.now()}-${Math.floor(Math.random()*1e6)}`;
+    return `<div class="list-item" data-cid="${cid}" style="align-items:flex-start;flex-wrap:wrap;gap:8px">
+      <div class="grow" style="min-width:280px">
+        <div class="grid-3" style="grid-template-columns:2fr 1.5fr 1.5fr;gap:6px">
+          <input placeholder="Name" data-fld="name" value="${esc(c.name||'')}" autocomplete="off"/>
+          <input placeholder="Title / role" data-fld="title" value="${esc(c.title||'')}" autocomplete="off"/>
+          <input placeholder="Phone" data-fld="phone" type="tel" inputmode="tel" value="${esc(c.phone||'')}" onblur="normalizeUSPhone(this)"/>
+        </div>
+        <div class="grid-2" style="margin-top:6px;gap:6px">
+          <input placeholder="Email" data-fld="email" type="email" value="${esc(c.email||'')}" autocapitalize="none" spellcheck="false"/>
+          <input placeholder="Notes" data-fld="notes" value="${esc(c.notes||'')}"/>
+        </div>
+      </div>
+      <div style="display:flex;gap:4px;margin-top:4px">
+        <button type="button" class="icon-btn primary" onclick="accounts.saveContact('${cid}')">Save</button>
+        ${id ? `<button type="button" class="icon-btn danger" onclick="accounts.deleteContact('${id}')" title="Retained on backend 90 days">✕</button>` : ''}
+      </div>
+    </div>`;
+  },
+  async _renderContacts(accountId){
+    const wrap = document.getElementById('f-contacts-list');
+    if(!wrap || !accountId) return;
+    const { data, error } = await sb.from('account_contacts')
+      .select('*')
+      .eq('account_id', accountId)
+      .is('deleted_at', null)
+      .order('created_at', { ascending: true });
+    if(error){
+      /* Table missing — feature not yet migrated. Hide the block gracefully. */
+      wrap.innerHTML = '<div class="muted" style="font-size:12px">Contacts feature not yet available. Ask admin to run the account_contacts migration.</div>';
+      return;
+    }
+    const rows = data || [];
+    wrap.innerHTML = rows.length
+      ? rows.map(c => accounts._contactRowHTML(c.id, c)).join('')
+      : accounts._contactRowHTML(null, {});
+  },
+  addContactRow(){
+    const wrap = document.getElementById('f-contacts-list');
+    if(!wrap) return;
+    if(!accounts._currentAccountId){
+      ui.toast('Save the account first before adding contacts.');
+      return;
+    }
+    const holder = document.createElement('div');
+    holder.innerHTML = accounts._contactRowHTML(null, {});
+    wrap.appendChild(holder.firstElementChild);
+  },
+  async saveContact(cid){
+    const row = document.querySelector(`[data-cid="${CSS.escape(cid)}"]`);
+    if(!row) return;
+    const get = fld => (row.querySelector(`[data-fld="${fld}"]`)?.value || '').trim();
+    const payload = {
+      name:  get('name'),
+      title: get('title'),
+      phone: get('phone'),
+      email: get('email'),
+      notes: get('notes')
+    };
+    if(!Object.values(payload).some(v => v)){ ui.toast('Fill at least one field before saving.'); return; }
+    const accountId = accounts._currentAccountId;
+    if(!accountId){ ui.toast('Save the account first before adding contacts.'); return; }
+    const isNew = cid.startsWith('new-');
+    let r;
+    if(isNew){
+      r = await sb.from('account_contacts').insert({ ...payload, account_id: accountId }).select().single();
+    } else {
+      r = await sb.from('account_contacts').update(payload).eq('id', cid).select().single();
+    }
+    if(r.error){ ui.err(r.error); return; }
+    ui.toast(isNew ? 'Contact added' : 'Contact saved');
+    accounts._renderContacts(accountId);
+  },
+  async deleteContact(id){
+    if(!confirm('Delete this contact? It stays on the backend for 90 days before permanent removal.')) return;
+    const r = await sb.from('account_contacts').update({ deleted_at: new Date().toISOString() }).eq('id', id).select();
+    if(r.error){ ui.err(r.error); return; }
+    ui.toast('Contact deleted');
+    accounts._renderContacts(accounts._currentAccountId);
   },
   async renderNotes(accountId){
     const nw = document.getElementById('acc-notes'); if(!nw) return;
