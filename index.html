@@ -334,6 +334,18 @@
       </div>
     </section>
 
+    <!-- Reminders -->
+    <section id="view-reminders" class="view hide">
+      <div class="section-h"><h1>🔔 Reminders</h1></div>
+      <div class="card">
+        <p class="muted" style="font-size:13px;margin:0 0 8px">Your active reminders. Create new ones from within any account (Call / visit log section). Reminders are private to you.</p>
+        <div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:10px">
+          <label class="toggle" style="cursor:pointer"><input type="checkbox" id="rem-show-dismissed" onchange="reminders.render()"/> <span>Show dismissed</span></label>
+        </div>
+        <div id="rem-list"></div>
+      </div>
+    </section>
+
     <!-- Profile -->
     <section id="view-profile" class="view hide">
       <div class="section-h"><h1>My Profile</h1></div>
@@ -570,6 +582,7 @@
     <button class="nav-btn" data-view="orders" onclick="nav.go('orders')"><span class="ico">🧾</span>Orders</button>
     <button class="nav-btn admin-only hide" data-view="promos" onclick="nav.go('promos')"><span class="ico">🏷</span>Promos</button>
     <button class="nav-btn" data-view="forecast" onclick="nav.go('forecast')"><span class="ico">🔮</span>Forecast</button>
+    <button class="nav-btn" data-view="reminders" onclick="nav.go('reminders')"><span class="ico">🔔</span>Reminders<span id="nav-reminders-badge" class="hide" style="margin-left:6px;padding:1px 6px;background:var(--danger,#c0392b);color:white;border-radius:8px;font-size:11px;font-weight:600"></span></button>
     <button class="nav-btn" data-view="reports" onclick="nav.go('reports')"><span class="ico">📊</span>Reports</button>
     <button class="nav-btn" data-view="profile" onclick="nav.go('profile')"><span class="ico">👤</span>Profile</button>
     <button class="nav-btn admin-only hide" data-view="reps" onclick="nav.go('reps')"><span class="ico">👥</span>Reps</button>
@@ -602,6 +615,10 @@
 </div>
 
 <div class="toast-wrap"><div id="toast" class="toast hide"></div></div>
+
+<!-- Reminder toasts: non-blocking, stack in bottom-right, do not intercept clicks
+     elsewhere on the page. -->
+<div id="reminder-toasts" style="position:fixed;bottom:16px;right:16px;display:flex;flex-direction:column;gap:8px;z-index:200;max-width:360px;pointer-events:none"></div>
 
 <script src="app.js"></script>
 </body>

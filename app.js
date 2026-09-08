@@ -550,6 +550,7 @@ const nav = {
     if(view==='promos')    promos.render();
     if(view==='reports')   reports.init();
     if(view==='forecast')  forecasts.render();
+    if(view==='reminders') reminders.render();
     if(view==='profile')   profile.render();
     if(view==='reps')      adminPanel.renderRepsAndInvites();
     if(view==='materials') materials.render();
@@ -880,6 +881,16 @@ const accounts = {
           <input id="note-text" placeholder="Add a note (call, visit, geo check-in…)" onkeydown="if(event.key==='Enter')accounts.addNote('${acc.id}')"/>
           <button class="icon-btn" onclick="accounts.addNote('${acc.id}')">Add</button>
         </div>
+      </div>
+      <div class="card" style="margin-top:10px">
+        <h2>🔔 Reminders</h2>
+        <p class="muted" style="font-size:12px;margin:0 0 8px">Private to you. Pop-ups appear in the CRM when due. See all of yours in the <b>🔔 Reminders</b> tab.</p>
+        <div id="acc-reminders"></div>
+        <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap">
+          <input id="rem-title" placeholder="Follow up on order, send samples…" style="flex:2;min-width:200px"/>
+          <input id="rem-when" type="datetime-local" style="flex:1;min-width:180px"/>
+          <button class="icon-btn" onclick="reminders.addFromAccount('${acc.id}')">Set reminder</button>
+        </div>
       </div>` : ''}
       ${!isNew && acc.shopify_customer_id ? `
       <div style="margin-top:12px;padding:10px;border:1px solid var(--line);background:rgba(212,160,23,0.06);border-radius:6px;font-size:12px">
@@ -899,6 +910,16 @@ const accounts = {
     }
     if(!isNew){
       accounts.renderNotes(acc.id);
+      reminders.renderAccountSection(acc.id);
+      /* Default the datetime picker to tomorrow 9am local so a
+         one-click "Set reminder" without picking a time still lands
+         somewhere sensible instead of erroring. */
+      const rw = document.getElementById('rem-when');
+      if(rw){
+        const t = new Date(); t.setDate(t.getDate()+1); t.setHours(9,0,0,0);
+        const pad = n => String(n).padStart(2,'0');
+        rw.value = `${t.getFullYear()}-${pad(t.getMonth()+1)}-${pad(t.getDate())}T${pad(t.getHours())}:${pad(t.getMinutes())}`;
+      }
     }
   },
   async renderNotes(accountId){
@@ -4479,6 +4500,259 @@ const forecasts = {
   }
 };
 
+/* ---------- REMINDERS ----------
+   Per-user pop-up reminders tied to accounts. Toast-style non-blocking
+   notifications appear when a reminder is due; user can snooze (default
+   1 hour, dropdown for other durations) or dismiss. Polling runs every
+   60s once boot() finishes. Visibility is enforced by RLS — a user only
+   ever sees their own rows. */
+const reminders = {
+  _pollTimer: null,
+  _shownIds: new Set(),      /* toast is on-screen right now for these ids */
+
+  /* --- reads --- */
+  async _fetch(includeDismissed){
+    let q = sb.from('reminders')
+      .select('id, account_id, title, due_at, snoozed_until, dismissed_at, created_at, account:accounts(business_name)')
+      .order('due_at', { ascending: true });
+    if(!includeDismissed) q = q.is('dismissed_at', null);
+    const { data, error } = await q;
+    if(error){ console.warn('reminders fetch failed', error); return []; }
+    return data || [];
+  },
+  _effectiveDue(r){
+    /* If snoozed to a future time, that's when it next fires. Otherwise due_at. */
+    const s = r.snoozed_until ? new Date(r.snoozed_until).getTime() : 0;
+    const d = new Date(r.due_at).getTime();
+    return Math.max(s, d);
+  },
+  _isDueNow(r){
+    if(r.dismissed_at) return false;
+    return reminders._effectiveDue(r) <= Date.now();
+  },
+
+  /* --- writes --- */
+  async create({account_id, title, due_at}){
+    const me = (await sb.auth.getUser()).data.user;
+    const payload = {
+      account_id, title, due_at,
+      created_by: me.id,
+      rep_id: auth.repId() || null
+    };
+    const r = await sb.from('reminders').insert(payload).select().single();
+    if(r.error){ ui.err(r.error); return null; }
+    ui.toast('Reminder set');
+    reminders._updateBadge();
+    return r.data;
+  },
+  async snooze(id, minutes){
+    const until = new Date(Date.now() + minutes*60*1000).toISOString();
+    const r = await sb.from('reminders').update({ snoozed_until: until }).eq('id', id).select().single();
+    if(r.error){ ui.err(r.error); return; }
+    reminders._closeToast(id);
+    ui.toast(`Snoozed ${reminders._fmtDuration(minutes)}`);
+  },
+  async dismiss(id){
+    const r = await sb.from('reminders').update({ dismissed_at: new Date().toISOString() }).eq('id', id).select().single();
+    if(r.error){ ui.err(r.error); return; }
+    reminders._closeToast(id);
+    ui.toast('Dismissed');
+  },
+  async remove(id, accountId){
+    if(!confirm('Delete this reminder?')) return;
+    const r = await sb.from('reminders').delete().eq('id', id).select();
+    if(r.error){ ui.err(r.error); return; }
+    if(accountId) reminders.renderAccountSection(accountId);
+    if(!document.getElementById('view-reminders').classList.contains('hide')) reminders.render();
+    reminders._updateBadge();
+  },
+
+  /* --- formatting helpers --- */
+  _fmtDuration(minutes){
+    if(minutes < 60) return `${minutes} min`;
+    const hrs = minutes/60;
+    if(hrs < 24) return `${hrs} hour${hrs===1?'':'s'}`;
+    const days = hrs/24;
+    return `${days} day${days===1?'':'s'}`;
+  },
+  _fmtWhen(iso){
+    const d = new Date(iso);
+    const now = Date.now();
+    const diffMs = d.getTime() - now;
+    const abs = Math.abs(diffMs);
+    const past = diffMs < 0;
+    const fmt = (n, u) => `${n} ${u}${n===1?'':'s'} ${past?'ago':'from now'}`;
+    if(abs < 60*1000)          return past ? 'just now' : 'in a moment';
+    if(abs < 3600*1000)        return fmt(Math.round(abs/60000), 'min');
+    if(abs < 24*3600*1000)     return fmt(Math.round(abs/3600000), 'hour');
+    if(abs < 7*24*3600*1000)   return fmt(Math.round(abs/86400000), 'day');
+    return d.toLocaleString();
+  },
+
+  /* --- toast (non-blocking pop-up) --- */
+  _closeToast(id){
+    const el = document.getElementById('rem-toast-'+id);
+    if(el) el.remove();
+    reminders._shownIds.delete(id);
+  },
+  _snoozeOptions(){
+    /* value = minutes */
+    return [
+      [60,    '1 hour'],
+      [4*60,  '4 hours'],
+      [8*60,  '8 hours'],
+      [24*60, '1 day'],
+      [3*24*60, '3 days'],
+      [7*24*60, '1 week']
+    ];
+  },
+  _showToast(r){
+    if(reminders._shownIds.has(r.id)) return;   /* already on screen */
+    reminders._shownIds.add(r.id);
+    const wrap = document.getElementById('reminder-toasts');
+    if(!wrap) return;
+    const accountName = r.account?.business_name || '(unlinked account)';
+    const snoozeOpts = reminders._snoozeOptions().map(([m,l]) => `<option value="${m}">Snooze ${l}</option>`).join('');
+    const el = document.createElement('div');
+    el.id = 'rem-toast-' + r.id;
+    el.style.cssText = 'pointer-events:auto;background:var(--panel);border:1px solid var(--brand,#d4a017);border-left:4px solid var(--brand,#d4a017);border-radius:8px;padding:12px;box-shadow:0 6px 18px rgba(0,0,0,0.35);color:var(--text)';
+    el.innerHTML = `
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:start;margin-bottom:6px">
+        <div style="font-weight:600;font-size:14px">🔔 ${esc(r.title)}</div>
+        <button onclick="reminders._closeToast('${r.id}')" title="Hide for now (will re-appear on next poll)"
+                style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;line-height:1;padding:0;margin-left:4px">×</button>
+      </div>
+      <div class="muted" style="font-size:12px;margin-bottom:8px">${esc(accountName)} · ${reminders._fmtWhen(r.due_at)}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="icon-btn primary" style="padding:4px 10px;font-size:13px" onclick="reminders.snooze('${r.id}', 60)">Snooze 1 hour</button>
+        <select onchange="if(this.value){reminders.snooze('${r.id}', parseInt(this.value,10));}" style="padding:4px 6px;font-size:13px;background:var(--panel-2,var(--panel));border:1px solid var(--line);border-radius:6px;color:var(--text)">
+          <option value="">Snooze longer…</option>
+          ${snoozeOpts}
+        </select>
+        <button class="icon-btn" style="padding:4px 10px;font-size:13px" onclick="reminders.dismiss('${r.id}')">Dismiss</button>
+      </div>
+    `;
+    wrap.appendChild(el);
+  },
+
+  /* --- polling ---
+     Runs every 60s. Cheap RLS-scoped query, only rows for this user. */
+  _startPolling(){
+    if(reminders._pollTimer) return;
+    reminders._pollTimer = setInterval(reminders._tick, 60*1000);
+    /* Also fire once immediately after sign-in. */
+    setTimeout(reminders._tick, 3000);
+  },
+  _stopPolling(){
+    if(reminders._pollTimer){ clearInterval(reminders._pollTimer); reminders._pollTimer = null; }
+    reminders._shownIds.clear();
+    const wrap = document.getElementById('reminder-toasts');
+    if(wrap) wrap.innerHTML = '';
+  },
+  async _tick(){
+    /* Only poll while signed in. */
+    const sess = await sb.auth.getSession();
+    if(!sess.data.session){ reminders._stopPolling(); return; }
+    const active = await reminders._fetch(false);
+    active.filter(reminders._isDueNow).forEach(reminders._showToast);
+    reminders._updateBadge(active);
+  },
+
+  /* --- nav badge --- */
+  _updateBadge(list){
+    const badge = document.getElementById('nav-reminders-badge');
+    if(!badge) return;
+    const doIt = (items) => {
+      const n = items.filter(reminders._isDueNow).length;
+      if(n > 0){ badge.textContent = n; badge.classList.remove('hide'); }
+      else     { badge.textContent = '';  badge.classList.add('hide'); }
+    };
+    if(list){ doIt(list); return; }
+    reminders._fetch(false).then(doIt);
+  },
+
+  /* --- sidebar view --- */
+  async render(){
+    const wrap = document.getElementById('rem-list');
+    if(!wrap) return;
+    const showDismissed = document.getElementById('rem-show-dismissed')?.checked || false;
+    const list = await reminders._fetch(showDismissed);
+    if(!list.length){
+      wrap.innerHTML = '<div class="muted">No reminders yet. Open an account → Call / visit log → Set a reminder.</div>';
+      return;
+    }
+    wrap.innerHTML = list.map(r => {
+      const acc = r.account?.business_name || '(unlinked)';
+      const eff = reminders._effectiveDue(r);
+      const dueLabel = new Date(eff).toLocaleString();
+      const rel = reminders._fmtWhen(new Date(eff).toISOString());
+      let badge = '';
+      if(r.dismissed_at){
+        badge = `<span class="badge">Dismissed</span>`;
+      } else if(eff <= Date.now()){
+        badge = `<span class="badge err">Due now</span>`;
+      } else if(r.snoozed_until && new Date(r.snoozed_until).getTime() > Date.now()){
+        badge = `<span class="badge warn">Snoozed → ${new Date(r.snoozed_until).toLocaleString()}</span>`;
+      } else {
+        badge = `<span class="badge info">Upcoming</span>`;
+      }
+      const openBtn = r.account_id
+        ? `<button class="icon-btn" onclick="accounts.open('${r.account_id}')">Open account</button>` : '';
+      const dismissBtn = !r.dismissed_at
+        ? `<button class="icon-btn ghost" onclick="reminders.dismiss('${r.id}').then(()=>reminders.render())">Dismiss</button>` : '';
+      const delBtn = `<button class="icon-btn danger" onclick="reminders.remove('${r.id}')">✕</button>`;
+      return `<div class="list-item">
+        <div class="grow">
+          <div class="title">${esc(r.title)} ${badge}</div>
+          <div class="meta">${esc(acc)} · ${esc(dueLabel)} · ${esc(rel)}</div>
+        </div>
+        ${openBtn}${dismissBtn}${delBtn}
+      </div>`;
+    }).join('');
+  },
+
+  /* --- in-account section ---
+     Renders a small reminders list + "add" form right below the Call/visit
+     log block in the account modal. */
+  async renderAccountSection(accountId){
+    const wrap = document.getElementById('acc-reminders');
+    if(!wrap) return;
+    const { data, error } = await sb.from('reminders')
+      .select('id, title, due_at, snoozed_until, dismissed_at')
+      .eq('account_id', accountId)
+      .is('dismissed_at', null)
+      .order('due_at', { ascending: true });
+    if(error){ wrap.innerHTML = '<div class="muted">Could not load reminders.</div>'; return; }
+    const rows = (data || []).map(r => {
+      const eff = reminders._effectiveDue(r);
+      const badge = eff <= Date.now() ? '<span class="badge err">Due now</span>'
+                  : (r.snoozed_until && new Date(r.snoozed_until).getTime() > Date.now()
+                     ? `<span class="badge warn">Snoozed</span>` : '<span class="badge info">Upcoming</span>');
+      return `<div class="list-item">
+        <div class="grow">
+          <div>${esc(r.title)} ${badge}</div>
+          <div class="meta">${new Date(eff).toLocaleString()} · ${reminders._fmtWhen(new Date(eff).toISOString())}</div>
+        </div>
+        <button class="icon-btn danger" onclick="reminders.remove('${r.id}','${accountId}')">✕</button>
+      </div>`;
+    }).join('');
+    wrap.innerHTML = rows || '<div class="muted">No reminders yet for this account.</div>';
+  },
+  async addFromAccount(accountId){
+    const title = (document.getElementById('rem-title')?.value || '').trim();
+    const when  = document.getElementById('rem-when')?.value; /* datetime-local: YYYY-MM-DDTHH:mm */
+    if(!title){ ui.toast('Enter a reminder title first.'); return; }
+    if(!when){ ui.toast('Pick a date and time.'); return; }
+    const dt = new Date(when); /* local → Date; toISOString will convert to UTC */
+    if(isNaN(dt.getTime())){ ui.toast('Invalid date/time.'); return; }
+    const created = await reminders.create({ account_id: accountId, title, due_at: dt.toISOString() });
+    if(!created) return;
+    document.getElementById('rem-title').value = '';
+    document.getElementById('rem-when').value = '';
+    reminders.renderAccountSection(accountId);
+  }
+};
+
 /* ---------- SHOPIFY INTEGRATION (admin) ---------- */
 const shopify = {
   mode(){ return window.REFLECT_CONFIG?.SHOPIFY_MODE || 'off'; },
@@ -6127,6 +6401,10 @@ async function boot(){
   } else {
     nav.go('dashboard');
   }
+
+  /* Start the reminders poller. Wrapped so a table-missing error (before
+     Dan runs reminders.sql) doesn't take down boot. */
+  try { reminders._startPolling(); } catch(e){ console.warn('reminders poller not started', e); }
   } finally {
     /* Reset the guard so a future sign-in (after sign-out or refresh)
        can trigger boot again. */
@@ -6244,7 +6522,7 @@ const welcome = {
 })();
 
 sb.auth.onAuthStateChange((event) => {
-  if(event === 'SIGNED_OUT') { location.reload(); return; }
+  if(event === 'SIGNED_OUT') { try{ reminders._stopPolling(); }catch(_){} location.reload(); return; }
   if(event === 'PASSWORD_RECOVERY') { auth._recoveryEvent = true; auth.applyRecoveryFlow(); return; }
   /* SIGNED_IN fires when Supabase parses an access_token out of the URL hash
      (magic-link click), when a password sign-in completes, and on TOKEN
