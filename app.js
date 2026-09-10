@@ -859,7 +859,7 @@ const accounts = {
            Both blocks stay independently editable at all times. -->
       <div style="margin-top:8px">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:8px 10px;background:rgba(80,200,120,0.08);border:1px solid var(--line);border-radius:6px">
-          <input id="f-billing-same" type="checkbox" ${acc.billing_same_as_business?'checked':''} style="width:auto" onchange="accounts.toggleBillingSame(this.checked)"/>
+          <input id="f-billing-same" type="checkbox" ${acc.billing_same_as_business?'checked':''} style="width:auto" onchange="accounts.toggleBillingSame(this.checked, true)"/>
           <span><b>Billing address is the same as business address</b> — check to save billing as a copy of the business address (whatever's typed below is ignored).</span>
         </label>
         <div id="f-billing-hint" class="muted" style="font-size:11px;margin-top:6px;padding:0 4px;display:${acc.billing_same_as_business?'block':'none'}">${acc.billing_same_as_business ? "When you save, the billing address will be recorded as a copy of the business address above — whatever's typed in these billing fields will be ignored. Uncheck to keep them independent." : ''}</div>
@@ -1137,24 +1137,59 @@ const accounts = {
      When checked: copy business address fields into billing, then
      visually disable billing fields so admin knows they mirror.
      When unchecked: re-enable billing fields for independent editing. */
-  toggleBillingSame(checked){
-    /* NON-DESTRUCTIVE. Both address blocks are always editable. The
-       checkbox is a save-time preference only: when checked at save, the
-       business address values are copied into billing (see accounts.save).
-       Toggling here just adjusts the visual hint — never touches the
-       billing fields, so typed billing data is never erased. */
+  toggleBillingSame(checked, fromUserClick){
+    /* Called from two places:
+        1. On modal OPEN (visual only — do NOT touch fields; the saved
+           values are already loaded and must be preserved verbatim).
+        2. On user CLICK of the checkbox (fromUserClick=true). Auto-
+           populates the empty side from the filled side, bidirectionally:
+             · business filled, billing empty  → copy business → billing
+             · billing filled, business empty  → copy billing → business
+             · both filled but differ           → confirm before overwriting
+                                                  billing with business
+             · both empty OR both filled same  → no-op
+       Both blocks stay editable after the copy. */
     const block = document.getElementById('f-billing-block');
     const hint  = document.getElementById('f-billing-hint');
     if(checked){
       if(block) block.style.borderStyle = 'dashed';
       if(hint){
-        hint.textContent = 'When you save, the billing address will be recorded as a copy of the business address above — whatever\'s typed in these billing fields will be ignored. Uncheck to keep them independent.';
+        hint.textContent = 'Marked as same as business. Both blocks stay editable — the checkbox auto-fills the empty side when you click it.';
         hint.style.display = '';
       }
     } else {
       if(block) block.style.borderStyle = '';
       if(hint){ hint.textContent = ''; hint.style.display = 'none'; }
     }
+    if(!checked || !fromUserClick) return;
+
+    /* --- auto-populate logic --- */
+    const g = id => (document.getElementById(id)?.value || '').trim();
+    const biz = { street:g('f-b-street'), suite:g('f-b-suite'), city:g('f-b-city'), state:g('f-b-state'), zip:g('f-b-zip') };
+    const bil = { street:g('f-l-street'), suite:g('f-l-suite'), city:g('f-l-city'), state:g('f-l-state'), zip:g('f-l-zip') };
+    const hasContent = a => !!(a.street || a.city || a.state || a.zip);
+    const equal = (a,b) => a.street===b.street && a.suite===b.suite && a.city===b.city && a.state===b.state && a.zip===b.zip;
+    const setVal = (id, v) => { const el = document.getElementById(id); if(el) el.value = v; };
+    const copy = (from, prefix) => {
+      setVal(`f-${prefix}-street`, from.street);
+      setVal(`f-${prefix}-suite`,  from.suite);
+      setVal(`f-${prefix}-city`,   from.city);
+      setVal(`f-${prefix}-state`,  from.state);
+      setVal(`f-${prefix}-zip`,    from.zip);
+    };
+    const bizHas = hasContent(biz);
+    const bilHas = hasContent(bil);
+    if(bizHas && !bilHas){
+      copy(biz, 'l');                     /* business → billing */
+    } else if(bilHas && !bizHas){
+      copy(bil, 'b');                     /* billing → business */
+    } else if(bizHas && bilHas && !equal(biz, bil)){
+      /* Both sides filled with different data — confirm before overwriting.
+         Direction: business wins (per Dan: "shipping wins and ask next"). */
+      const ok = confirm('The business and billing addresses are different.\n\nOverwrite the BILLING address with the business address?\n\nOK — replace billing with business\nCancel — leave both as-is (checkbox stays checked)');
+      if(ok) copy(biz, 'l');
+    }
+    /* both empty OR both filled and equal: no-op */
   },
   async save(id, isNew){
     const get = i => document.getElementById(i).value;
@@ -1168,19 +1203,20 @@ const accounts = {
       return;
     }
     const same = document.getElementById('f-billing-same').checked;
-    /* If "same as" is checked, copy business fields into billing at save time
-       (belt+suspenders — the checkbox onchange already did this, but re-copy
-       in case business fields were edited after checking the box). */
+    /* Whatever's in the fields is what gets saved. The auto-populate happens
+       at CHECKBOX-CLICK time (see toggleBillingSame), so by the time we get
+       here the fields already reflect the user's chosen state. No save-time
+       override — that would silently wipe any post-check billing edits. */
     const bStreet = get('f-b-street').trim();
     const bSuite  = (document.getElementById('f-b-suite')?.value || '').trim();
     const bCity   = get('f-b-city').trim();
     const bState  = get('f-b-state').trim();
     const bZip    = get('f-b-zip').trim();
-    const lStreet = same ? bStreet : get('f-l-street').trim();
-    const lSuite  = same ? bSuite  : (document.getElementById('f-l-suite')?.value || '').trim();
-    const lCity   = same ? bCity   : get('f-l-city').trim();
-    const lState  = same ? bState  : get('f-l-state').trim();
-    const lZip    = same ? bZip    : get('f-l-zip').trim();
+    const lStreet = get('f-l-street').trim();
+    const lSuite  = (document.getElementById('f-l-suite')?.value || '').trim();
+    const lCity   = get('f-l-city').trim();
+    const lState  = get('f-l-state').trim();
+    const lZip    = get('f-l-zip').trim();
     /* Concatenate into legacy single-line address columns so anything
        reading those (invoice, dashboard summary, etc.) still works
        during the transition. Format: "street[, suite], city, state zip" */
