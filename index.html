@@ -470,6 +470,25 @@
       <div class="section-h"><h1>Admin</h1></div>
 
       <div class="card">
+        <details>
+          <summary style="cursor:pointer;font-size:16px;font-weight:600;color:var(--muted)">🛠 SQL Runner <span class="badge err" style="margin-left:6px">dangerous</span></summary>
+          <p class="muted" style="font-size:12px;margin:10px 0 4px">Run arbitrary SQL against the database — same as the Supabase Dashboard's SQL editor, but without leaving the CRM. Every run is audit-logged.</p>
+          <p style="font-size:12px;margin:0 0 10px;color:var(--danger,#c0392b)"><b>⚠ You can drop tables and delete rows here.</b> There is no undo. Confirm carefully.</p>
+          <textarea id="sql-runner-input" placeholder="SELECT id, email FROM profiles LIMIT 10;" style="width:100%;min-height:140px;font-family:Monaco,Consolas,monospace;font-size:13px;padding:10px;background:#0e1a2e;color:#e8f0ff;border:1px solid var(--line);border-radius:6px;resize:vertical"></textarea>
+          <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
+            <button class="icon-btn primary" onclick="sqlRunner.run()" style="background:var(--danger,#c0392b)">▶ Run SQL</button>
+            <button class="icon-btn ghost" onclick="sqlRunner.clear()">Clear</button>
+            <span id="sql-runner-status" class="muted" style="font-size:12px"></span>
+          </div>
+          <div id="sql-runner-results" style="margin-top:12px"></div>
+          <div style="margin-top:16px">
+            <div style="font-size:13px;font-weight:600;color:var(--muted);margin-bottom:6px">Recent runs</div>
+            <div id="sql-runner-history" style="font-size:12px"></div>
+          </div>
+        </details>
+      </div>
+
+      <div class="card">
         <div class="section-h" style="margin-bottom:8px">
           <h2 style="margin:0;flex:1">Messages to reps</h2>
           <button class="icon-btn primary" onclick="messages.openNew()">+ New message</button>

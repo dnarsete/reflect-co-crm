@@ -5294,6 +5294,8 @@ const adminPanel = {
     productsAdmin.render();
     /* audit log */
     auditLog.render();
+    /* sql runner history (lazy — only if the section is present in DOM) */
+    try { sqlRunner.renderHistory(); } catch(_){}
     /* messages */
     messages.renderAdmin();
     /* shopify */
@@ -5772,6 +5774,116 @@ const adminPanel = {
     }
     await ref.loadAll();
     ui.toast('Settings saved');
+  }
+};
+
+/* ---------- ADMIN SQL RUNNER ----------
+   In-CRM alternative to the Supabase Dashboard SQL editor. Calls the
+   SECURITY DEFINER function public.admin_run_sql (see supabase/admin-
+   sql-runner.sql). Server-side rejects non-admin callers; every run is
+   audit-logged to public.sql_runner_log. */
+const sqlRunner = {
+  _destructiveRx: /\b(drop\s+(table|schema|function|trigger|policy|index|view|type|role|user)|truncate|delete\s+from|update\s+\w|alter\s+(table|schema|role|user))\b/i,
+
+  async run(){
+    const el   = document.getElementById('sql-runner-input');
+    const out  = document.getElementById('sql-runner-results');
+    const stat = document.getElementById('sql-runner-status');
+    const sqlText = (el?.value || '').trim();
+    if(!sqlText){ ui.toast('Type or paste some SQL first.'); return; }
+
+    /* Extra confirmation for destructive statements. */
+    if(sqlRunner._destructiveRx.test(sqlText)){
+      const ok = confirm(
+        '⚠ DESTRUCTIVE SQL detected (DROP / DELETE / UPDATE / TRUNCATE / ALTER).\n\n' +
+        'There is NO undo. Are you certain you want to run this?\n\n' +
+        'OK — run it\nCancel — go back'
+      );
+      if(!ok){ if(stat) stat.textContent = 'Cancelled.'; return; }
+    }
+
+    if(stat) stat.textContent = 'Running…';
+    if(out)  out.innerHTML = '';
+    const t0 = Date.now();
+
+    try {
+      const { data, error } = await sb.rpc('admin_run_sql', { sql_text: sqlText });
+      const dt = Date.now() - t0;
+      if(error){
+        if(stat) stat.textContent = `Failed in ${dt} ms.`;
+        if(out) out.innerHTML = `<div class="alert err">❌ <b>SQL error:</b> ${esc(error.message || String(error))}</div>`;
+        sqlRunner.renderHistory();
+        return;
+      }
+      if(stat) stat.textContent = `Done in ${dt} ms.`;
+      /* data has shape { ok:true, kind:'rows'|'exec', rows|affected|row_count, message } */
+      if(data && data.kind === 'rows'){
+        const rows = data.rows || [];
+        if(rows.length === 0){
+          if(out) out.innerHTML = `<div class="alert info">✅ Query ran. 0 rows returned.</div>`;
+        } else {
+          const cols = Object.keys(rows[0]);
+          const head = cols.map(c => `<th>${esc(c)}</th>`).join('');
+          const body = rows.map(r =>
+            '<tr>' + cols.map(c => `<td style="max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r[c] === null ? '(null)' : (typeof r[c] === 'object' ? JSON.stringify(r[c]) : String(r[c])))}</td>`).join('') + '</tr>'
+          ).join('');
+          if(out) out.innerHTML =
+            `<div class="alert ok" style="margin-bottom:8px">✅ ${data.row_count} row(s).</div>` +
+            `<div class="table-wrap" style="max-height:400px;overflow:auto"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+        }
+      } else if(data && data.kind === 'exec'){
+        if(out) out.innerHTML = `<div class="alert ok">✅ ${esc(data.message || 'Executed successfully.')}</div>`;
+      } else {
+        if(out) out.innerHTML = `<div class="alert ok">✅ Done.</div><pre style="font-size:11px;overflow:auto">${esc(JSON.stringify(data, null, 2))}</pre>`;
+      }
+      sqlRunner.renderHistory();
+    } catch(e){
+      const dt = Date.now() - t0;
+      if(stat) stat.textContent = `Failed in ${dt} ms.`;
+      if(out) out.innerHTML = `<div class="alert err">❌ <b>Unexpected error:</b> ${esc(e.message || String(e))}</div>`;
+    }
+  },
+
+  clear(){
+    const el  = document.getElementById('sql-runner-input');
+    const out = document.getElementById('sql-runner-results');
+    const stat = document.getElementById('sql-runner-status');
+    if(el) el.value = '';
+    if(out) out.innerHTML = '';
+    if(stat) stat.textContent = '';
+  },
+
+  async renderHistory(){
+    const wrap = document.getElementById('sql-runner-history');
+    if(!wrap) return;
+    const { data, error } = await sb.from('sql_runner_log')
+      .select('id, sql_text, ran_at, finished_at, ok, affected, row_count, error')
+      .order('ran_at', { ascending: false })
+      .limit(20);
+    if(error){
+      wrap.innerHTML = `<div class="muted">Could not load history: ${esc(error.message)}. Run the admin-sql-runner.sql migration once.</div>`;
+      return;
+    }
+    if(!data || !data.length){
+      wrap.innerHTML = '<div class="muted">No runs yet.</div>';
+      return;
+    }
+    wrap.innerHTML = data.map(r => {
+      const when = new Date(r.ran_at).toLocaleString();
+      const dur  = r.finished_at ? `${new Date(r.finished_at).getTime() - new Date(r.ran_at).getTime()} ms` : '—';
+      const preview = (r.sql_text || '').replace(/\s+/g, ' ').slice(0, 120);
+      const status = r.ok === true
+        ? `<span class="badge ok">ok${r.affected ? ` · ${r.affected} affected` : ''}${r.row_count != null ? ` · ${r.row_count} rows` : ''}</span>`
+        : r.ok === false
+          ? `<span class="badge err">error</span>`
+          : `<span class="badge">…</span>`;
+      const err = r.error ? `<div style="color:var(--danger,#c0392b);font-size:11px;margin-top:2px">${esc(r.error)}</div>` : '';
+      return `<div style="padding:6px 0;border-bottom:1px solid var(--line)">
+        <div>${status} <span class="muted">${esc(when)} · ${dur}</span></div>
+        <div style="font-family:Monaco,Consolas,monospace;color:var(--text);margin-top:2px">${esc(preview)}${(r.sql_text||'').length > 120 ? '…' : ''}</div>
+        ${err}
+      </div>`;
+    }).join('');
   }
 };
 
