@@ -115,10 +115,15 @@ BEGIN
       );
     END IF;
   EXCEPTION WHEN OTHERS THEN
+    /* Catch-and-return instead of RAISE so the outer transaction commits
+       — otherwise plpgsql would roll back the initial INSERT into
+       sql_runner_log, and the audit trail would lose every failed run.
+       Client checks data.ok to distinguish success from function-level
+       failure. */
     UPDATE public.sql_runner_log
        SET ok = FALSE, error = SQLERRM, finished_at = now()
      WHERE id = log_id;
-    RAISE;
+    RETURN jsonb_build_object('ok', FALSE, 'kind', 'error', 'error', SQLERRM);
   END;
 END $$;
 

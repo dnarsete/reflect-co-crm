@@ -5809,9 +5809,18 @@ const sqlRunner = {
     try {
       const { data, error } = await sb.rpc('admin_run_sql', { sql_text: sqlText });
       const dt = Date.now() - t0;
+      /* RPC error (network / auth / function not found). */
       if(error){
         if(stat) stat.textContent = `Failed in ${dt} ms.`;
         if(out) out.innerHTML = `<div class="alert err">❌ <b>SQL error:</b> ${esc(error.message || String(error))}</div>`;
+        sqlRunner.renderHistory();
+        return;
+      }
+      /* Function-level failure (bad SQL). Function returns ok:false + error
+         instead of raising, so the audit log row commits. */
+      if(data && data.ok === false){
+        if(stat) stat.textContent = `Failed in ${dt} ms.`;
+        if(out) out.innerHTML = `<div class="alert err">❌ <b>SQL error:</b> ${esc(data.error || 'Unknown error')}</div>`;
         sqlRunner.renderHistory();
         return;
       }
