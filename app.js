@@ -777,6 +777,21 @@ const accounts = {
     const cur = tf.value;
     tf.innerHTML = '<option value="">All types</option>' + cache.accountTypeList().map(t=>`<option ${cur===t?'selected':''}>${t}</option>`).join('');
 
+    /* rep filter (admin only). On first render in this session, default to
+       admin's own rep_id so admin lands on their book of business. Once admin
+       picks another value ("All reps" or a different rep), that choice sticks. */
+    const rf = document.getElementById('acc-rep-filter');
+    if(rf){
+      const wantDefault = auth.isAdmin() && !accounts._repFilterDefaulted;
+      const curR = wantDefault ? (auth.repId() || '') : rf.value;
+      const reps = (cache.reps || []).filter(r => r.rep_id);
+      rf.innerHTML = '<option value="">All reps</option>' + reps.map(r =>
+        `<option value="${esc(r.rep_id)}" ${curR===r.rep_id?'selected':''}>${esc(r.name||r.email)} (${esc(r.rep_id)})</option>`
+      ).join('');
+      if(wantDefault){ accounts._repFilterDefaulted = true; }
+    }
+    const repFilter = (rf && auth.isAdmin()) ? rf.value : '';
+
     const q = normSearch(document.getElementById('acc-search').value || '');
     const words = q ? q.split(/\s+/).filter(Boolean) : [];
     const type = tf.value;
@@ -786,7 +801,8 @@ const accounts = {
       ).join(' ');
       const hay = normSearch([a.business_name,a.billing_name,a.business_address,a.business_city,a.email,a.account_number,contactHay].filter(Boolean).join(' '));
       const matchesQ = !words.length || words.every(w => hay.includes(w));
-      return matchesQ && (!type || a.type===type);
+      const matchesRep = !repFilter || a.rep_id === repFilter;
+      return matchesQ && (!type || a.type===type) && matchesRep;
     });
 
     const wrap = document.getElementById('acc-list');
@@ -1893,6 +1909,21 @@ const orders = {
     return data || [];
   },
   async render(){
+    /* rep filter (admin only). First render in this session defaults to
+       admin's own rep_id so admin lands on their own orders. Once admin
+       changes it, their choice is preserved. */
+    const rf = document.getElementById('ord-rep-filter');
+    if(rf){
+      const wantDefault = auth.isAdmin() && !orders._repFilterDefaulted;
+      const curR = wantDefault ? (auth.repId() || '') : rf.value;
+      const reps = (cache.reps || []).filter(r => r.rep_id);
+      rf.innerHTML = '<option value="">All reps</option>' + reps.map(r =>
+        `<option value="${esc(r.rep_id)}" ${curR===r.rep_id?'selected':''}>${esc(r.name||r.email)} (${esc(r.rep_id)})</option>`
+      ).join('');
+      if(wantDefault){ orders._repFilterDefaulted = true; }
+    }
+    const repFilter = (rf && auth.isAdmin()) ? rf.value : '';
+
     const q = normSearch(document.getElementById('ord-search').value || '');
     const words = q ? q.split(/\s+/).filter(Boolean) : [];
     const accts = await accounts.list();
@@ -1907,7 +1938,9 @@ const orders = {
                   (cache.repsFull || []).find(r => r.rep_id === o.rep_id);
       const repName = rep ? (rep.name || rep.email || '') : '';
       const hay = normSearch([o.order_number||'', a?.business_name, a?.billing_name, a?.account_number, a?.business_city, o.rep_id, repName].filter(Boolean).join(' '));
-      return !words.length || words.every(w => hay.includes(w));
+      const matchesQ = !words.length || words.every(w => hay.includes(w));
+      const matchesRep = !repFilter || o.rep_id === repFilter;
+      return matchesQ && matchesRep;
     });
     const wrap = document.getElementById('ord-list');
     if(!list.length){ wrap.innerHTML='<div class="muted">No orders yet.</div>'; return; }
@@ -6079,11 +6112,23 @@ const absoluteTimeout = {
   }
 };
 
-/* ---------- IDLE AUTO-LOGOUT ---------- */
+/* ---------- IDLE AUTO-LOGOUT ----------
+   Reps still get a short 30-minute idle timeout because they may share
+   a device, work in the field, or leave a laptop open at a customer
+   site. Admin gets a 12-hour idle timeout — long enough to survive a
+   full business day without re-signing in, short enough to protect an
+   unattended machine overnight. The absolute-session cap (30 days for
+   admin, 24 h for rep) still applies on top of this. */
 const idleLogout = {
-  TIMEOUT_MS: 30 * 60 * 1000,
-  WARN_MS:     2 * 60 * 1000,
+  TIMEOUT_MS_REP:   30 * 60 * 1000,      /* 30 minutes */
+  TIMEOUT_MS_ADMIN: 12 * 60 * 60 * 1000, /* 12 hours */
+  WARN_MS:           2 * 60 * 1000,
   _idleTimer:null, _warnTimer:null, _started:false,
+  _timeout(){
+    return (typeof auth !== 'undefined' && auth.isAdmin && auth.isAdmin())
+      ? idleLogout.TIMEOUT_MS_ADMIN
+      : idleLogout.TIMEOUT_MS_REP;
+  },
   start(){
     if(idleLogout._started) return;
     idleLogout._started = true;
@@ -6094,8 +6139,9 @@ const idleLogout = {
   },
   reset(){
     clearTimeout(idleLogout._idleTimer); clearTimeout(idleLogout._warnTimer);
-    idleLogout._warnTimer = setTimeout(idleLogout._warn, idleLogout.TIMEOUT_MS - idleLogout.WARN_MS);
-    idleLogout._idleTimer = setTimeout(idleLogout._sign_out, idleLogout.TIMEOUT_MS);
+    const t = idleLogout._timeout();
+    idleLogout._warnTimer = setTimeout(idleLogout._warn, t - idleLogout.WARN_MS);
+    idleLogout._idleTimer = setTimeout(idleLogout._sign_out, t);
   },
   _warn(){
     ui.toast('Signing you out in 2 minutes due to inactivity. Tap anywhere to stay signed in.');

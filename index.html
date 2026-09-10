@@ -176,6 +176,7 @@
           <select id="acc-type-filter" onchange="accounts.render()" style="max-width:200px">
             <option value="">All types</option>
           </select>
+          <select id="acc-rep-filter" class="admin-only hide" onchange="accounts.render()" style="max-width:220px"></select>
         </div>
         <div id="acc-list"></div>
       </div>
@@ -190,6 +191,7 @@
       <div class="card">
         <div class="row" style="gap:8px;margin-bottom:8px">
           <input id="ord-search" placeholder="Search order #, account, contact, rep name or ID…" oninput="orders.render()"/>
+          <select id="ord-rep-filter" class="admin-only hide" onchange="orders.render()" style="max-width:220px"></select>
         </div>
         <div id="ord-list"></div>
       </div>
