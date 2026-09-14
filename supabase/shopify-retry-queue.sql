@@ -44,9 +44,12 @@ CREATE INDEX IF NOT EXISTS orders_pending_push_idx
   ON public.orders (shopify_push_next_at)
   WHERE shopify_push_state IN ('pending_retry', 'in_progress');
 
-/* Retrofit any historical orders that are finalized but never got a
-   Shopify draft (like ORD-1024). One-time backfill — safe to re-run
-   because it only touches rows where the state is unset. */
+/* Retrofit only RECENT (last 30 days) finalized non-test orders that
+   never got a Shopify draft. This intentionally skips older orders,
+   because pre-integration finalizes may have been invoiced through
+   other channels and shouldn't get a duplicate invoice from Shopify
+   now. Admin can enqueue an older order manually via the SQL Runner
+   if needed. */
 UPDATE public.orders
    SET shopify_push_state = 'pending_retry',
        shopify_push_next_at = now(),
@@ -54,7 +57,8 @@ UPDATE public.orders
  WHERE status = 'finalized'
    AND is_test = FALSE
    AND shopify_draft_order_id IS NULL
-   AND shopify_push_state IS NULL;
+   AND shopify_push_state IS NULL
+   AND finalized_at > now() - interval '30 days';
 
 /* Backoff schedule as a Postgres helper — the client and edge function
    both call this so the schedule stays in one place.
@@ -85,31 +89,34 @@ END $$;
    SECURITY DEFINER + admin-only check inside so RLS doesn't limit the
    poller to a rep's own orders — retries should happen globally.  */
 CREATE OR REPLACE FUNCTION public.shopify_claim_retry_batch(batch_size INTEGER DEFAULT 10)
-RETURNS TABLE (order_id UUID, order_number TEXT, attempts INTEGER)
+RETURNS TABLE (out_order_id UUID, out_order_number TEXT, out_attempts INTEGER)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 BEGIN
   IF NOT public.is_admin() THEN
     RAISE EXCEPTION 'shopify_claim_retry_batch: admin only';
   END IF;
 
+  /* out_* aliases on RETURNS TABLE so plpgsql doesn't confuse the
+     return columns with orders.order_number / orders.shopify_push_attempts
+     inside the RETURNING clause. */
   RETURN QUERY
   WITH claimed AS (
     UPDATE public.orders
        SET shopify_push_state = 'in_progress',
            shopify_push_locked_until = now() + interval '5 minutes'
      WHERE id IN (
-       SELECT id FROM public.orders
-        WHERE shopify_push_state = 'pending_retry'
-          AND (shopify_push_next_at IS NULL OR shopify_push_next_at <= now())
-          AND (shopify_push_locked_until IS NULL OR shopify_push_locked_until < now())
-          AND is_test = FALSE
-        ORDER BY shopify_push_next_at NULLS FIRST
+       SELECT o2.id FROM public.orders o2
+        WHERE o2.shopify_push_state = 'pending_retry'
+          AND (o2.shopify_push_next_at IS NULL OR o2.shopify_push_next_at <= now())
+          AND (o2.shopify_push_locked_until IS NULL OR o2.shopify_push_locked_until < now())
+          AND o2.is_test = FALSE
+        ORDER BY o2.shopify_push_next_at NULLS FIRST
         LIMIT batch_size
         FOR UPDATE SKIP LOCKED
      )
-    RETURNING id, order_number, shopify_push_attempts
+    RETURNING orders.id, orders.order_number, orders.shopify_push_attempts
   )
-  SELECT id, order_number, shopify_push_attempts FROM claimed;
+  SELECT c.id, c.order_number, c.shopify_push_attempts FROM claimed c;
 END $$;
 
 REVOKE ALL ON FUNCTION public.shopify_claim_retry_batch(INTEGER) FROM PUBLIC;

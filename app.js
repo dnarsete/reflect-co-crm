@@ -2809,9 +2809,39 @@ const orders = {
       }
       for(const row of claim.data){
         try {
-          await shopify.call('create_draft_order', { order_id: row.order_id });
+          const res = await shopify.call('create_draft_order', { order_id: row.out_order_id });
+          /* Client-side fallback marker in case the deployed edge function
+             is pre-v90 (no markSucceeded/markFailed). Safe when the new
+             version is deployed too — the edge function already set state
+             to succeeded, this is a no-op. */
+          if(res && (res.created || res.already_linked || res.adopted)){
+            try {
+              await sb.from('orders').update({
+                shopify_push_state: 'succeeded',
+                shopify_push_next_at: null,
+                shopify_push_locked_until: null,
+                shopify_push_last_error: null
+              }).eq('id', row.out_order_id);
+            } catch(_){}
+          }
         } catch(e){
-          console.warn(`[retry] push failed for ${row.order_number}:`, e?.message || e);
+          console.warn(`[retry] push failed for ${row.out_order_number}:`, e?.message || e);
+          /* Same fallback for the failure path — schedule the next retry
+             client-side so the queue keeps moving even without the new
+             edge function. Backoff mirrors the SQL helper. */
+          try {
+            const attempts = Number(row.out_attempts || 0) + 1;
+            const delayMin = attempts <= 1 ? 1 : attempts === 2 ? 5 : attempts === 3 ? 15 : attempts <= 24 ? 60 : null;
+            const nextAt = delayMin ? new Date(Date.now() + delayMin*60000).toISOString() : null;
+            const state = delayMin ? 'pending_retry' : 'failed_permanent';
+            await sb.from('orders').update({
+              shopify_push_state: state,
+              shopify_push_next_at: nextAt,
+              shopify_push_locked_until: null,
+              shopify_push_attempts: attempts,
+              shopify_push_last_error: String(e?.message || e).slice(0, 500)
+            }).eq('id', row.out_order_id);
+          } catch(_){}
         }
         /* Small delay so we don't hammer Shopify or the edge function
            in tight succession — Shopify's REST API is rate-limited. */
