@@ -1951,6 +1951,12 @@ const orders = {
       if(o.shopify_status==='paid'){ shopBadge = ' <span class="badge ok">Shopify: paid</span>'; }
       else if(o.shopify_status==='fulfilled'){ shopBadge = ' <span class="badge ok">Shopify: fulfilled</span>'; }
       else if(o.shopify_draft_order_id){ shopBadge = ' <span class="badge info">Shopify: draft sent</span>'; }
+      /* Retry-queue badges — surface the ORD-1024-class silent failure so
+         admin sees at a glance which finalized orders haven't actually
+         reached Shopify. */
+      if(o.shopify_push_state === 'pending_retry')    shopBadge += ' <span class="badge warn">⏳ push pending</span>';
+      else if(o.shopify_push_state === 'in_progress') shopBadge += ' <span class="badge warn">⏳ pushing…</span>';
+      else if(o.shopify_push_state === 'failed_permanent') shopBadge += ' <span class="badge err">⚠ push failed (max retries)</span>';
       const invUrl = safeShopifyUrl(o.shopify_invoice_url);
       return `<div class="list-item">
         <div class="grow">
@@ -2584,6 +2590,18 @@ const orders = {
        test mode. Test-mode reps never push to Shopify — the whole point of
        test mode is to prevent real orders from leaving the CRM. */
     if(shopify.mode() === 'live' && !inTestMode){
+      /* Enroll in the retry queue BEFORE calling Shopify. If the fetch
+         drops mid-flight (network hiccup, tab close, machine sleep),
+         the edge function may never run — but the DB row is already
+         marked pending_retry, so the poller picks it up on the next
+         admin session. This is the specific safeguard against ORD-1024-
+         class silent failures. */
+      try {
+        await sb.from('orders').update({
+          shopify_push_state: 'pending_retry',
+          shopify_push_next_at: new Date().toISOString(),
+        }).eq('id', q.data.id);
+      } catch(_) { /* non-fatal — retry poller runs on cron too */ }
       /* Attempt to push the draft to Shopify. On a Shopify "Record is
          invalid" error (usually caused by a stale/deleted customer ID),
          auto-null the stored shopify_customer_id and retry once with
@@ -2759,6 +2777,97 @@ const orders = {
       return;
     }
     ui.closeModal(); ui.toast('Deleted'); orders.render();
+  },
+
+  /* ---------- SHOPIFY PUSH RETRY QUEUE ----------
+     Client-driven retry loop that survives client crashes: any admin
+     signed in polls every 60 s, atomically claims a batch via the
+     shopify_claim_retry_batch RPC (SKIP LOCKED, so parallel admins
+     don't race), and calls the edge function for each. On success the
+     edge function's markSucceeded/markFailed set the terminal state.
+     Duplicate-safe because the edge function's adopt-orphaned-draft
+     step catches "first attempt reached Shopify but CRM missed the
+     response" and reuses the existing draft. */
+  _retryPollTimer: null,
+  _startRetryPoll(){
+    if(!auth.isAdmin()) return;
+    if(orders._retryPollTimer) return;
+    orders._retryPollTimer = setInterval(() => orders._processRetryQueue(), 60_000);
+    /* Fire once shortly after boot so pending pushes drain immediately. */
+    setTimeout(() => orders._processRetryQueue(), 5000);
+  },
+  _stopRetryPoll(){
+    if(orders._retryPollTimer){ clearInterval(orders._retryPollTimer); orders._retryPollTimer = null; }
+  },
+  async _processRetryQueue(){
+    if(!auth.isAdmin()) return;
+    try {
+      const claim = await sb.rpc('shopify_claim_retry_batch', { batch_size: 5 });
+      if(claim.error || !claim.data || !claim.data.length){
+        orders._refreshPendingBanner();
+        return;
+      }
+      for(const row of claim.data){
+        try {
+          await shopify.call('create_draft_order', { order_id: row.order_id });
+        } catch(e){
+          console.warn(`[retry] push failed for ${row.order_number}:`, e?.message || e);
+        }
+        /* Small delay so we don't hammer Shopify or the edge function
+           in tight succession — Shopify's REST API is rate-limited. */
+        await new Promise(r => setTimeout(r, 800));
+      }
+      orders._refreshPendingBanner();
+    } catch(e){
+      console.warn('[retry] queue processing failed:', e?.message || e);
+    }
+  },
+  async retryAllPending(){
+    if(!auth.isAdmin()){ ui.toast('Retry queue is admin-only.'); return; }
+    ui.busy(true);
+    try {
+      /* Zero the next_at on every pending row so the batch below picks
+         them all up regardless of backoff timing. */
+      await sb.rpc('admin_run_sql', {
+        sql_text: "UPDATE orders SET shopify_push_next_at = now() WHERE shopify_push_state IN ('pending_retry','failed_permanent') AND is_test = false"
+      });
+      /* Now drain the queue in successive batches until it's empty. */
+      let drained = 0;
+      for(let i = 0; i < 20; i++){
+        const claim = await sb.rpc('shopify_claim_retry_batch', { batch_size: 10 });
+        if(claim.error || !claim.data || !claim.data.length) break;
+        for(const row of claim.data){
+          try {
+            await shopify.call('create_draft_order', { order_id: row.order_id });
+            drained++;
+          } catch(e){
+            console.warn(`[manual retry] push failed for ${row.order_number}:`, e?.message || e);
+          }
+          await new Promise(r => setTimeout(r, 800));
+        }
+      }
+      ui.toast(`Retry pass complete — ${drained} order${drained===1?'':'s'} processed.`);
+      orders._refreshPendingBanner();
+      if(!document.getElementById('view-orders').classList.contains('hide')) orders.render();
+    } finally {
+      ui.busy(false);
+    }
+  },
+  async _refreshPendingBanner(){
+    const banner = document.getElementById('pending-push-banner');
+    if(!banner || !auth.isAdmin()){
+      if(banner) banner.classList.add('hide');
+      return;
+    }
+    try {
+      const r = await sb.rpc('shopify_pending_push_count');
+      if(r.error){ banner.classList.add('hide'); return; }
+      const n = Number(r.data || 0);
+      const countEl = document.getElementById('pending-push-count');
+      if(n === 0){ banner.classList.add('hide'); return; }
+      banner.classList.remove('hide');
+      if(countEl) countEl.textContent = String(n);
+    } catch(_){ banner.classList.add('hide'); }
   }
 };
 
@@ -6722,6 +6831,7 @@ async function boot(){
   /* Start the reminders poller. Wrapped so a table-missing error (before
      Dan runs reminders.sql) doesn't take down boot. */
   try { reminders._startPolling(); } catch(e){ console.warn('reminders poller not started', e); }
+  try { orders._startRetryPoll(); orders._refreshPendingBanner(); } catch(e){ console.warn('shopify retry poller not started', e); }
   } finally {
     /* Reset the guard so a future sign-in (after sign-out or refresh)
        can trigger boot again. */
@@ -6839,7 +6949,7 @@ const welcome = {
 })();
 
 sb.auth.onAuthStateChange((event) => {
-  if(event === 'SIGNED_OUT') { try{ reminders._stopPolling(); }catch(_){} location.reload(); return; }
+  if(event === 'SIGNED_OUT') { try{ reminders._stopPolling(); }catch(_){} try{ orders._stopRetryPoll(); }catch(_){} location.reload(); return; }
   if(event === 'PASSWORD_RECOVERY') { auth._recoveryEvent = true; auth.applyRecoveryFlow(); return; }
   /* SIGNED_IN fires when Supabase parses an access_token out of the URL hash
      (magic-link click), when a password sign-in completes, and on TOKEN

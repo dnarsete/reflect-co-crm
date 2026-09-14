@@ -552,6 +552,49 @@ async function getRepEmailForOrder(db: any, ord: any): Promise<string | null> {
   } catch (_) { return null; }
 }
 
+/* Duplicate-safe finalize helper: look up an EXISTING Shopify draft whose
+   note contains this CRM order's order_number. Used when the CRM has no
+   shopify_draft_order_id stored but a previous attempt may have actually
+   reached Shopify (e.g., first push created the draft, then the client
+   never received the response because the tab closed or the network
+   dropped). Adopting an orphan draft here prevents the retry from
+   creating a second draft in Shopify for the same CRM order.
+
+   Search strategy:
+     · Shopify Draft Orders API supports `note`-based lookup only via
+       full-list scan; there is no server-side substring filter. We tag
+       every reflect-created draft with "reflect-crm" so we can narrow
+       the list by tag first.
+     · With tag=reflect-crm, we page 250 at a time and scan the notes
+       client-side for the exact substring "· ORD-NNNN". Most stores
+       will have far fewer than 250 open reflect drafts at any moment
+       (drafts get completed on invoice payment and drop off), so this
+       is O(1) in practice.
+     · Returns the draft object if found, null otherwise. Caller decides
+       whether to adopt it. */
+async function findExistingDraftByOrderNumber(db: any, orderNumber: string): Promise<any | null> {
+  if (!orderNumber) return null;
+  try {
+    const path = `draft_orders.json?limit=250&status=open`;
+    const res = await shopifyFetch(db, path, { method: "GET" });
+    const drafts = res.body?.draft_orders || [];
+    /* Match on the exact " · ORD-NNNN" boundary so ORD-102 doesn't
+       collide with ORD-1024. */
+    const needle = ` · ${orderNumber}`;
+    for (const d of drafts) {
+      const note: string = String(d?.note || "");
+      const tags: string = String(d?.tags || "");
+      if (tags.includes("reflect-crm") && note.includes(needle)) {
+        return d;
+      }
+    }
+    return null;
+  } catch (e: any) {
+    console.warn("[shopify-sync] findExistingDraftByOrderNumber failed:", e?.message || e);
+    return null;
+  }
+}
+
 async function createDraftOrder(db: any, payload: any) {
   const orderId = payload?.order_id;
   const forceResend = payload?.force_resend === true;
@@ -559,6 +602,48 @@ async function createDraftOrder(db: any, payload: any) {
   const { data: ord, error } = await db
     .from("orders").select("*, account:accounts(*)").eq("id", orderId).single();
   if (error || !ord) throw new Error("Order not found");
+
+  /* Retry-queue bookkeeping — bump attempts up front so we don't lose
+     the counter if the function crashes mid-run. `push_state` was set
+     to 'in_progress' by shopify_claim_retry_batch() or by the client
+     immediately before this call. Manual "Push now" clicks pre-set it
+     too (see app.js orders.pushToShopify). */
+  const currentAttempts: number = Number(ord.shopify_push_attempts || 0) + 1;
+  await db.from("orders").update({
+    shopify_push_attempts: currentAttempts,
+    shopify_push_last_attempt_at: new Date().toISOString(),
+    shopify_push_locked_until: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+  }).eq("id", orderId);
+
+  /* Wrap the whole rest of the function so any failure gets the
+     pending_retry treatment (next_at scheduled by backoff, error saved
+     to shopify_push_last_error) instead of a silent CRM/Shopify
+     divergence. */
+  const markSucceeded = async () => {
+    await db.from("orders").update({
+      shopify_push_state: "succeeded",
+      shopify_push_next_at: null,
+      shopify_push_locked_until: null,
+      shopify_push_last_error: null,
+    }).eq("id", orderId);
+  };
+  const markFailed = async (msg: string) => {
+    /* Backoff mirrors the SQL helper shopify_retry_delay(attempts).
+       Attempt 1→1min, 2→5min, 3→15min, 4-24→1h, 25+→failed_permanent. */
+    let nextMs: number | null = null;
+    let state = "pending_retry";
+    if (currentAttempts <= 1) nextMs = 60 * 1000;
+    else if (currentAttempts === 2) nextMs = 5 * 60 * 1000;
+    else if (currentAttempts === 3) nextMs = 15 * 60 * 1000;
+    else if (currentAttempts <= 24) nextMs = 60 * 60 * 1000;
+    else { nextMs = null; state = "failed_permanent"; }
+    await db.from("orders").update({
+      shopify_push_state: state,
+      shopify_push_next_at: nextMs ? new Date(Date.now() + nextMs).toISOString() : null,
+      shopify_push_locked_until: null,
+      shopify_push_last_error: msg,
+    }).eq("id", orderId);
+  };
   if (ord.shopify_draft_order_id) {
     /* When the client explicitly asks to re-send an existing draft's invoice
        (customer says they never got it, etc.), skip the create-new-draft
@@ -636,7 +721,55 @@ async function createDraftOrder(db: any, payload: any) {
        did, DON'T short-circuit here — fall through to the create-new logic
        below so we make a fresh draft + send its invoice in one round trip. */
     if (ord.shopify_draft_order_id) {
+      await markSucceeded();
       return { already_linked: true, shopify_draft_order_id: ord.shopify_draft_order_id };
+    }
+  }
+
+  /* ADOPT-ORPHANED-DRAFT — before creating a new draft, check whether a
+     previous attempt actually created one in Shopify that we never
+     recorded. Prevents the "first push reached Shopify, response never
+     reached the CRM" race from producing a duplicate draft. */
+  if (!ord.shopify_draft_order_id && ord.order_number) {
+    const orphan = await findExistingDraftByOrderNumber(db, ord.order_number);
+    if (orphan?.id) {
+      const orphanId = String(orphan.id);
+      const orphanInvoiceUrl = orphan.invoice_url || null;
+      const orphanInvoiceSent = !!orphan.invoice_sent_at;
+      console.warn(`[shopify-sync] Adopting orphan draft ${orphanId} for order ${ord.order_number} — a prior attempt reached Shopify but the CRM lost the response.`);
+      await db.from("orders").update({
+        shopify_draft_order_id: orphanId,
+        shopify_status: orphanInvoiceSent ? "invoice_sent" : "draft",
+        shopify_invoice_url: orphanInvoiceUrl,
+      }).eq("id", orderId);
+      /* If Shopify says the invoice was already sent on this orphan
+         draft, don't send it again. Otherwise send it now. */
+      if (!orphanInvoiceSent && ord.account?.email) {
+        try {
+          const repEmail = await getRepEmailForOrder(db, ord);
+          await shopifyFetch(db, `draft_orders/${orphanId}/send_invoice.json`, {
+            method: "POST",
+            body: JSON.stringify({
+              draft_order_invoice: {
+                to: ord.account.email,
+                subject: "Lip TX Invoice",
+                ...(repEmail ? { bcc: [repEmail] } : {}),
+              },
+            }),
+          });
+          await db.from("orders").update({ shopify_status: "invoice_sent" }).eq("id", orderId);
+        } catch (e: any) {
+          /* Non-fatal — adoption still happened. Report but don't fail. */
+          console.warn("[shopify-sync] Orphan adopted, but send_invoice failed:", e?.message || e);
+        }
+      }
+      await markSucceeded();
+      return {
+        adopted: true,
+        shopify_draft_order_id: orphanId,
+        invoice_url: orphanInvoiceUrl,
+        invoice_sent: orphanInvoiceSent,
+      };
     }
   }
 
@@ -757,6 +890,10 @@ async function createDraftOrder(db: any, payload: any) {
         },
       });
     } catch (_) { /* never break the flow */ }
+    /* Mark failed BEFORE throwing so the retry queue schedules a next
+       attempt. Client sees the error immediately AND the poller picks
+       the order back up on backoff. */
+    await markFailed(e?.message || String(e));
     throw e;
   }
   const draftId = body?.draft_order?.id ? String(body.draft_order.id) : null;
@@ -812,6 +949,16 @@ async function createDraftOrder(db: any, payload: any) {
     }
   }
 
+  /* Mark the retry queue entry as resolved. Even if invoice_send failed
+     (invoiceSendError set) but the draft was created, we consider the
+     push "succeeded" — the draft exists in Shopify, admin can re-send
+     the invoice manually from the CRM's Re-send button. Leaving it in
+     pending_retry would produce duplicate drafts on next retry. */
+  if (draftId) {
+    await markSucceeded();
+  } else {
+    await markFailed("No draft ID returned from Shopify");
+  }
   return {
     created: true,
     shopify_draft_order_id: draftId,

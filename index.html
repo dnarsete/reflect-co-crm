@@ -135,6 +135,15 @@
     <section id="view-dashboard" class="view">
       <div class="section-h"><h1>Dashboard</h1></div>
 
+      <!-- Pending Shopify pushes banner (admin only). Shows when any
+           finalized order hasn't reached Shopify yet — retry queue is
+           auto-processing them, but admin can force a retry pass. -->
+      <div id="pending-push-banner" class="alert warn hide admin-only" style="margin-bottom:12px">
+        ⚠ <b><span id="pending-push-count">0</span> order(s) haven't reached Shopify yet.</b>
+        The retry queue is working on them automatically.
+        <button class="icon-btn" style="margin-left:10px" onclick="orders.retryAllPending()">Retry all now</button>
+      </div>
+
       <div class="card">
         <div class="kpi">
           <div class="tile"><div class="lbl">Accounts</div><div class="val" id="kpi-accounts">0</div></div>
