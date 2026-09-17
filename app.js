@@ -4409,6 +4409,7 @@ const materials = {
             </div>
             <button class="icon-btn primary" style="width:100px;text-align:center;flex:0 0 auto" onclick="materials.view('${p}')">👁 View</button>
             <button class="icon-btn" style="width:100px;text-align:center;flex:0 0 auto" onclick="materials.download('${p}')">⬇ Save</button>
+            ${repHidden ? '' : `<button class="icon-btn" style="width:100px;text-align:center;flex:0 0 auto" onclick="materials.copyLink('${p}')" title="Copy a 7-day download link for this asset — paste into email, SMS, social, wherever.">🔗 Copy link</button>`}
             ${repHidden ? '' : `<button class="icon-btn" style="width:100px;text-align:center;flex:0 0 auto" onclick="materials.email('${p}')">📧 Email</button>`}
             ${isAdmin?`<select class="icon-btn" style="width:100px;text-align:center;padding:6px 8px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;cursor:pointer;flex:0 0 auto" onchange="materials.recategorize('${p}', this.value); this.value='__edit'">
               <option value="__edit">✏️ Edit</option>
@@ -4476,34 +4477,28 @@ const materials = {
     body += `— ${repName}\n${repEmail}`;
 
     ui.modal(`
-      <h3>📧 Email ${links.length} selected material${links.length===1?'':'s'}</h3>
+      <h3>📧 Share ${links.length} selected material${links.length===1?'':'s'}</h3>
       <p class="muted" style="font-size:13px;margin:0 0 12px">
-        Opens your default mail app with download links to all ${links.length}
+        Ready-to-share message with download links to all ${links.length}
         selected item${links.length===1?'':'s'} across ${Object.keys(grouped).length}
         categor${Object.keys(grouped).length===1?'y':'ies'}. Links valid for 7 days.
+        Copy the message body, or hit "Open in mail app" to draft it — you type
+        the recipient in your mail app.
       </p>
       <div class="grid-2">
-        <div style="grid-column:1/-1">
-          <label>To (recipient email)</label>
-          <input id="mat-email-to" type="email" placeholder="recipient@example.com" autofocus/>
-        </div>
-        <div style="grid-column:1/-1">
-          <label>From <span class="muted" style="font-size:11px">(from your Reflect Co profile)</span></label>
-          <input id="mat-email-from" type="email" value="${esc(repEmail)}" readonly style="opacity:0.7"/>
-        </div>
         <div style="grid-column:1/-1">
           <label>Subject</label>
           <input id="mat-email-subject" value="${esc(subject)}"/>
         </div>
         <div style="grid-column:1/-1">
           <label>Message</label>
-          <textarea id="mat-email-body" rows="12" style="font-family:inherit">${esc(body)}</textarea>
+          <textarea id="mat-email-body" rows="12" style="font-family:inherit" autofocus>${esc(body)}</textarea>
         </div>
       </div>
       <div id="mat-email-err" class="alert err hide" style="margin-top:10px"></div>
       <div class="row" style="gap:8px;margin-top:12px">
-        <button class="icon-btn primary" onclick="materials._sendEmail()">Open in mail app</button>
-        <button class="icon-btn" onclick="materials._copyEmailBody()">📋 Copy body</button>
+        <button class="icon-btn primary" onclick="materials._copyEmailBody()">📋 Copy message</button>
+        <button class="icon-btn" onclick="materials._sendEmail()">Open in mail app</button>
         <button class="icon-btn ghost" onclick="ui.closeModal()">Cancel</button>
       </div>
     `);
@@ -4601,6 +4596,25 @@ const materials = {
     a.remove();
   },
 
+  /* Generate a 7-day shareable download link for a single asset and copy
+     it to clipboard. Paste it into email, SMS, social — anywhere. */
+  async copyLink(path){
+    const { data, error } = await sb.storage.from(materials.BUCKET).createSignedUrl(path, 7 * 24 * 60 * 60);
+    if(error){ ui.err(error); return; }
+    try {
+      await navigator.clipboard.writeText(data.signedUrl);
+      ui.toast('🔗 Link copied — expires in 7 days.');
+    } catch(_){
+      /* Older browsers: fall back to a temp textarea + execCommand */
+      const t = document.createElement('textarea');
+      t.value = data.signedUrl;
+      document.body.appendChild(t); t.select();
+      document.execCommand('copy');
+      t.remove();
+      ui.toast('🔗 Link copied — expires in 7 days.');
+    }
+  },
+
   async remove(path){
     if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
     if(!confirm(`Delete "${path.split('/').pop()}"? Reps will no longer be able to download it.`)) return;
@@ -4639,45 +4653,32 @@ const materials = {
       </p>
       <div class="grid-2">
         <div style="grid-column:1/-1">
-          <label>To (recipient email)</label>
-          <input id="mat-email-to" type="email" placeholder="customer@example.com" autofocus/>
-        </div>
-        <div style="grid-column:1/-1">
-          <label>From <span class="muted" style="font-size:11px">(from your Reflect Co profile — mail app may override with its own sender)</span></label>
-          <input id="mat-email-from" type="email" value="${esc(repEmail)}" readonly style="opacity:0.7"/>
-        </div>
-        <div style="grid-column:1/-1">
           <label>Subject</label>
           <input id="mat-email-subject" value="${esc(subject)}"/>
         </div>
         <div style="grid-column:1/-1">
           <label>Message</label>
-          <textarea id="mat-email-body" rows="7" style="font-family:inherit">${esc(body)}</textarea>
+          <textarea id="mat-email-body" rows="7" style="font-family:inherit" autofocus>${esc(body)}</textarea>
         </div>
       </div>
       <div id="mat-email-err" class="alert err hide" style="margin-top:10px"></div>
       <div class="row" style="gap:8px;margin-top:12px">
-        <button class="icon-btn primary" onclick="materials._sendEmail()">Open in mail app</button>
-        <button class="icon-btn" onclick="materials._copyEmailBody()">📋 Copy body</button>
+        <button class="icon-btn primary" onclick="materials._copyEmailBody()">📋 Copy message</button>
+        <button class="icon-btn" onclick="materials._sendEmail()">Open in mail app</button>
         <button class="icon-btn ghost" onclick="ui.closeModal()">Cancel</button>
       </div>
     `);
   },
 
   async _sendEmail(){
-    const to = (document.getElementById('mat-email-to')?.value || '').trim();
+    /* No recipient here — the mail app is where you pick who this goes to.
+       The CRM's job stops at the message itself. */
     const subject = (document.getElementById('mat-email-subject')?.value || '').trim();
     const body = document.getElementById('mat-email-body')?.value || '';
-    const errEl = document.getElementById('mat-email-err');
-    if(!to || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)){
-      errEl.textContent = 'Enter a valid recipient email.';
-      errEl.classList.remove('hide');
-      return;
-    }
-    const url = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    const url = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
     window.location.href = url;
     ui.closeModal();
-    ui.toast('Opening mail app…');
+    ui.toast('Opening mail app… pick the recipient there.');
   },
 
   async _copyEmailBody(){
@@ -4743,22 +4744,18 @@ const materials = {
       </p>
       <div class="grid-2">
         <div style="grid-column:1/-1">
-          <label>To (recipient email)</label>
-          <input id="mat-email-to" type="email" placeholder="partner@example.com" autofocus/>
-        </div>
-        <div style="grid-column:1/-1">
           <label>Subject</label>
           <input id="mat-email-subject" value="${esc(subject)}"/>
         </div>
         <div style="grid-column:1/-1">
           <label>Message</label>
-          <textarea id="mat-email-body" rows="12" style="font-family:inherit">${esc(body)}</textarea>
+          <textarea id="mat-email-body" rows="12" style="font-family:inherit" autofocus>${esc(body)}</textarea>
         </div>
       </div>
       <div id="mat-email-err" class="alert err hide" style="margin-top:10px"></div>
       <div class="row" style="gap:8px;margin-top:12px">
-        <button class="icon-btn primary" onclick="materials._sendEmail()">Open in mail app</button>
-        <button class="icon-btn" onclick="materials._copyEmailBody()">📋 Copy body</button>
+        <button class="icon-btn primary" onclick="materials._copyEmailBody()">📋 Copy message</button>
+        <button class="icon-btn" onclick="materials._sendEmail()">Open in mail app</button>
         <button class="icon-btn ghost" onclick="ui.closeModal()">Cancel</button>
       </div>
     `);
