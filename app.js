@@ -3805,6 +3805,12 @@ const reports = {
     const preList = (data||[]).filter(o=>{
       if(acct && !((o.account?.account_number||'').toUpperCase().includes(acct))) return false;
       if(typ && o.account?.type!==typ) return false;
+      /* Revenue-producing orders only. A sample case sent at $0 total
+         is not a closed deal and doesn't earn commission — drop it from
+         every report tile, revenue-trend, leaderboard, and by-rep table.
+         The order still exists in the Orders list; this only affects
+         Reports & KPIs. */
+      if(Number(o.total || 0) <= 0) return false;
       return true;
     });
     /* Stash the full pre-payment-filter list so the summary can show
