@@ -1984,18 +1984,23 @@ const accounts = {
           <div class="muted" style="font-size:12px">rep ${esc(a.rep_id||'—')} · ${esc(a.email||'no email')} · created ${String(a.created_at||'').slice(0,10)}</div>
           <div class="badge ${dataClass}" style="font-size:11px;margin-top:4px">${esc(dataStr)}</div>
         </div>
+        <button class="icon-btn primary" onclick="accounts._openMergePicker('${a.id}')" title="Combine this account's info with another in the group">🔗 Merge into this</button>
         <button class="icon-btn danger" onclick="accounts._importDeleteDup('${a.id}')">Delete this one</button>
       </div>`;
     };
+    const isManual = st.mode === 'manual_scan';
+    const heading = isManual ? 'Duplicate accounts found' : 'Possible duplicates in your import';
+    const intro = isManual
+      ? `Scanned all accounts by name+city, shared email, and shared street address. Found ${activeGroups.length} group${activeGroups.length===1?'':'s'} that may be duplicates. For each: merge to combine info into one row, delete individual copies, or skip if it's not actually a duplicate.`
+      : `${activeGroups.length} business${activeGroups.length===1?'':'es'} in the DB now have more than one account with the same name + city. For each: merge to combine into one, delete individual copies, or skip if not actually a duplicate.`;
     ui.modal(`
-      <h3>Possible duplicates in your import</h3>
-      <p class="muted" style="font-size:13px;margin:0 0 12px">
-        ${activeGroups.length} business${activeGroups.length===1?'':'es'} in the DB now have more than one account with the same name + city. Review each and delete the copies you don't want. Accounts with attached orders/notes/reminders/contacts show what would be lost — deleting cascades.
-      </p>
+      <h3>${heading}</h3>
+      <p class="muted" style="font-size:13px;margin:0 0 12px">${intro} Accounts with attached orders/notes/reminders/contacts show what would be lost — deleting cascades.</p>
       ${activeGroups.map(g => `
         <div style="border:1px solid var(--line); border-radius:6px; margin:8px 0">
-          <div style="padding:8px 10px; background:var(--panel-2, rgba(0,0,0,0.15)); border-bottom:1px solid var(--line); font-weight:600">
-            ${esc(g[0].business_name)} — ${esc(g[0].business_city || '(no city)')}
+          <div style="padding:8px 10px; background:var(--panel-2, rgba(0,0,0,0.15)); border-bottom:1px solid var(--line); display:flex;justify-content:space-between;align-items:center;gap:8px">
+            <div style="font-weight:600">${esc(g[0].business_name)} — ${esc(g[0].business_city || '(no city)')}</div>
+            <button class="icon-btn ghost" style="padding:2px 8px;font-size:12px" onclick="accounts._skipDupGroup('${g[0].id}')" title="Not a real duplicate — hide this group for the session">Skip</button>
           </div>
           ${g.map(rowHtml).join('')}
         </div>
@@ -2026,6 +2031,289 @@ const accounts = {
     accounts._renderImportDupModal();
     accounts.render();
     dashboard.render();
+  },
+
+  /* Admin-facing "scan the whole DB for duplicates" trigger. Reuses the
+     same review + merge modal the post-import flow uses. Matches on:
+       · name + city (tightest match)
+       · shared email (catches typo variations of the name)
+       · street + city (catches spelling variations of both name and email)
+     A group is returned when 2+ rows agree on ANY of those keys.
+     Skipped rows are session-only (a "skip" button hides a group so
+     admin can defer the decision). */
+  _dupIgnoreIds: new Set(),
+  async findDuplicates(){
+    if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
+    ui.busy(true);
+    const r = await sb.from('accounts').select('id, account_number, business_name, business_city, business_state, business_zip, business_street, email, rep_id, created_at');
+    ui.busy(false);
+    if(r.error){ ui.err(r.error); return; }
+    const all = r.data || [];
+    const norm = s => String(s || '').trim().toLowerCase();
+
+    /* Union-find so a chain (A~B via name, B~C via email) becomes one
+       group instead of two overlapping pairs. */
+    const parent = {};
+    const find = x => (parent[x] === x ? x : parent[x] = find(parent[x]));
+    const union = (a, b) => { const ra = find(a), rb = find(b); if(ra !== rb) parent[ra] = rb; };
+    for(const a of all){ parent[a.id] = a.id; }
+
+    const bucketsByKey = (getKey) => {
+      const m = {};
+      for(const a of all){
+        const k = getKey(a);
+        if(!k) continue;
+        (m[k] = m[k] || []).push(a.id);
+      }
+      return m;
+    };
+    const link = (buckets) => {
+      for(const ids of Object.values(buckets)){
+        if(ids.length < 2) continue;
+        for(let i = 1; i < ids.length; i++) union(ids[0], ids[i]);
+      }
+    };
+    link(bucketsByKey(a => norm(a.business_name) ? norm(a.business_name) + '|' + norm(a.business_city) : ''));
+    link(bucketsByKey(a => norm(a.email)));
+    link(bucketsByKey(a => norm(a.business_street) && norm(a.business_city) ? norm(a.business_street) + '|' + norm(a.business_city) : ''));
+
+    /* Collect groups (size ≥ 2) that aren't already skipped this session. */
+    const byRoot = {};
+    for(const a of all){
+      if(accounts._dupIgnoreIds.has(a.id)) continue;
+      const root = find(a.id);
+      (byRoot[root] = byRoot[root] || []).push(a);
+    }
+    const groups = Object.values(byRoot).filter(g => g.length > 1);
+
+    if(!groups.length){
+      ui.toast('No duplicates found. 🎉');
+      return;
+    }
+
+    /* Sort each group by created_at ASC so the older record shows first. */
+    groups.forEach(g => g.sort((a, b) => String(a.created_at||'').localeCompare(String(b.created_at||''))));
+
+    /* Fetch attached-data counts for every candidate. */
+    const ids = groups.flat().map(a => a.id);
+    const [ordersR, notesR, remindersR, contactsR] = await Promise.all([
+      sb.from('orders').select('id, account_id').in('account_id', ids),
+      sb.from('account_notes').select('id, account_id').in('account_id', ids),
+      sb.from('reminders').select('id, account_id').in('account_id', ids),
+      sb.from('account_contacts').select('id, account_id').in('account_id', ids).is('deleted_at', null),
+    ]);
+    const countBy = arr => {
+      const m = {};
+      for(const x of (arr.data || [])) m[x.account_id] = (m[x.account_id] || 0) + 1;
+      return m;
+    };
+    accounts._importDupState = {
+      groups,
+      newIdSet: new Set(),   /* nothing is "just imported" in this manual scan */
+      ordersByAcc:   countBy(ordersR),
+      notesByAcc:    countBy(notesR),
+      remindersByAcc: countBy(remindersR),
+      contactsByAcc: countBy(contactsR),
+      mode: 'manual_scan'
+    };
+    accounts._renderImportDupModal();
+  },
+
+  _skipDupGroup(firstId){
+    const st = accounts._importDupState;
+    if(!st) return;
+    const g = st.groups.find(gr => gr.some(a => a.id === firstId));
+    if(!g) return;
+    /* Add every id in the group to the session-ignore set so future
+       findDuplicates() scans skip it too, and drop it from the modal. */
+    for(const a of g) accounts._dupIgnoreIds.add(a.id);
+    st.groups = st.groups.filter(gr => gr !== g);
+    accounts._renderImportDupModal();
+  },
+
+  /* ---------- MERGE ACCOUNTS ---------- */
+  /* Given a chosen "primary" account and its duplicate group, pick which
+     row to fold into it. Opens a follow-up modal that shows the merge
+     preview — every field where the primary is empty and the other has a
+     value gets highlighted as a fill-in, related data (orders, notes,
+     reminders, contacts, forecasts) shows the counts that will move over,
+     and a single Apply Merge button commits everything as a series of
+     table updates + one final delete. */
+  _mergableFields: [
+    'business_name','billing_name','type',
+    'business_street','business_suite','business_city','business_state','business_zip',
+    'billing_street','billing_suite','billing_city','billing_state','billing_zip',
+    'business_address','billing_address','billing_same_as_business',
+    'business_phone','cell','email','website',
+    'sales_tax_license','sales_tax_state','tax_exempt','opt_in',
+    'shopify_customer_id'
+  ],
+  _openMergePicker(keepId){
+    const st = accounts._importDupState;
+    if(!st) return;
+    /* Find the group this account is in and get the OTHER rows in it. */
+    const group = (st.groups || []).find(g => g.some(a => a.id === keepId));
+    if(!group) return;
+    const others = group.filter(a => a.id !== keepId);
+    if(others.length === 0){ ui.toast('Nothing to merge — this is the only row left in the group.'); return; }
+    /* Single-other case (the common one from a pair) skips the picker
+       and goes straight to preview. */
+    if(others.length === 1){
+      accounts._openMergePreview(keepId, others[0].id);
+      return;
+    }
+    /* 3+ rows in a group — let admin pick which "other" to fold in. */
+    const list = others.map(a => `
+      <div style="padding:6px 0;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center">
+        <div style="flex:1"><b>${esc(a.account_number)}</b> · rep ${esc(a.rep_id||'—')} · ${esc(a.email||'no email')}</div>
+        <button class="icon-btn primary" onclick="accounts._openMergePreview('${keepId}','${a.id}')">Fold this in →</button>
+      </div>`).join('');
+    ui.modal(`
+      <h3>Which one do you want to fold in?</h3>
+      <p class="muted" style="font-size:13px">Its info will fill in any empty fields on the primary, and its orders/notes/reminders/contacts/forecasts will move over. Then it'll be deleted.</p>
+      ${list}
+      <div class="row" style="gap:8px;margin-top:10px"><button class="icon-btn ghost" onclick="accounts._renderImportDupModal()">Back to duplicates</button></div>
+    `);
+  },
+
+  async _openMergePreview(keepId, otherId){
+    ui.busy(true);
+    const [keepR, otherR] = await Promise.all([
+      sb.from('accounts').select('*').eq('id', keepId).single(),
+      sb.from('accounts').select('*').eq('id', otherId).single(),
+    ]);
+    ui.busy(false);
+    if(keepR.error || otherR.error){ ui.err(keepR.error || otherR.error); return; }
+    const keep = keepR.data, other = otherR.data;
+
+    /* Field-level analysis: which fields will fill in, which will stay,
+       which are the same on both. Only mergableFields are considered so
+       we never touch id/account_number/created_at/rep_id etc. */
+    const isEmpty = v => v === null || v === undefined || v === '' || v === false;
+    const fills = []; /* filled from other */
+    const conflicts = []; /* both non-empty, differ */
+    const same = []; /* both same value */
+    for(const f of accounts._mergableFields){
+      const kv = keep[f], ov = other[f];
+      if(isEmpty(kv) && !isEmpty(ov)) fills.push({field: f, value: ov});
+      else if(!isEmpty(kv) && !isEmpty(ov) && String(kv) !== String(ov)) conflicts.push({field: f, keep: kv, other: ov});
+      else if(!isEmpty(kv) && !isEmpty(ov)) same.push({field: f, value: kv});
+    }
+
+    /* Related-data counts to move over (all get their account_id set to keepId). */
+    const [ords, notes, rems, conts, fcsts] = await Promise.all([
+      sb.from('orders').select('id', {count:'exact', head:true}).eq('account_id', otherId),
+      sb.from('account_notes').select('id', {count:'exact', head:true}).eq('account_id', otherId),
+      sb.from('reminders').select('id', {count:'exact', head:true}).eq('account_id', otherId),
+      sb.from('account_contacts').select('id', {count:'exact', head:true}).eq('account_id', otherId).is('deleted_at', null),
+      sb.from('forecasts').select('id', {count:'exact', head:true}).eq('account_id', otherId),
+    ]);
+    const move = {
+      orders:    ords.count || 0,
+      notes:     notes.count || 0,
+      reminders: rems.count || 0,
+      contacts:  conts.count || 0,
+      forecasts: fcsts.count || 0,
+    };
+
+    /* Stash the plan so Apply Merge can execute without re-fetching. */
+    accounts._mergePlan = { keepId, otherId, fills, conflicts, move };
+
+    const fmtVal = v => v === null || v === undefined ? '(null)' : String(v);
+    const fillList = fills.length
+      ? `<div style="margin-top:12px"><b>${fills.length} field${fills.length===1?'':'s'} will fill in from ${esc(other.account_number)}:</b><ul style="margin:4px 0 0 20px;padding:0">${
+          fills.map(f => `<li style="font-size:13px"><b>${esc(f.field)}</b>: ${esc(fmtVal(f.value))}</li>`).join('')
+        }</ul></div>`
+      : '';
+    const conflictList = conflicts.length
+      ? `<div style="margin-top:12px"><b>${conflicts.length} conflict${conflicts.length===1?'':'s'} — primary wins (nothing overwritten):</b><ul style="margin:4px 0 0 20px;padding:0">${
+          conflicts.map(c => `<li style="font-size:13px"><b>${esc(c.field)}</b>: keep <span class="badge ok">${esc(fmtVal(c.keep))}</span>, drop <span class="badge">${esc(fmtVal(c.other))}</span></li>`).join('')
+        }</ul></div>`
+      : '';
+    const moveList = (move.orders || move.notes || move.reminders || move.contacts || move.forecasts)
+      ? `<div style="margin-top:12px"><b>Related data moving to ${esc(keep.account_number)}:</b><ul style="margin:4px 0 0 20px;padding:0">${
+          [
+            move.orders    ? `<li>${move.orders} order${move.orders===1?'':'s'}</li>` : '',
+            move.notes     ? `<li>${move.notes} note${move.notes===1?'':'s'}</li>` : '',
+            move.reminders ? `<li>${move.reminders} reminder${move.reminders===1?'':'s'}</li>` : '',
+            move.contacts  ? `<li>${move.contacts} contact${move.contacts===1?'':'s'}</li>` : '',
+            move.forecasts ? `<li>${move.forecasts} forecast${move.forecasts===1?'':'s'}</li>` : '',
+          ].filter(Boolean).join('')
+        }</ul></div>`
+      : '<div style="margin-top:12px" class="muted" style="font-size:13px">No orders/notes/reminders/contacts/forecasts on the record being folded in.</div>';
+
+    ui.modal(`
+      <h3>Preview merge</h3>
+      <div style="padding:8px;background:var(--panel-2, rgba(0,0,0,0.08));border-radius:6px">
+        <b>Keeping:</b> ${esc(keep.account_number)} · ${esc(keep.business_name||'(unnamed)')}<br>
+        <b>Folding in & deleting:</b> ${esc(other.account_number)} · ${esc(other.business_name||'(unnamed)')}
+      </div>
+      ${fillList || '<div style="margin-top:12px" class="muted" style="font-size:13px">No empty fields on the primary to fill in.</div>'}
+      ${conflictList}
+      ${moveList}
+      ${same.length ? `<div class="muted" style="font-size:11px;margin-top:12px">${same.length} field${same.length===1?'':'s'} already match on both records — no change needed.</div>` : ''}
+      <div class="row" style="gap:8px;margin-top:14px">
+        <button class="icon-btn primary" onclick="accounts._applyMerge()">Apply merge</button>
+        <button class="icon-btn ghost" onclick="accounts._renderImportDupModal()">Back to duplicates</button>
+      </div>
+    `);
+  },
+
+  async _applyMerge(){
+    const plan = accounts._mergePlan;
+    if(!plan){ ui.toast('No merge plan loaded.'); return; }
+    const { keepId, otherId, fills, move } = plan;
+    ui.busy(true);
+    try {
+      /* 1. Apply field fills — only fields where keep was empty. */
+      if(fills.length){
+        const patch = {};
+        for(const f of fills){ patch[f.field] = f.value; }
+        const upd = await sb.from('accounts').update(patch).eq('id', keepId);
+        if(upd.error) throw upd.error;
+      }
+      /* 2. Move related data by re-pointing account_id. Each is idempotent
+         (no unique constraint on account_id in these tables), so a partial
+         failure at any step is safely re-runnable. */
+      if(move.orders){
+        const r = await sb.from('orders').update({ account_id: keepId }).eq('account_id', otherId);
+        if(r.error) throw r.error;
+      }
+      if(move.notes){
+        const r = await sb.from('account_notes').update({ account_id: keepId }).eq('account_id', otherId);
+        if(r.error) throw r.error;
+      }
+      if(move.reminders){
+        const r = await sb.from('reminders').update({ account_id: keepId }).eq('account_id', otherId);
+        if(r.error) throw r.error;
+      }
+      if(move.contacts){
+        const r = await sb.from('account_contacts').update({ account_id: keepId }).eq('account_id', otherId);
+        if(r.error) throw r.error;
+      }
+      if(move.forecasts){
+        const r = await sb.from('forecasts').update({ account_id: keepId }).eq('account_id', otherId);
+        if(r.error) throw r.error;
+      }
+      /* 3. Delete the folded-in row. At this point nothing points to it. */
+      const del = await sb.from('accounts').delete().eq('id', otherId).select();
+      if(del.error) throw del.error;
+
+      accounts._mergePlan = null;
+      /* Prune from the dupe review state and re-render. */
+      const st = accounts._importDupState;
+      if(st){
+        st.groups = st.groups.map(g => g.filter(a => a.id !== otherId));
+      }
+      ui.busy(false);
+      ui.toast(`Merged ${fills.length} field${fills.length===1?'':'s'} and ${move.orders+move.notes+move.reminders+move.contacts+move.forecasts} related record${(move.orders+move.notes+move.reminders+move.contacts+move.forecasts)===1?'':'s'}.`);
+      accounts._renderImportDupModal();
+      accounts.render();
+      dashboard.render();
+    } catch(e){
+      ui.busy(false);
+      ui.err(e);
+    }
   }
 };
 

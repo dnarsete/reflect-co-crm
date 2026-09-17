@@ -186,6 +186,7 @@
             <option value="">All types</option>
           </select>
           <select id="acc-rep-filter" class="admin-only hide" onchange="accounts.render()" style="max-width:220px"></select>
+          <button class="icon-btn admin-only hide" onclick="accounts.findDuplicates()" title="Scan all accounts for possible duplicates (name+city, shared email, or shared street address).">🔍 Find duplicates</button>
         </div>
         <div id="acc-list"></div>
       </div>
