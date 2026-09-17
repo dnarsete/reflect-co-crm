@@ -3220,15 +3220,64 @@ const orders = {
      step catches "first attempt reached Shopify but CRM missed the
      response" and reuses the existing draft. */
   _retryPollTimer: null,
+  _paymentPollTimer: null,
   _startRetryPoll(){
     if(!auth.isAdmin()) return;
     if(orders._retryPollTimer) return;
     orders._retryPollTimer = setInterval(() => orders._processRetryQueue(), 60_000);
     /* Fire once shortly after boot so pending pushes drain immediately. */
     setTimeout(() => orders._processRetryQueue(), 5000);
+
+    /* Also start the payment-status auto-poll. Shopify webhooks are gated
+       by Supabase's newer publishable-key auth on edge functions and we
+       can't disable it without CLI (which Dan doesn't use), so we pull
+       payment status from Shopify every 15 minutes instead. Same net
+       effect as webhooks — just polled instead of pushed. Bursts after
+       an admin sign-in catch up any drift accumulated while nobody was
+       looking. */
+    if(orders._paymentPollTimer) return;
+    orders._paymentPollTimer = setInterval(() => orders._autoSyncPayments(), 15 * 60 * 1000);
+    /* First run 30 s after sign-in so it doesn't fight boot for a slot. */
+    setTimeout(() => orders._autoSyncPayments(), 30_000);
   },
   _stopRetryPoll(){
     if(orders._retryPollTimer){ clearInterval(orders._retryPollTimer); orders._retryPollTimer = null; }
+    if(orders._paymentPollTimer){ clearInterval(orders._paymentPollTimer); orders._paymentPollTimer = null; }
+  },
+
+  /* Silent version of syncPendingPayments — no confirm dialog, no result
+     modal, just runs in the background. Logs to console only. Skips if
+     nothing pending so we don't hit Shopify for no reason. */
+  async _autoSyncPayments(){
+    if(!auth.isAdmin() || shopify.mode() !== 'live') return;
+    try {
+      const pending = await sb.from('orders')
+        .select('id, order_number, shopify_status')
+        .in('shopify_status', ['draft', 'invoice_sent'])
+        .not('is_test', 'is', true)
+        .not('shopify_draft_order_id', 'is', null)
+        .limit(50);
+      if(pending.error || !pending.data || !pending.data.length) return;
+      let promoted = 0;
+      for(const ord of pending.data){
+        const before = ord.shopify_status;
+        try {
+          await shopify.call('get_order_status', { order_id: ord.id });
+          const after = await sb.from('orders').select('shopify_status').eq('id', ord.id).single();
+          if(after.data?.shopify_status !== before) promoted++;
+        } catch(_){}
+        await new Promise(r => setTimeout(r, 400));
+      }
+      if(promoted > 0){
+        console.log(`[auto-sync-payments] ${promoted} order(s) advanced.`);
+        /* If admin is looking at Reports right now, refresh it. */
+        if(!document.getElementById('view-reports')?.classList.contains('hide')){
+          try { reports.run && reports.run(); } catch(_){}
+        }
+      }
+    } catch(e){
+      console.warn('[auto-sync-payments] failed:', e?.message || e);
+    }
   },
   async _processRetryQueue(){
     if(!auth.isAdmin()) return;
