@@ -1824,6 +1824,8 @@ const accounts = {
     const CHUNK = 25;
     let inserted = 0, failed = 0, notesInserted = 0;
     const failedMsgs = [];
+    const insertedIds = [];  /* collect IDs so the post-commit dedupe modal
+                                can compare them against the rest of the DB */
 
     for(let i = 0; i < inserts.length; i += CHUNK){
       const chunk = inserts.slice(i, i + CHUNK);
@@ -1838,6 +1840,7 @@ const accounts = {
             failedMsgs.push(`${item.payload.business_name}: ${one.error.message}`);
           } else {
             inserted++;
+            insertedIds.push(one.data.id);
             if(item.notes){
               const n = await sb.from('account_notes').insert({
                 account_id: one.data.id,
@@ -1854,6 +1857,7 @@ const accounts = {
            so we can zip returned ids to our chunk items 1:1. */
         const ids = (data || []).map(d => d.id);
         inserted += ids.length;
+        for(const id of ids) insertedIds.push(id);
         const noteRows = chunk
           .map((item, idx) => ({ item, id: ids[idx] }))
           .filter(x => x.item.notes && x.id)
@@ -1880,7 +1884,146 @@ const accounts = {
     if(dupCount) summary += ` Skipped ${dupCount} duplicate${dupCount===1?'':'s'}.`;
     if(errCount) summary += ` Skipped ${errCount} with errors.`;
     if(failed) summary += ` ${failed} failed on insert.`;
-    alert(summary + (failedMsgs.length ? '\n\nFirst failure:\n' + failedMsgs[0] : ''));
+    ui.toast(summary);
+    if(failedMsgs.length) console.warn('Import failures:', failedMsgs);
+    accounts.render();
+    dashboard.render();
+
+    /* Cross-check just-imported rows against everything else in the DB
+       (name + city normalized). If any match an already-existing account,
+       show a review modal so the user can pick which to delete. Runs
+       even if inserted === 0, in case a within-sheet duplicate slipped
+       through the pre-commit filter. */
+    if(insertedIds.length > 0){
+      try { await accounts._importReviewDuplicates(insertedIds); }
+      catch(e){ console.warn('post-import dedupe review failed:', e); }
+    }
+  },
+
+  /* Post-import dedupe review — scan the newly created accounts against
+     the rest of the DB, group by lower(business_name) + lower(business_
+     city), and show a modal listing each group so the user can delete
+     the copies they don't want. Only groups that include at least one
+     just-imported row are shown (existing pre-import duplicates aren't
+     surfaced here — those are for a separate Admin cleanup tool if
+     needed). */
+  async _importReviewDuplicates(newIds){
+    const newIdSet = new Set(newIds);
+    const r = await sb.from('accounts')
+      .select('id, account_number, business_name, business_city, business_state, email, rep_id, created_at');
+    if(r.error){ ui.err(r.error); return; }
+    const all = r.data || [];
+    const norm = s => String(s || '').trim().toLowerCase();
+
+    /* Group by name + city; empty name never groups. */
+    const buckets = {};
+    for(const a of all){
+      const nm = norm(a.business_name);
+      if(!nm) continue;
+      const key = nm + '|' + norm(a.business_city);
+      (buckets[key] = buckets[key] || []).push(a);
+    }
+    const groups = Object.values(buckets)
+      .filter(g => g.length > 1 && g.some(a => newIdSet.has(a.id)))
+      .map(g => g.slice().sort((a, b) => String(a.created_at||'').localeCompare(String(b.created_at||''))));
+
+    if(!groups.length) return;
+
+    /* Fetch attached-data counts per candidate so admin can see the
+       impact of deleting each row. Cascade will remove orders/notes/
+       reminders/contacts — surfacing counts prevents accidental data
+       loss. */
+    const ids = groups.flat().map(a => a.id);
+    const [ordersR, notesR, remindersR, contactsR] = await Promise.all([
+      sb.from('orders').select('id, account_id').in('account_id', ids),
+      sb.from('account_notes').select('id, account_id').in('account_id', ids),
+      sb.from('reminders').select('id, account_id').in('account_id', ids),
+      sb.from('account_contacts').select('id, account_id').in('account_id', ids).is('deleted_at', null),
+    ]);
+    const countBy = arr => {
+      const m = {};
+      for(const x of (arr.data || [])) m[x.account_id] = (m[x.account_id] || 0) + 1;
+      return m;
+    };
+    const ordersByAcc   = countBy(ordersR);
+    const notesByAcc    = countBy(notesR);
+    const remindersByAcc = countBy(remindersR);
+    const contactsByAcc = countBy(contactsR);
+
+    /* Stash on the module so delete/close handlers can find the current groups. */
+    accounts._importDupState = { groups, newIdSet, ordersByAcc, notesByAcc, remindersByAcc, contactsByAcc };
+    accounts._renderImportDupModal();
+  },
+
+  _renderImportDupModal(){
+    const st = accounts._importDupState;
+    if(!st) return;
+    const { groups, newIdSet, ordersByAcc, notesByAcc, remindersByAcc, contactsByAcc } = st;
+    const activeGroups = groups.filter(g => g.length > 1);
+    if(!activeGroups.length){
+      ui.closeModal();
+      ui.toast('All duplicates resolved.');
+      return;
+    }
+    const rowHtml = (a) => {
+      const nOrders = ordersByAcc[a.id] || 0;
+      const nNotes  = notesByAcc[a.id] || 0;
+      const nRem    = remindersByAcc[a.id] || 0;
+      const nCont   = contactsByAcc[a.id] || 0;
+      const isNew = newIdSet.has(a.id);
+      const attached = [];
+      if(nOrders) attached.push(`${nOrders} order${nOrders===1?'':'s'}`);
+      if(nNotes) attached.push(`${nNotes} note${nNotes===1?'':'s'}`);
+      if(nRem) attached.push(`${nRem} reminder${nRem===1?'':'s'}`);
+      if(nCont) attached.push(`${nCont} contact${nCont===1?'':'s'}`);
+      const dataStr = attached.length ? attached.join(', ') : 'no attached data';
+      const dataClass = attached.length ? 'err' : 'ok';
+      return `<div style="padding:8px; border-top:1px solid var(--line); display:flex; gap:8px; align-items:center;flex-wrap:wrap">
+        <div style="flex:1;min-width:200px">
+          <div><b>${esc(a.account_number)}</b>${isNew ? ' <span class="badge warn">just imported</span>' : ' <span class="badge info">existing</span>'}</div>
+          <div class="muted" style="font-size:12px">rep ${esc(a.rep_id||'—')} · ${esc(a.email||'no email')} · created ${String(a.created_at||'').slice(0,10)}</div>
+          <div class="badge ${dataClass}" style="font-size:11px;margin-top:4px">${esc(dataStr)}</div>
+        </div>
+        <button class="icon-btn danger" onclick="accounts._importDeleteDup('${a.id}')">Delete this one</button>
+      </div>`;
+    };
+    ui.modal(`
+      <h3>Possible duplicates in your import</h3>
+      <p class="muted" style="font-size:13px;margin:0 0 12px">
+        ${activeGroups.length} business${activeGroups.length===1?'':'es'} in the DB now have more than one account with the same name + city. Review each and delete the copies you don't want. Accounts with attached orders/notes/reminders/contacts show what would be lost — deleting cascades.
+      </p>
+      ${activeGroups.map(g => `
+        <div style="border:1px solid var(--line); border-radius:6px; margin:8px 0">
+          <div style="padding:8px 10px; background:var(--panel-2, rgba(0,0,0,0.15)); border-bottom:1px solid var(--line); font-weight:600">
+            ${esc(g[0].business_name)} — ${esc(g[0].business_city || '(no city)')}
+          </div>
+          ${g.map(rowHtml).join('')}
+        </div>
+      `).join('')}
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="icon-btn ghost" onclick="ui.closeModal(); accounts._importDupState=null">Close — keep all</button>
+      </div>
+    `);
+  },
+
+  async _importDeleteDup(accountId){
+    const st = accounts._importDupState;
+    if(!st) return;
+    const nOrd = st.ordersByAcc[accountId] || 0;
+    const nNotes = st.notesByAcc[accountId] || 0;
+    const nRem = st.remindersByAcc[accountId] || 0;
+    const nCont = st.contactsByAcc[accountId] || 0;
+    const hasData = nOrd || nNotes || nRem || nCont;
+    const warning = hasData
+      ? `\n\n⚠ This account has attached data that will ALSO be deleted:\n  · ${nOrd} order(s)\n  · ${nNotes} note(s)\n  · ${nRem} reminder(s)\n  · ${nCont} contact(s)\n\nAre you sure?`
+      : '\n\nNo attached data — safe to delete.';
+    if(!confirm('Delete this duplicate account?' + warning)) return;
+    const r = await sb.from('accounts').delete().eq('id', accountId).select();
+    if(r.error){ ui.err(r.error); return; }
+    ui.toast('Duplicate deleted');
+    /* Prune from state and re-render */
+    st.groups = st.groups.map(g => g.filter(a => a.id !== accountId));
+    accounts._renderImportDupModal();
     accounts.render();
     dashboard.render();
   }
