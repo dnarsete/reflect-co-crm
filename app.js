@@ -3314,6 +3314,94 @@ const orders = {
       ui.busy(false);
     }
   },
+  /* Pull the current payment status from Shopify for every finalized
+     order the CRM still thinks is 'draft' or 'invoice_sent'. Belt-and-
+     suspenders for webhook drop-outs — Shopify's REST answer is the
+     source of truth. Iterates client-side using the existing edge-
+     function per-order action so no edge redeploy is required to use it;
+     switches to the bulk sync_pending_payments action automatically once
+     Dan redeploys shopify-sync (see supabase/functions/shopify-sync/
+     index.ts syncPendingPayments — same logic, no per-order round trip). */
+  async syncPendingPayments(){
+    if(!auth.isAdmin()){ ui.toast('Sync payments is admin-only.'); return; }
+    if(shopify.mode() !== 'live'){ ui.toast('Shopify integration is not live — nothing to sync.'); return; }
+    if(!confirm('Ask Shopify for the current payment/fulfillment status of every unpaid CRM order?\n\nThis is safe — it only reads, never writes to Shopify — but it may take ~1 second per order to respect rate limits.')) return;
+
+    ui.busy(true);
+    /* Try the bulk edge-function action first. If it comes back
+       "Unknown action" (edge function pre-deploy), fall back to the
+       per-order loop below. */
+    let bulk = null;
+    try {
+      bulk = await shopify.call('sync_pending_payments', { max: 200 });
+    } catch(e){
+      const msg = String(e?.message || e || '');
+      if(!/unknown action/i.test(msg)){
+        /* Different failure — surface it. */
+        ui.busy(false);
+        ui.err(new Error('Bulk sync failed: ' + msg));
+        return;
+      }
+      /* else fall through to client-side loop */
+    }
+    if(bulk){
+      ui.busy(false);
+      orders._renderSyncResult(bulk);
+      return;
+    }
+
+    /* Fallback: fetch pending orders and hit get_order_status one by one. */
+    const pending = await sb.from('orders')
+      .select('id, order_number, shopify_status')
+      .in('shopify_status', ['draft', 'invoice_sent'])
+      .not('is_test', 'is', true)
+      .not('shopify_draft_order_id', 'is', null)
+      .order('finalized_at', { ascending: true });
+    if(pending.error){ ui.busy(false); ui.err(pending.error); return; }
+    const list = pending.data || [];
+    if(!list.length){ ui.busy(false); ui.toast('Nothing to sync — no pending orders.'); return; }
+
+    let promoted = 0, unchanged = 0, failed = 0;
+    const changes = [];
+    for(const ord of list){
+      const before = ord.shopify_status;
+      try {
+        await shopify.call('get_order_status', { order_id: ord.id });
+        const after = await sb.from('orders').select('shopify_status').eq('id', ord.id).single();
+        const now = after.data?.shopify_status;
+        if(now !== before){ promoted++; changes.push({ order_number: ord.order_number, from: before, to: now }); }
+        else unchanged++;
+      } catch(e){
+        failed++;
+        console.warn(`sync pending ${ord.order_number} failed:`, e?.message || e);
+      }
+      /* Small delay so Shopify's REST rate limit doesn't shake off the tail. */
+      await new Promise(r => setTimeout(r, 350));
+    }
+    ui.busy(false);
+    orders._renderSyncResult({ scanned: list.length, promoted, unchanged, failed, changes });
+  },
+
+  _renderSyncResult(r){
+    const changeList = (r.changes || []).slice(0, 30).map(c => `<li>${esc(c.order_number)}: ${esc(c.from||'(null)')} → <b>${esc(c.to||'(null)')}</b></li>`).join('');
+    ui.modal(`
+      <h3>Payment sync complete</h3>
+      <p>${r.scanned} order${r.scanned===1?'':'s'} checked with Shopify.</p>
+      <ul style="margin:8px 0;padding-left:20px;font-size:14px">
+        <li><b>${r.promoted}</b> updated (payment/fulfillment status advanced)</li>
+        <li>${r.unchanged} still pending in Shopify (customer hasn't paid yet)</li>
+        ${r.failed ? `<li style="color:var(--danger,#c0392b)">${r.failed} failed — see console</li>` : ''}
+      </ul>
+      ${changeList ? `<div style="margin-top:10px"><b>Changes:</b><ul style="margin:4px 0;padding-left:20px;font-size:13px;max-height:280px;overflow:auto">${changeList}</ul></div>` : ''}
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="icon-btn primary" onclick="ui.closeModal(); if(typeof reports!=='undefined') reports.run()">Re-run report</button>
+        <button class="icon-btn ghost" onclick="ui.closeModal()">Close</button>
+      </div>
+    `);
+    orders.render && orders.render();
+    dashboard.render && dashboard.render();
+  },
+
   async _refreshPendingBanner(){
     const banner = document.getElementById('pending-push-banner');
     if(!banner || !auth.isAdmin()){

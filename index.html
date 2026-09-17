@@ -257,6 +257,7 @@
           <button class="icon-btn primary" onclick="reports.run()">Run report</button>
           <button class="icon-btn admin-only" onclick="reports.exportCsv()">Export CSV</button>
           <button class="icon-btn admin-only" onclick="reports.monthly()">Auto monthly w/ commission</button>
+          <button class="icon-btn admin-only" onclick="orders.syncPendingPayments()" title="Ask Shopify for the current payment status of every order the CRM thinks is still pending. Use this to backfill missed webhooks.">🔄 Sync payments from Shopify</button>
         </div>
       </div>
 

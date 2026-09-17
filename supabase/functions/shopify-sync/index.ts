@@ -146,6 +146,7 @@ serve(async (req: Request): Promise<Response> => {
       case "update_account":     result = await updateAccount(db, payload); break;
       case "create_draft_order": result = await createDraftOrder(db, payload); break;
       case "get_order_status":   result = await getOrderStatus(db, payload); break;
+      case "sync_pending_payments": result = await syncPendingPayments(db, payload); break;
       case "register_webhooks":  result = await registerWebhooks(db); break;
       default: return json({ error: `Unknown action: ${action}` }, 400);
     }
@@ -1024,6 +1025,61 @@ async function getOrderStatus(db: any, payload: any) {
     fulfillment_status: o.fulfillment_status,
     status: o.status,
     tracking,
+  };
+}
+
+/* Bulk-refresh payment status for every order the CRM thinks is still
+   pending (shopify_status IN ('draft','invoice_sent')). Belt-and-
+   suspenders for webhook drop-outs: whenever Supabase's JWT gate,
+   Shopify's retry queue, or the network in between eats a payment
+   webhook, this action pulls the current truth from Shopify.
+
+   Uses the same per-order logic as get_order_status so the state
+   machine (rank-based non-regression, draft→paid promotion, tracking
+   pull) stays in one place. Stops as soon as it hits `maxOrders` so
+   Shopify's REST rate limit (~2 req/sec) doesn't shake off a long tail.
+   Returns a summary the client can toast to the user. */
+async function syncPendingPayments(db: any, payload: any) {
+  const maxOrders = Math.min(Number(payload?.max ?? 100), 200);
+  const { data: pending, error } = await db.from("orders")
+    .select("id, order_number, shopify_status, shopify_draft_order_id, shopify_order_id")
+    .in("shopify_status", ["draft", "invoice_sent"])
+    .eq("is_test", false)
+    .not("shopify_draft_order_id", "is", null)
+    .order("finalized_at", { ascending: true })
+    .limit(maxOrders);
+  if (error) throw new Error("Failed to list pending orders: " + error.message);
+  const pendingList = pending || [];
+  const changes: any[] = [];
+  let promoted = 0, unchanged = 0, failed = 0;
+  for (const ord of pendingList) {
+    const before = ord.shopify_status;
+    try {
+      const res = await getOrderStatus(db, { order_id: ord.id });
+      /* getOrderStatus already committed the update. Re-fetch just this
+         row's status to know whether it advanced. */
+      const { data: fresh } = await db.from("orders").select("shopify_status").eq("id", ord.id).single();
+      const after = fresh?.shopify_status;
+      if (after !== before) {
+        promoted++;
+        changes.push({ order_number: ord.order_number, from: before, to: after });
+      } else {
+        unchanged++;
+      }
+      /* Rate-limit courtesy: pause 300ms between calls so a burst of 21
+         doesn't hit Shopify's 2-req/sec ceiling. */
+      await new Promise((r) => setTimeout(r, 300));
+    } catch (e: any) {
+      failed++;
+      console.warn(`[sync_pending_payments] ${ord.order_number} failed:`, e?.message || e);
+    }
+  }
+  return {
+    scanned:   pendingList.length,
+    promoted,  /* orders whose shopify_status changed */
+    unchanged, /* still pending in Shopify — customer hasn't paid yet */
+    failed,
+    changes,
   };
 }
 
