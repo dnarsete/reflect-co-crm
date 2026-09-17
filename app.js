@@ -4458,23 +4458,27 @@ const materials = {
     ui.busy(false);
     if(!links.length){ ui.toast('Could not build download links.'); return; }
 
-    const repEmail = cache.me?.email || '';
     const repName = cache.me?.name || 'The Reflect Co Team';
     const subject = links.length === 1
       ? `The Reflect Co: ${links[0].name.replace(/\.[^.]+$/, '').replace(/[_\-]+/g, ' ')}`
       : `The Reflect Co: ${links.length} materials`;
     const grouped = {};
     links.forEach(l => { (grouped[l.cat] ||= []).push(l); });
-    let body = `Hi,\n\n${repName} sent you ${links.length} material${links.length===1?'':'s'} from The Reflect Co. Every link works for 7 days.\n\n`;
+    /* Body: one-line intro from the rep, then a per-category list. Each
+       item is Name + Download URL on separate lines so the download URL
+       becomes a clickable "auto-link" in every mail app. No trailing
+       signature — the mail app already stamps the sender identity, and
+       the intro line names the rep. */
+    let body = `Hi,\n\n${repName} sent you ${links.length} asset${links.length===1?'':'s'} from The Reflect Co.\n\n`;
+    body += `HOW TO DOWNLOAD: click any link below, or right-click → Save As. Every link is a direct file and works for 7 days.\n\n`;
     for(const cat of Object.keys(grouped)){
       body += `━━━ ${cat.toUpperCase()} ━━━\n`;
       for(const l of grouped[cat]){
         const clean = l.name.replace(/\.[^.]+$/, '').replace(/[_\-]+/g, ' ');
-        body += `• ${clean}\n  ${l.url}\n`;
+        body += `${clean}\n${l.url}\n\n`;
       }
-      body += `\n`;
     }
-    body += `— ${repName}\n${repEmail}`;
+    body += `Questions? Reply to this email.\n`;
 
     ui.modal(`
       <h3>📧 Share ${links.length} selected material${links.length===1?'':'s'}</h3>
@@ -4636,15 +4640,14 @@ const materials = {
       .createSignedUrl(path, 7 * 24 * 60 * 60);
     if(error){ ui.err(error); return; }
     const shareUrl = data.signedUrl;
-    const repEmail = cache.me?.email || '';
     const repName = cache.me?.name || 'The Reflect Co Team';
     const cleanName = filename.replace(/\.[^.]+$/, '').replace(/[_\-]+/g, ' ');
     const subject = `The Reflect Co: ${cleanName}`;
     const body =
-      `Hi,\n\n${repName} sent you this from The Reflect Co:\n\n` +
+      `Hi,\n\n${repName} sent you an asset from The Reflect Co.\n\n` +
+      `HOW TO DOWNLOAD: click the link below, or right-click → Save As. The link is a direct file and works for 7 days.\n\n` +
       `${cleanName}\n${shareUrl}\n\n` +
-      `The link works for 7 days. Let me know if you have any questions.\n\n` +
-      `— ${repName}\n${repEmail}`;
+      `Questions? Reply to this email.\n`;
     ui.modal(`
       <h3>📧 Email material</h3>
       <p class="muted" style="font-size:13px;margin:0 0 12px">
@@ -4719,21 +4722,20 @@ const materials = {
     ui.busy(false);
     if(!links.length){ ui.toast('No materials to send.'); return; }
 
-    const repEmail = cache.me?.email || '';
     const repName = cache.me?.name || 'The Reflect Co Team';
     const subject = `The Reflect Co: complete materials library`;
     const grouped = {};
     links.forEach(l => { (grouped[l.cat] ||= []).push(l); });
-    let body = `Hi,\n\n${repName} sent you the complete Reflect Co materials library. Every link works for 7 days.\n\n`;
+    let body = `Hi,\n\n${repName} sent you the complete Reflect Co materials library.\n\n`;
+    body += `HOW TO DOWNLOAD: click any link below, or right-click → Save As. Every link is a direct file and works for 7 days.\n\n`;
     for(const cat of Object.keys(grouped)){
       body += `━━━ ${cat.toUpperCase()} ━━━\n`;
       for(const l of grouped[cat]){
         const clean = l.name.replace(/\.[^.]+$/, '').replace(/[_\-]+/g, ' ');
-        body += `• ${clean}\n  ${l.url}\n`;
+        body += `${clean}\n${l.url}\n\n`;
       }
-      body += `\n`;
     }
-    body += `— ${repName}\n${repEmail}`;
+    body += `Questions? Reply to this email.\n`;
 
     ui.modal(`
       <h3>📧 Email all materials</h3>
