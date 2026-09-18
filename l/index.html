@@ -99,14 +99,15 @@
     return;
   }
 
-  /* Generate the actual signed download URL — 7 days, forced download
-     when a filename was supplied at short-link creation time. */
-  let signed;
+  /* Build the download URL. Uses the bucket's public URL (materials is
+     public) and appends ?download= to force a file save with the
+     original filename rather than opening in-browser for PDFs/videos. */
+  let target;
   try {
-    const opts = downloadFilename ? { download: downloadFilename } : undefined;
-    const s = await sb.storage.from(bucket).createSignedUrl(path, 7 * 24 * 60 * 60, opts);
-    if (s.error) throw s.error;
-    signed = s.data.signedUrl;
+    const pub = sb.storage.from(bucket).getPublicUrl(path).data.publicUrl;
+    target = downloadFilename
+      ? `${pub}?download=${encodeURIComponent(downloadFilename)}`
+      : pub;
   } catch (e) {
     showErr('Could not prepare download. Please try again.');
     return;
@@ -114,12 +115,12 @@
 
   /* Redirect right into the file. Uses replace() so Back button skips
      this loading page and returns to whatever the user was on before. */
-  window.location.replace(signed);
+  window.location.replace(target);
 
   /* Fallback message in case the redirect doesn't fire in some weird
      browser — shows a clickable link. */
   setTimeout(() => {
-    show(`<p>If the download didn't start, <a href="${signed}" class="btn">tap here</a>.</p>`);
+    show(`<p>If the download didn't start, <a href="${target}" class="btn">tap here</a>.</p>`);
   }, 2500);
 })();
 </script>
