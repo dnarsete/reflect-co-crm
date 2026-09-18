@@ -4446,13 +4446,10 @@ const materials = {
     const links = [];
     try {
       for(const path of sel){
-        const { data, error } = await sb.storage.from(materials.BUCKET)
-          .createSignedUrl(path, 7 * 24 * 60 * 60);
-        if(!error && data?.signedUrl){
-          const cat = path.split('/').slice(0, -1).join('/');
-          const name = path.split('/').pop();
-          links.push({ cat, name, url: data.signedUrl });
-        }
+        const name = path.split('/').pop();
+        const cat = path.split('/').slice(0, -1).join('/');
+        const url = await materials._shorten(path, name);
+        if(url) links.push({ cat, name, url });
       }
     } catch(e){ ui.busy(false); ui.err(e); return; }
     ui.busy(false);
@@ -4600,22 +4597,50 @@ const materials = {
     a.remove();
   },
 
-  /* Generate a 7-day shareable download link for a single asset and copy
-     it to clipboard. Paste it into email, SMS, social — anywhere. */
-  async copyLink(path){
-    const { data, error } = await sb.storage.from(materials.BUCKET).createSignedUrl(path, 7 * 24 * 60 * 60);
-    if(error){ ui.err(error); return; }
+  /* Base URL for short links — the /l/ static page on the CRM's own
+     GitHub Pages domain. */
+  _shortLinkUrl(code){
+    return `${window.location.origin}${window.location.pathname.replace(/\/[^/]*$/, '')}/l/#${code}`;
+  },
+
+  /* Ask Supabase for a short code for this asset (idempotent — same
+     user + same path returns the existing code, no duplicate rows) and
+     return the full short URL. Falls back to a raw signed URL if the
+     short-link migration hasn't been applied yet. */
+  async _shorten(path, filename){
     try {
-      await navigator.clipboard.writeText(data.signedUrl);
-      ui.toast('🔗 Link copied — expires in 7 days.');
+      const r = await sb.rpc('create_short_link', {
+        p_bucket: materials.BUCKET,
+        p_path: path,
+        p_download_filename: filename || null,
+      });
+      if(r.error) throw r.error;
+      return materials._shortLinkUrl(r.data);
     } catch(_){
-      /* Older browsers: fall back to a temp textarea + execCommand */
+      /* Fallback — server-side migration not applied yet. Use the long
+         signed URL so the feature still works. */
+      const s = await sb.storage.from(materials.BUCKET).createSignedUrl(path, 7 * 24 * 60 * 60);
+      return s.data?.signedUrl || '';
+    }
+  },
+
+  /* Generate a shareable download link for a single asset and copy it
+     to clipboard. Paste it into email, SMS, social — anywhere. Uses the
+     short-link system when available; falls back to a long signed URL. */
+  async copyLink(path){
+    const filename = path.split('/').pop() || '';
+    const url = await materials._shorten(path, filename);
+    if(!url){ ui.toast('Could not generate link.'); return; }
+    try {
+      await navigator.clipboard.writeText(url);
+      ui.toast('🔗 Link copied.');
+    } catch(_){
       const t = document.createElement('textarea');
-      t.value = data.signedUrl;
+      t.value = url;
       document.body.appendChild(t); t.select();
       document.execCommand('copy');
       t.remove();
-      ui.toast('🔗 Link copied — expires in 7 days.');
+      ui.toast('🔗 Link copied.');
     }
   },
 
@@ -4635,11 +4660,8 @@ const materials = {
   async email(path){
     const filename = path.split('/').pop() || 'file';
     const cat = path.split('/').slice(0, -1).join('/') || '';
-    /* 7-day signed URL — long enough that the recipient has time to click. */
-    const { data, error } = await sb.storage.from(materials.BUCKET)
-      .createSignedUrl(path, 7 * 24 * 60 * 60);
-    if(error){ ui.err(error); return; }
-    const shareUrl = data.signedUrl;
+    const shareUrl = await materials._shorten(path, filename);
+    if(!shareUrl){ ui.toast('Could not generate link.'); return; }
     const repName = cache.me?.name || 'The Reflect Co Team';
     const cleanName = filename.replace(/\.[^.]+$/, '').replace(/[_\-]+/g, ' ');
     const subject = `The Reflect Co: ${cleanName}`;
@@ -4707,11 +4729,8 @@ const materials = {
         const { data: files } = await sb.storage.from(materials.BUCKET).list(cat);
         for(const f of (files || [])){
           const path = `${cat}/${f.name}`;
-          const { data: signed, error } = await sb.storage.from(materials.BUCKET)
-            .createSignedUrl(path, 7 * 24 * 60 * 60);
-          if(!error && signed?.signedUrl){
-            links.push({ cat, name: f.name, url: signed.signedUrl });
-          }
+          const url = await materials._shorten(path, f.name);
+          if(url) links.push({ cat, name: f.name, url });
         }
       }
     } catch (e) {
