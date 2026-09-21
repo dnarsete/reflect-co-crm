@@ -3237,8 +3237,9 @@ const orders = {
        looking. */
     if(orders._paymentPollTimer) return;
     orders._paymentPollTimer = setInterval(() => orders._autoSyncPayments(), 15 * 60 * 1000);
-    /* First run 30 s after sign-in so it doesn't fight boot for a slot. */
-    setTimeout(() => orders._autoSyncPayments(), 30_000);
+    /* First run right at sign-in so the paid-orders banner shows a fresh
+       picture on open, then refresh the banner once the sync finishes. */
+    orders._autoSyncPayments().then(() => orders._refreshPaidBanner()).catch(()=>{});
   },
   _stopRetryPoll(){
     if(orders._retryPollTimer){ clearInterval(orders._retryPollTimer); orders._retryPollTimer = null; }
