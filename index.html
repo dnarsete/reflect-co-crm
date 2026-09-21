@@ -7,11 +7,25 @@
 <meta name="description" content="Mobile-first sales-rep CRM for The Reflect Co. Accounts, orders, promotions, reports, and an internal assistant — all in the browser." />
 <meta name="theme-color" content="#0d2945" />
 
+<!-- Clickjacking defense. frame-ancestors in a meta tag is silently ignored
+     by browsers (must come from an HTTP header), and GitHub Pages can't set
+     custom headers, so we frame-bust in JS: hide the page immediately if
+     we're loaded inside a frame, then try to break out. Runs before any
+     other script so an attacker's overlay never sees a rendered CRM. -->
+<script>
+  if (window.top !== window.self) {
+    document.documentElement.style.display = 'none';
+    try { window.top.location = window.self.location.href; } catch (_) {}
+  }
+</script>
+
 <!-- Content-Security-Policy: locks down connect/img/style/frame origins.
      script-src keeps 'unsafe-inline' because the app uses inline onclick handlers throughout;
      dropping it requires refactoring to delegated listeners. https-only Shopify URL scheme is
-     also validated server-side (see supabase/security-hardening.sql). -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' https://*.supabase.co wss://*.supabase.co; img-src 'self' data: https://*.supabase.co https://*.myshopify.com https://cdn.shopify.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" />
+     also validated server-side (see supabase/security-hardening.sql).
+     frame-ancestors is delivered by the JS block above, not here — browsers
+     ignore it in a meta tag. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' https://*.supabase.co wss://*.supabase.co; img-src 'self' data: https://*.supabase.co https://*.myshopify.com https://cdn.shopify.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'" />
 <meta name="referrer" content="strict-origin-when-cross-origin" />
 
 <!-- Preconnect to third-party origins the app hits on startup — parallelises
