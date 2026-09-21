@@ -1,0 +1,46 @@
+name: Sync Shopify payments
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    name: Pull Shopify payment status
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Sync
+        env:
+          SB_URL: ${{ secrets.SUPABASE_URL }}
+          SB_ANON: ${{ secrets.SUPABASE_ANON_KEY }}
+          CRON_EMAIL: ${{ secrets.CRON_ADMIN_EMAIL }}
+          CRON_PASSWORD: ${{ secrets.CRON_ADMIN_PASSWORD }}
+        run: |
+          set -e
+          if [ -z "$SB_URL" ] || [ -z "$SB_ANON" ] || [ -z "$CRON_EMAIL" ] || [ -z "$CRON_PASSWORD" ]; then
+            echo "❌ Missing secrets"; exit 1; fi
+          TOKEN=$(curl -sS -X POST "$SB_URL/auth/v1/token?grant_type=password" \
+            -H "apikey: $SB_ANON" -H "Content-Type: application/json" \
+            -d "{\"email\":\"$CRON_EMAIL\",\"password\":\"$CRON_PASSWORD\"}" | jq -r '.access_token // empty')
+          if [ -z "$TOKEN" ]; then echo "❌ Sign-in failed"; exit 1; fi
+          PENDING=$(curl -sS "$SB_URL/rest/v1/orders?select=id,order_number,shopify_status&shopify_status=in.(invoice_sent,draft)&is_test=is.false&shopify_draft_order_id=not.is.null&limit=100" \
+            -H "apikey: $SB_ANON" -H "Authorization: Bearer $TOKEN")
+          COUNT=$(echo "$PENDING" | jq 'length')
+          echo "Found $COUNT pending"
+          if [ "$COUNT" = "0" ]; then exit 0; fi
+          PROMOTED=0; UNCHANGED=0; FAILED=0
+          for ROW in $(echo "$PENDING" | jq -c '.[]'); do
+            OID=$(echo "$ROW" | jq -r '.id'); NUM=$(echo "$ROW" | jq -r '.order_number'); BEFORE=$(echo "$ROW" | jq -r '.shopify_status')
+            RESP=$(curl -sS -X POST "$SB_URL/functions/v1/shopify-sync" \
+              -H "Authorization: Bearer $TOKEN" -H "apikey: $SB_ANON" -H "Content-Type: application/json" \
+              -d "{\"action\":\"get_order_status\",\"payload\":{\"order_id\":\"$OID\"}}" \
+              -w "\n__HTTP:%{http_code}") || true
+            HTTP=$(echo "$RESP" | grep '__HTTP' | cut -d: -f2)
+            if [ "$HTTP" != "200" ]; then FAILED=$((FAILED+1)); echo "  ✖ $NUM: HTTP $HTTP"; sleep 0.4; continue; fi
+            AFTER=$(curl -sS "$SB_URL/rest/v1/orders?select=shopify_status&id=eq.$OID" -H "apikey: $SB_ANON" -H "Authorization: Bearer $TOKEN" | jq -r '.[0].shopify_status')
+            if [ "$AFTER" != "$BEFORE" ]; then PROMOTED=$((PROMOTED+1)); echo "  ✅ $NUM: $BEFORE → $AFTER"; else UNCHANGED=$((UNCHANGED+1)); fi
+            sleep 0.4
+          done
+          echo ""; echo "═══ SUMMARY ═══"; echo "Promoted: $PROMOTED"; echo "Unchanged: $UNCHANGED"; echo "Failed: $FAILED"
