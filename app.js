@@ -3222,23 +3222,21 @@ const orders = {
   _retryPollTimer: null,
   _paymentPollTimer: null,
   _startRetryPoll(){
-    if(!auth.isAdmin()) return;
-    if(orders._retryPollTimer) return;
-    orders._retryPollTimer = setInterval(() => orders._processRetryQueue(), 60_000);
-    /* Fire once shortly after boot so pending pushes drain immediately. */
-    setTimeout(() => orders._processRetryQueue(), 5000);
+    /* Retry queue is admin-only — it drains failed pushes across every
+       rep's orders and needs elevated visibility. */
+    if(auth.isAdmin() && !orders._retryPollTimer){
+      orders._retryPollTimer = setInterval(() => orders._processRetryQueue(), 60_000);
+      setTimeout(() => orders._processRetryQueue(), 5000);
+    }
 
-    /* Also start the payment-status auto-poll. Shopify webhooks are gated
-       by Supabase's newer publishable-key auth on edge functions and we
-       can't disable it without CLI (which Dan doesn't use), so we pull
-       payment status from Shopify every 15 minutes instead. Same net
-       effect as webhooks — just polled instead of pushed. Bursts after
-       an admin sign-in catch up any drift accumulated while nobody was
-       looking. */
+    /* Payment-status poll runs for everyone. Admin syncs every pending
+       order in the CRM; a rep's session syncs only their own pending
+       orders (RLS filters the .select and the edge function rejects any
+       get_order_status against another rep's row). Same 15-min cadence.
+       First run fires at sign-in so the paid-orders banner shows a fresh
+       picture on open. */
     if(orders._paymentPollTimer) return;
     orders._paymentPollTimer = setInterval(() => orders._autoSyncPayments(), 15 * 60 * 1000);
-    /* First run right at sign-in so the paid-orders banner shows a fresh
-       picture on open, then refresh the banner once the sync finishes. */
     orders._autoSyncPayments().then(() => orders._refreshPaidBanner()).catch(()=>{});
   },
   _stopRetryPoll(){
@@ -3250,7 +3248,9 @@ const orders = {
      modal, just runs in the background. Logs to console only. Skips if
      nothing pending so we don't hit Shopify for no reason. */
   async _autoSyncPayments(){
-    if(!auth.isAdmin() || shopify.mode() !== 'live') return;
+    /* Runs for both admin and reps. RLS on the .select below restricts
+       the loop to the caller's own pending orders. */
+    if(shopify.mode() !== 'live') return;
     try {
       const pending = await sb.from('orders')
         .select('id, order_number, shopify_status')
