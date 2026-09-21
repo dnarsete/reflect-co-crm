@@ -144,6 +144,18 @@
         <button class="icon-btn" style="margin-left:10px" onclick="orders.retryAllPending()">Retry all now</button>
       </div>
 
+      <!-- Paid-orders banner. Shows finalized orders whose shopify_status
+           advanced to 'paid' but the rep hasn't been notified yet.
+           Dismissing marks paid_notified_at so it won't show again. -->
+      <div id="paid-orders-banner" class="alert ok hide" style="margin-bottom:12px">
+        🎉 <b><span id="paid-orders-count">0</span> payment(s) landed since your last visit.</b>
+        <span id="paid-orders-detail" style="font-size:13px;margin-left:6px"></span>
+        <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="icon-btn" onclick="orders.showPaidNotifications()">Show me the orders</button>
+          <button class="icon-btn ghost" onclick="orders.dismissPaidNotifications()">Dismiss</button>
+        </div>
+      </div>
+
       <div class="card">
         <div class="kpi">
           <div class="tile"><div class="lbl">Accounts</div><div class="val" id="kpi-accounts">0</div></div>

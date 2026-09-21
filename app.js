@@ -3466,6 +3466,76 @@ const orders = {
       banner.classList.remove('hide');
       if(countEl) countEl.textContent = String(n);
     } catch(_){ banner.classList.add('hide'); }
+  },
+
+  /* Paid-orders banner. Shows finalized non-test orders whose
+     shopify_status is 'paid' but the current user hasn't dismissed the
+     notification yet. Scoped by rep for reps; admin sees theirs +
+     everyone else's ("as a rep" too). Cleared by _dismissPaidNotifications. */
+  async _refreshPaidBanner(){
+    const banner = document.getElementById('paid-orders-banner');
+    if(!banner) return;
+    try {
+      const list = await orders._loadUnnotifiedPaidOrders();
+      if(!list.length){ banner.classList.add('hide'); return; }
+      const countEl = document.getElementById('paid-orders-count');
+      const detailEl = document.getElementById('paid-orders-detail');
+      if(countEl) countEl.textContent = String(list.length);
+      const total = list.reduce((s,o) => s + Number(o.total || 0) - Number(o.shipping || 0) - Number(o.tax || 0), 0);
+      if(detailEl) detailEl.textContent = `Product revenue: ${fmt$(total)}`;
+      banner.classList.remove('hide');
+    } catch(_){ banner.classList.add('hide'); }
+  },
+
+  async _loadUnnotifiedPaidOrders(){
+    /* Admin: their own R-001 orders. Reps: their own orders. Both use
+       the same rep_id filter based on their profile. Admin can still
+       run reports across all reps via the Reports view. */
+    const rid = auth.repId();
+    if(!rid) return [];
+    let q = sb.from('orders')
+      .select('id, order_number, total, shipping, tax, rep_id, placed_at, account:accounts(business_name)')
+      .eq('shopify_status', 'paid')
+      .eq('status', 'finalized')
+      .not('is_test','is', true)
+      .is('paid_notified_at', null)
+      .eq('rep_id', rid);
+    const r = await q.order('placed_at', { ascending: false }).limit(50);
+    if(r.error) return [];
+    return r.data || [];
+  },
+
+  async showPaidNotifications(){
+    const list = await orders._loadUnnotifiedPaidOrders();
+    if(!list.length){ ui.toast('Nothing to show.'); return; }
+    const rows = list.map(o => {
+      const acct = o.account?.business_name || '(no account)';
+      const prod = Number(o.total || 0) - Number(o.shipping || 0) - Number(o.tax || 0);
+      const comm = prod * (profiles.commissionFor(o.rep_id) / 100);
+      return `<div class="list-item"><div class="grow"><div class="title">${esc(o.order_number)} · ${esc(acct)}</div><div class="meta">${o.placed_at?.slice(0,10)} · product revenue ${fmt$(prod)} · commission ${fmt$(comm)}</div></div></div>`;
+    }).join('');
+    ui.modal(`
+      <h3>🎉 ${list.length} payment${list.length===1?'':'s'} landed</h3>
+      <p class="muted" style="font-size:13px;margin:0 0 12px">Every order below just moved to 'paid' in Shopify. Commission counts these — check the Reports tab.</p>
+      ${rows}
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="icon-btn primary" onclick="orders.dismissPaidNotifications()">Got it — dismiss all</button>
+        <button class="icon-btn ghost" onclick="ui.closeModal()">Keep the banner up</button>
+      </div>
+    `);
+  },
+
+  async dismissPaidNotifications(){
+    const list = await orders._loadUnnotifiedPaidOrders();
+    if(!list.length){ ui.toast('Nothing to dismiss.'); ui.closeModal(); return; }
+    const ids = list.map(o => o.id);
+    const r = await sb.from('orders')
+      .update({ paid_notified_at: new Date().toISOString() })
+      .in('id', ids);
+    if(r.error){ ui.err(r.error); return; }
+    ui.closeModal();
+    ui.toast(`Dismissed ${list.length} notification${list.length===1?'':'s'}.`);
+    orders._refreshPaidBanner();
   }
 };
 
@@ -7456,7 +7526,7 @@ async function boot(){
   /* Start the reminders poller. Wrapped so a table-missing error (before
      Dan runs reminders.sql) doesn't take down boot. */
   try { reminders._startPolling(); } catch(e){ console.warn('reminders poller not started', e); }
-  try { orders._startRetryPoll(); orders._refreshPendingBanner(); } catch(e){ console.warn('shopify retry poller not started', e); }
+  try { orders._startRetryPoll(); orders._refreshPendingBanner(); orders._refreshPaidBanner(); } catch(e){ console.warn('shopify retry poller not started', e); }
   } finally {
     /* Reset the guard so a future sign-in (after sign-out or refresh)
        can trigger boot again. */
