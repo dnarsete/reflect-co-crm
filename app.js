@@ -3470,8 +3470,9 @@ const orders = {
 
   /* Paid-orders banner. Shows finalized non-test orders whose
      shopify_status is 'paid' but the current user hasn't dismissed the
-     notification yet. Scoped by rep for reps; admin sees theirs +
-     everyone else's ("as a rep" too). Cleared by _dismissPaidNotifications. */
+     notification yet. Reps see only their own orders (filtered by
+     rep_id AND enforced by RLS). Admin sees every rep's paid orders.
+     Cleared by _dismissPaidNotifications. */
   async _refreshPaidBanner(){
     const banner = document.getElementById('paid-orders-banner');
     if(!banner) return;
@@ -3488,19 +3489,20 @@ const orders = {
   },
 
   async _loadUnnotifiedPaidOrders(){
-    /* Admin: their own R-001 orders. Reps: their own orders. Both use
-       the same rep_id filter based on their profile. Admin can still
-       run reports across all reps via the Reports view. */
-    const rid = auth.repId();
-    if(!rid) return [];
+    /* Admin: every rep's paid orders. Rep: only their own (filtered by
+       rep_id AND enforced by RLS). */
     let q = sb.from('orders')
       .select('id, order_number, total, shipping, tax, rep_id, placed_at, account:accounts(business_name)')
       .eq('shopify_status', 'paid')
       .eq('status', 'finalized')
       .not('is_test','is', true)
-      .is('paid_notified_at', null)
-      .eq('rep_id', rid);
-    const r = await q.order('placed_at', { ascending: false }).limit(50);
+      .is('paid_notified_at', null);
+    if(!auth.isAdmin()){
+      const rid = auth.repId();
+      if(!rid) return [];
+      q = q.eq('rep_id', rid);
+    }
+    const r = await q.order('placed_at', { ascending: false }).limit(100);
     if(r.error) return [];
     return r.data || [];
   },
@@ -3508,11 +3510,17 @@ const orders = {
   async showPaidNotifications(){
     const list = await orders._loadUnnotifiedPaidOrders();
     if(!list.length){ ui.toast('Nothing to show.'); return; }
+    const isAdminView = auth.isAdmin();
+    const repNameFor = (rid) => {
+      const r = (cache.reps || []).find(x => x.rep_id === rid);
+      return r?.name || rid || '(unassigned)';
+    };
     const rows = list.map(o => {
       const acct = o.account?.business_name || '(no account)';
       const prod = Number(o.total || 0) - Number(o.shipping || 0) - Number(o.tax || 0);
       const comm = prod * (profiles.commissionFor(o.rep_id) / 100);
-      return `<div class="list-item"><div class="grow"><div class="title">${esc(o.order_number)} · ${esc(acct)}</div><div class="meta">${o.placed_at?.slice(0,10)} · product revenue ${fmt$(prod)} · commission ${fmt$(comm)}</div></div></div>`;
+      const repTag = isAdminView ? ` · ${esc(repNameFor(o.rep_id))}` : '';
+      return `<div class="list-item"><div class="grow"><div class="title">${esc(o.order_number)} · ${esc(acct)}${repTag}</div><div class="meta">${o.placed_at?.slice(0,10)} · product revenue ${fmt$(prod)} · commission ${fmt$(comm)}</div></div></div>`;
     }).join('');
     ui.modal(`
       <h3>🎉 ${list.length} payment${list.length===1?'':'s'} landed</h3>
