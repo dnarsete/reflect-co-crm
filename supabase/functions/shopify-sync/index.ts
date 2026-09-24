@@ -794,6 +794,24 @@ async function createDraftOrder(db: any, payload: any) {
        causing Shopify's opaque "Record is invalid" 422s in certain
        account/address combinations. Explicit customer+email is enough. */
   };
+  /* If the account isn't linked to a Shopify customer yet, push it now
+     BEFORE we create the draft. Otherwise Shopify creates a bare customer
+     during invoice payment whose default_address country_code silently
+     defaults to 'AF' (Afghanistan — first ISO code alphabetically), which
+     is what happened to ORD-1035. Pushing the account first gives Shopify
+     a real customer with a US-anchored default address. */
+  if (ord.account && !ord.account.shopify_customer_id && ord.account.id) {
+    try {
+      const pushRes = await pushAccount(db, { account_id: ord.account.id });
+      const newId = pushRes?.shopify_customer_id;
+      if (newId) ord.account.shopify_customer_id = newId;
+    } catch (e) {
+      console.error("[shopify-sync] pre-order push_account failed:", (e as any)?.message || e);
+      /* Continue anyway — a draft without a customer is still better than
+         no draft at all; the country bug is preferable to a hard failure. */
+    }
+  }
+
   /* ALWAYS attach the CRM email to the draft. Previously we only set draft.email
      when there was no customer.id — that left drafts without an email whenever
      the linked Shopify customer record was missing/stale on the Shopify side.
