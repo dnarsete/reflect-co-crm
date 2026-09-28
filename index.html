@@ -49,10 +49,34 @@
         crossorigin="anonymous"></script>
 <script src="config.js"></script>
 <script>
-  /* Register service worker for offline shell + PWA install support. */
+  /* Register service worker with auto-update. `updateViaCache: 'none'`
+     bypasses HTTP cache when the browser checks sw.js, so a bumped
+     VERSION string is picked up immediately instead of after the SW
+     script's default 24h cache expiry. We also call reg.update() on
+     every load, activate any waiting SW right away, and reload once
+     the new SW takes control — so a fresh deploy lands within seconds
+     with a single page load, no manual DevTools unregister needed. */
   if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW failed', err));
+    window.addEventListener('load', async () => {
+      try {
+        const reg = await navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' });
+        reg.update().catch(() => {});
+        reg.addEventListener('updatefound', () => {
+          const sw = reg.installing;
+          if (!sw) return;
+          sw.addEventListener('statechange', () => {
+            if (sw.state === 'installed' && navigator.serviceWorker.controller) {
+              try { sw.postMessage({ type: 'SKIP_WAITING' }); } catch (_) {}
+            }
+          });
+        });
+        let reloading = false;
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+          if (reloading) return;
+          reloading = true;
+          window.location.reload();
+        });
+      } catch (err) { console.warn('SW register failed', err); }
     });
   }
 </script>

@@ -3,7 +3,7 @@
    cache-first for static assets (icons, fonts), pass-through for
    Supabase API calls (never cache live data).  */
 
-const VERSION = 'reflect-crm-v111';
+const VERSION = 'reflect-crm-v112';
 const SHELL = [
   './',
   './index.html',
@@ -19,6 +19,14 @@ self.addEventListener('install', e => {
   e.waitUntil(
     caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())
   );
+});
+
+/* Client-triggered skipWaiting — the page posts { type: 'SKIP_WAITING' }
+   when it detects a newly-installed SW that would otherwise sit in the
+   'waiting' state until every tab closes. Lets a deploy activate on the
+   next page load instead. */
+self.addEventListener('message', e => {
+  if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
 self.addEventListener('activate', e => {
