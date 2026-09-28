@@ -679,11 +679,80 @@ const dashboard = {
 
 /* ---------- ACCOUNTS ---------- */
 const accounts = {
-  /* Safety net for reps who paste (or browser-autofill) a full comma-
-     separated address into the Street field ("3300 E 1st Ave, 400,
-     Denver, CO, 80206"). If City/State/ZIP are empty AND the street
-     text looks like a multi-part address, split it into the right
-     fields. Prefix `b` = business address, `l` = billing address. */
+  /* Parses a US address string into { street, suite, city, state, zip }
+     or returns null when it can't confidently identify state+zip.
+     Handles the following pasted formats (single- or multi-comma):
+       "123 Main St, Denver, CO 80210"
+       "123 Main St, Ste 4, Denver, CO 80210"
+       "123 Main St, 400, Denver, CO, 80206"                (comma around state)
+       "123 Main St, Denver, CO, 80210, USA"                (trailing country)
+       "425 S Cherry St Unit 160 Denver, CO 80246"          (single comma, unit inline)
+       "425 S Cherry St Unit 160, Denver, CO 80246"         (unit inside street cell)
+       "425 S Cherry St, Unit 160, Denver, CO 80246"        (unit its own cell)
+       "425 S Cherry St, Denver CO 80246"                   (city+state on same side)
+     Strategy: strip a trailing country suffix, then extract STATE+ZIP from
+     the end via regex, then split what's left by comma. If commas give us
+     ≥1 remainder, last comma-part is city; if ≥2, second-to-last may be
+     a suite. If there are NO commas left, split off the last word as
+     city (single-word-city assumption is a best-effort — worst case the
+     rep fixes it). A unit marker inside `street` is peeled off. */
+  _parseUsAddress(raw){
+    let s = String(raw || '').trim();
+    if(!s) return null;
+    /* Strip a trailing country marker (with or without leading comma). */
+    s = s.replace(/,?\s*(usa|united states|us)\s*$/i, '').trim();
+    s = s.replace(/,\s*$/, '');
+    /* Pull STATE + ZIP off the end. Handles "CO 80246", ", CO 80246",
+       ", CO, 80246", "CO, 80246". */
+    const stateZipRegex = /,?\s+([A-Z]{2})\s*,?\s+(\d{5})(?:-\d{4})?\s*$/i;
+    const m = stateZipRegex.exec(s);
+    if(!m) return null;
+    const state = m[1].toUpperCase();
+    const zip = m[2];
+    let head = s.slice(0, m.index).trim().replace(/,\s*$/, '');
+    if(!head) return null;
+    /* Split what's before state+zip by comma. */
+    const looksLikeUnit = (str) => /^(ste|suite|unit|apt|apartment|#)\b/i.test(str) || /^\d+[A-Z]?$/i.test(str);
+    let street = '', suite = '', city = '';
+    const parts = head.split(',').map(x => x.trim()).filter(Boolean);
+    if(parts.length >= 2){
+      city = parts.pop();
+      if(parts.length >= 2 && looksLikeUnit(parts[parts.length-1])){
+        suite = parts.pop();
+      }
+      street = parts.join(', ');
+    } else {
+      /* Zero commas remaining — everything is "STREET [UNIT] CITY" glued
+         by whitespace. Try to locate a unit marker as the anchor between
+         street and city; otherwise fall back to last-word-is-city. */
+      const unitMatch = /^(.+?)\s+(ste|suite|unit|apt|apartment|#)\s*(\S+)\s+(.+)$/i.exec(head);
+      if(unitMatch){
+        street = unitMatch[1].trim();
+        suite = `${unitMatch[2]} ${unitMatch[3]}`.trim();
+        city = unitMatch[4].trim();
+      } else {
+        const words = head.split(/\s+/).filter(Boolean);
+        if(words.length < 2) return null;
+        city = words.pop();
+        street = words.join(' ');
+      }
+    }
+    /* Post-process: if street still contains a trailing "Ste 4"/"Unit 160"
+       and we didn't set suite already, peel it off. */
+    if(!suite && street){
+      const trailing = /[,\s]+(ste|suite|apt|apartment|unit|#)\s*([\w-]+)\s*$/i.exec(street);
+      if(trailing){
+        suite = trailing[0].replace(/^[,\s]+/, '').trim();
+        street = street.slice(0, trailing.index).replace(/,\s*$/, '').trim();
+      }
+    }
+    return { street, suite, city, state, zip };
+  },
+
+  /* Safety net for reps who paste (or browser-autofill) a full address
+     into the Street field. If City/State/ZIP are empty AND the street
+     text parses cleanly, populate the right fields. Prefix `b` = business
+     address, `l` = billing address. */
   _splitAddressIfPasted(prefix){
     const streetEl = document.getElementById(`f-${prefix}-street`);
     const suiteEl  = document.getElementById(`f-${prefix}-suite`);
@@ -694,56 +763,13 @@ const accounts = {
     /* Only auto-split if the other fields are empty — otherwise the rep
        already filled them and we shouldn't touch anything. */
     if(cityEl.value.trim() || stateEl.value.trim() || zipEl.value.trim()) return;
-    const raw = streetEl.value.trim();
-    if(!raw || raw.split(',').length < 3) return;
-    /* Expected shapes:
-         "123 Main St, Denver, CO 80210"
-         "123 Main St, Ste 4, Denver, CO 80210"
-         "123 Main St, 400, Denver, CO, 80206"           (commas around state)
-         "123 Main St, Denver, CO, 80210, USA"           (country suffix)
-       Strategy: strip a trailing country if present, then peel off zip,
-       state, city from the end. Anything left over is street (+ suite). */
-    let parts = raw.split(',').map(s => s.trim()).filter(Boolean);
-    if(/^(usa|united states|us)$/i.test(parts[parts.length-1] || '')) parts.pop();
-    if(parts.length < 3) return;
-    /* Last chunk is zip (may be "80210" or "80210-1234"). */
-    let zip = '';
-    const lastZipMatch = /^(\d{5})(?:-\d{4})?$/.exec(parts[parts.length-1] || '');
-    if(lastZipMatch){ zip = lastZipMatch[0]; parts.pop(); }
-    else {
-      /* Sometimes state and zip end up together: "CO 80210" */
-      const combined = /^([A-Z]{2})\s+(\d{5})(?:-\d{4})?$/i.exec(parts[parts.length-1] || '');
-      if(combined){
-        stateEl.value = combined[1].toUpperCase();
-        zipEl.value = combined[2];
-        parts.pop();
-        cityEl.value = parts[parts.length-1] || '';
-        parts.pop();
-        streetEl.value = parts.join(', ');
-        if(parts.length >= 2 && !suiteEl?.value) {
-          /* Second-to-last remaining part is likely a suite */
-          suiteEl.value = parts[parts.length-1];
-          streetEl.value = parts.slice(0, -1).join(', ');
-        }
-        return;
-      }
-      return;
-    }
-    if(parts.length < 2) return;
-    /* Next chunk is state — 2-letter US code */
-    if(/^[A-Za-z]{2}$/.test(parts[parts.length-1] || '')){
-      stateEl.value = parts.pop().toUpperCase();
-      zipEl.value = zip;
-    } else { return; }
-    if(!parts.length) return;
-    /* Next chunk is city */
-    cityEl.value = parts.pop();
-    /* Whatever's left is street; if there are multiple, the LAST leftover
-       is probably a suite number and everything before it is street. */
-    if(parts.length >= 2 && !suiteEl?.value){
-      suiteEl.value = parts.pop();
-    }
-    streetEl.value = parts.join(', ');
+    const parsed = accounts._parseUsAddress(streetEl.value);
+    if(!parsed) return;
+    streetEl.value = parsed.street;
+    cityEl.value = parsed.city;
+    stateEl.value = parsed.state;
+    zipEl.value = parsed.zip;
+    if(parsed.suite && suiteEl && !suiteEl.value.trim()) suiteEl.value = parsed.suite;
   },
 
   async count(){
@@ -1617,34 +1643,9 @@ const accounts = {
     return { street: s.slice(0, m.index).replace(/,\s*$/, '').trim(), suite: m[0].replace(/^[,\s]+/, '').trim() };
   },
   _tryAutoSplitAddress(raw){
-    /* Same logic used by _splitAddressIfPasted — extracts street/city/state/zip from
-       a single comma-separated address string. Returns null if it can't parse. */
-    const s = String(raw || '').trim();
-    if(!s || s.split(',').length < 3) return null;
-    let parts = s.split(',').map(x => x.trim()).filter(Boolean);
-    if(/^(usa|united states|us)$/i.test(parts[parts.length-1] || '')) parts.pop();
-    if(parts.length < 3) return null;
-    let zip = '', state = '', city = '', suite = '';
-    const lastZip = /^(\d{5})(?:-\d{4})?$/.exec(parts[parts.length-1] || '');
-    if(lastZip){ zip = lastZip[0]; parts.pop(); }
-    else {
-      const combined = /^([A-Z]{2})\s+(\d{5})(?:-\d{4})?$/i.exec(parts[parts.length-1] || '');
-      if(combined){
-        state = combined[1].toUpperCase(); zip = combined[2]; parts.pop();
-        city = parts.pop() || '';
-        if(parts.length >= 2){ suite = parts.pop(); }
-        return { street: parts.join(', '), suite, city, state, zip };
-      }
-      return null;
-    }
-    if(parts.length < 2) return null;
-    if(/^[A-Za-z]{2}$/.test(parts[parts.length-1] || '')){
-      state = parts.pop().toUpperCase();
-    } else return null;
-    if(!parts.length) return null;
-    city = parts.pop();
-    if(parts.length >= 2){ suite = parts.pop(); }
-    return { street: parts.join(', '), suite, city, state, zip };
+    /* Delegates to _parseUsAddress so Excel import and manual-paste share
+       one parser. Returns null if state+zip couldn't be identified. */
+    return accounts._parseUsAddress(raw);
   },
 
   _importParseRow(row){
