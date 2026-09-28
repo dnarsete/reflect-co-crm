@@ -757,9 +757,12 @@ const accounts = {
   },
 
   /* Safety net for reps who paste (or browser-autofill) a full address
-     into the Street field. If City/State/ZIP are empty AND the street
-     text parses cleanly, populate the right fields. Prefix `b` = business
-     address, `l` = billing address. */
+     into the Street field. Runs whenever the street text parses as a
+     complete address (ends in ", ST NNNNN") — regardless of what's
+     already in City/State/ZIP. That way a rep correcting an earlier
+     address gets re-populated too. If the street DOESN'T parse
+     (rep is mid-typing, or just entered a plain street), nothing is
+     touched. Prefix `b` = business address, `l` = billing address. */
   _splitAddressIfPasted(prefix){
     const streetEl = document.getElementById(`f-${prefix}-street`);
     const suiteEl  = document.getElementById(`f-${prefix}-suite`);
@@ -767,16 +770,16 @@ const accounts = {
     const stateEl  = document.getElementById(`f-${prefix}-state`);
     const zipEl    = document.getElementById(`f-${prefix}-zip`);
     if(!streetEl || !cityEl || !stateEl || !zipEl) return;
-    /* Only auto-split if the other fields are empty — otherwise the rep
-       already filled them and we shouldn't touch anything. */
-    if(cityEl.value.trim() || stateEl.value.trim() || zipEl.value.trim()) return;
     const parsed = accounts._parseUsAddress(streetEl.value);
     if(!parsed) return;
     streetEl.value = parsed.street;
     cityEl.value = parsed.city;
     stateEl.value = parsed.state;
     zipEl.value = parsed.zip;
-    if(parsed.suite && suiteEl && !suiteEl.value.trim()) suiteEl.value = parsed.suite;
+    /* Suite: overwrite if parsed value found one; leave alone otherwise
+       (so a rep who added a suite by hand doesn't lose it when they
+       re-paste a street-only correction). */
+    if(parsed.suite && suiteEl) suiteEl.value = parsed.suite;
   },
 
   async count(){
