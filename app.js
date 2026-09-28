@@ -1011,10 +1011,12 @@ const accounts = {
         rw.value = `${t.getFullYear()}-${pad(t.getMonth()+1)}-${pad(t.getDate())}T${pad(t.getHours())}:${pad(t.getMinutes())}`;
       }
     } else {
-      /* Brand-new account — surface the contacts section with a stub row
-         hint so the user knows contacts can be added after first save. */
+      /* Brand-new account — render an empty contact stub so contacts can
+         be filled in immediately. They insert against the new account_id
+         after the bottom Save creates the account row (see
+         _saveAllContactRows called from accounts.save). */
       const cw = document.getElementById('f-contacts-list');
-      if(cw) cw.innerHTML = '<div class="muted" style="font-size:12px">Save the account first, then add contacts here.</div>';
+      if(cw) cw.innerHTML = accounts._contactRowHTML(null, {});
     }
   },
   /* --- Additional contacts (soft-deleted, 90-day retention on backend) --- */
@@ -1059,13 +1061,47 @@ const accounts = {
   addContactRow(){
     const wrap = document.getElementById('f-contacts-list');
     if(!wrap) return;
-    if(!accounts._currentAccountId){
-      ui.toast('Save the account first before adding contacts.');
-      return;
-    }
+    /* Allow contact rows on brand-new accounts too — they insert with the
+       new account_id after the bottom Save creates the account. */
     const holder = document.createElement('div');
     holder.innerHTML = accounts._contactRowHTML(null, {});
     wrap.appendChild(holder.firstElementChild);
+  },
+
+  /* Save every contact row in the modal — new ones with content get
+     inserted, existing ones always get updated. Called from
+     accounts.save() so the bottom Save button commits everything even
+     when the rep never clicked the per-row Save. Rows with all fields
+     blank are ignored. Individual failures log but don't block the
+     account save. */
+  async _saveAllContactRows(accountId){
+    if(!accountId) return;
+    const rows = document.querySelectorAll('[data-cid]');
+    for(const row of rows){
+      const cid = row.getAttribute('data-cid');
+      const get = fld => (row.querySelector(`[data-fld="${fld}"]`)?.value || '').trim();
+      const payload = {
+        name:  get('name'),
+        title: get('title'),
+        phone: get('phone'),
+        email: get('email'),
+        notes: get('notes')
+      };
+      const hasContent = Object.values(payload).some(v => v);
+      const isNew = cid.startsWith('new-');
+      try {
+        if(isNew){
+          if(!hasContent) continue;
+          const r = await sb.from('account_contacts').insert({ ...payload, account_id: accountId });
+          if(r.error) console.warn('[bulk contacts] insert failed', r.error);
+        } else if(hasContent){
+          /* Existing contact — update in place. Skip if all fields were
+             cleared (rep probably meant to leave it). */
+          const r = await sb.from('account_contacts').update(payload).eq('id', cid);
+          if(r.error) console.warn('[bulk contacts] update failed', r.error);
+        }
+      } catch(e){ console.warn('[bulk contacts] row save failed', e); }
+    }
   },
   async saveContact(cid){
     const row = document.querySelector(`[data-cid="${CSS.escape(cid)}"]`);
@@ -1334,6 +1370,14 @@ const accounts = {
       }
     }
     if(q.error){ ui.err(q.error); return; }
+    /* Harvest every contact row in the modal — any dirty/new rows that
+     the rep didn't explicitly Save individually get committed now.
+     Runs BEFORE Shopify sync and modal close so the DOM is still around
+     to read. Failures inside log-only; they don't block the account
+     save or downstream Shopify push. */
+    try { await accounts._saveAllContactRows(q.data.id); }
+    catch(e){ console.warn('[accounts.save] contact bulk save failed', e); }
+
     /* If Shopify integration is live AND the current rep is NOT in test mode,
        mirror the account as a Shopify customer. Test-mode reps must never
        create real Shopify customers (matches the order-push gate). */
