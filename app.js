@@ -3483,8 +3483,7 @@ const orders = {
       const countEl = document.getElementById('paid-orders-count');
       const detailEl = document.getElementById('paid-orders-detail');
       if(countEl) countEl.textContent = String(list.length);
-      const total = list.reduce((s,o) => s + Number(o.total || 0) - Number(o.shipping || 0) - Number(o.tax || 0), 0);
-      if(detailEl) detailEl.textContent = `Product revenue: ${fmt$(total)}`;
+      if(detailEl) detailEl.textContent = list.length === 1 ? 'New payment since your last visit' : 'New payments since your last visit';
       banner.classList.remove('hide');
     } catch(_){ banner.classList.add('hide'); }
   },
@@ -3518,14 +3517,12 @@ const orders = {
     };
     const rows = list.map(o => {
       const acct = o.account?.business_name || '(no account)';
-      const prod = Number(o.total || 0) - Number(o.shipping || 0) - Number(o.tax || 0);
-      const comm = prod * (profiles.commissionFor(o.rep_id) / 100);
       const repTag = isAdminView ? ` · ${esc(repNameFor(o.rep_id))}` : '';
-      return `<div class="list-item"><div class="grow"><div class="title">${esc(o.order_number)} · ${esc(acct)}${repTag}</div><div class="meta">${o.placed_at?.slice(0,10)} · product revenue ${fmt$(prod)} · commission ${fmt$(comm)}</div></div></div>`;
+      return `<div class="list-item"><div class="grow"><div class="title">${esc(o.order_number)} · ${esc(acct)}${repTag}</div><div class="meta">${o.placed_at?.slice(0,10) || ''}</div></div></div>`;
     }).join('');
     ui.modal(`
       <h3>🎉 ${list.length} payment${list.length===1?'':'s'} landed</h3>
-      <p class="muted" style="font-size:13px;margin:0 0 12px">Every order below just moved to 'paid' in Shopify. Commission counts these — check the Reports tab.</p>
+      <p class="muted" style="font-size:13px;margin:0 0 12px">Every order below just moved to 'paid' in Shopify.</p>
       ${rows}
       <div class="row" style="gap:8px;margin-top:12px">
         <button class="icon-btn primary" onclick="orders.dismissPaidNotifications()">Got it — dismiss all</button>
