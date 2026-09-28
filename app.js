@@ -753,6 +753,17 @@ const accounts = {
         street = street.slice(0, trailing.index).replace(/,\s*$/, '').trim();
       }
     }
+    /* Post-process: if city text STARTS with a unit marker
+       ("Suite 103 Lone Tree"), peel the unit off into suite so the city
+       field is left with just the real city name. */
+    if(city){
+      const cityLead = /^(ste|suite|apt|apartment|unit|room|rm|floor|fl|bldg|building|#)\s*(\S+)\s+(.+)$/i.exec(city);
+      if(cityLead){
+        const extracted = `${cityLead[1]} ${cityLead[2]}`.replace(/^#\s+/, '#').trim();
+        suite = suite ? `${suite}, ${extracted}` : extracted;
+        city = cityLead[3].trim();
+      }
+    }
     return { street, suite, city, state, zip };
   },
 
