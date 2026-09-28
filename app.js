@@ -712,20 +712,24 @@ const accounts = {
     let head = s.slice(0, m.index).trim().replace(/,\s*$/, '');
     if(!head) return null;
     /* Split what's before state+zip by comma. */
-    const looksLikeUnit = (str) => /^(ste|suite|unit|apt|apartment|#)\b/i.test(str) || /^\d+[A-Z]?$/i.test(str);
+    const looksLikeUnit = (str) => /^(ste|suite|unit|apt|apartment|room|rm|floor|fl|bldg|building|#)\b/i.test(str) || /^\d+[A-Z]?$/i.test(str);
     let street = '', suite = '', city = '';
     const parts = head.split(',').map(x => x.trim()).filter(Boolean);
     if(parts.length >= 2){
       city = parts.pop();
-      if(parts.length >= 2 && looksLikeUnit(parts[parts.length-1])){
-        suite = parts.pop();
+      /* Pop every trailing unit-like part so multi-unit addresses like
+         "Suite 120, Room 125" get combined into one suite value. */
+      const unitParts = [];
+      while(parts.length >= 2 && looksLikeUnit(parts[parts.length-1])){
+        unitParts.unshift(parts.pop());
       }
+      if(unitParts.length) suite = unitParts.join(', ');
       street = parts.join(', ');
     } else {
       /* Zero commas remaining — everything is "STREET [UNIT] CITY" glued
          by whitespace. Try to locate a unit marker as the anchor between
          street and city; otherwise fall back to last-word-is-city. */
-      const unitMatch = /^(.+?)\s+(ste|suite|unit|apt|apartment|#)\s*(\S+)\s+(.+)$/i.exec(head);
+      const unitMatch = /^(.+?)\s+(ste|suite|unit|apt|apartment|room|rm|floor|fl|bldg|building|#)\s*(\S+)\s+(.+)$/i.exec(head);
       if(unitMatch){
         street = unitMatch[1].trim();
         suite = `${unitMatch[2]} ${unitMatch[3]}`.trim();
@@ -737,12 +741,15 @@ const accounts = {
         street = words.join(' ');
       }
     }
-    /* Post-process: if street still contains a trailing "Ste 4"/"Unit 160"
-       and we didn't set suite already, peel it off. */
-    if(!suite && street){
-      const trailing = /[,\s]+(ste|suite|apt|apartment|unit|#)\s*([\w-]+)\s*$/i.exec(street);
+    /* Post-process: if street still contains a trailing "Ste 4"/"Unit 160"/
+       "Room 5", peel it off. If we already have a suite (from comma parts),
+       PREPEND the trailing marker so full order is preserved
+       (e.g. "Suite 120, Room 125"). */
+    if(street){
+      const trailing = /[,\s]+(ste|suite|apt|apartment|unit|room|rm|floor|fl|bldg|building|#)\s*([\w-]+)\s*$/i.exec(street);
       if(trailing){
-        suite = trailing[0].replace(/^[,\s]+/, '').trim();
+        const extracted = trailing[0].replace(/^[,\s]+/, '').trim();
+        suite = suite ? `${extracted}, ${suite}` : extracted;
         street = street.slice(0, trailing.index).replace(/,\s*$/, '').trim();
       }
     }
