@@ -215,7 +215,9 @@
           <button class="icon-btn" onclick="nav.go('orders');orders.openNew()">+ New Order</button>
           <button class="icon-btn" onclick="nav.go('forecast');forecasts.openNew()">+ New Forecast</button>
           <button class="icon-btn" onclick="nav.go('reports')">Reports</button>
-          <button class="icon-btn" onclick="nav.go('cs')">Customer Service</button>
+          <!-- Customer Service hidden 2026-09-28 — feature is coded but awaiting Anthropic API key.
+               Un-hide this button, the bottom-nav Help button, and the view-cs section when Live AI is enabled. -->
+          <button class="icon-btn hide" onclick="nav.go('cs')">Customer Service</button>
         </div>
       </div>
     </section>
@@ -669,7 +671,7 @@
     <button class="nav-btn" data-view="profile" onclick="nav.go('profile')"><span class="ico">👤</span>Profile</button>
     <button class="nav-btn admin-only hide" data-view="reps" onclick="nav.go('reps')"><span class="ico">👥</span>Reps</button>
     <button class="nav-btn" data-view="materials" onclick="nav.go('materials')"><span class="ico">📎</span>Materials</button>
-    <button class="nav-btn" data-view="cs" onclick="nav.go('cs')"><span class="ico">💬</span>Help</button>
+    <button class="nav-btn hide" data-view="cs" onclick="nav.go('cs')"><span class="ico">💬</span>Help</button>
     <button class="nav-btn admin-only hide" data-view="admin" onclick="nav.go('admin')"><span class="ico">⚙</span>Admin</button>
   </footer>
 </section>
