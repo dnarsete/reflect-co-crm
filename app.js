@@ -952,7 +952,7 @@ const accounts = {
       ${!isNew ? `
       <div style="margin-top:12px;padding:10px;border:1px solid var(--line);background:var(--panel-2);border-radius:8px">
         <div style="font-weight:600;font-size:13px;margin-bottom:4px">🎬 Media portal access</div>
-        <div class="muted" style="font-size:11px;margin:0 0 8px">Emails allowed to sign in at <a href="https://media.thereflectco.com" target="_blank" rel="noopener">media.thereflectco.com</a> for THIS account. The account's primary email is auto-added; you can also add support staff, marketing hires, etc.</div>
+        <div class="muted" style="font-size:11px;margin:0 0 8px">Emails you've explicitly authorized to sign in at <a href="https://media.thereflectco.com" target="_blank" rel="noopener">media.thereflectco.com</a> for THIS account. Nothing is auto-added — every entry here is an admin decision.</div>
         <div id="f-portal-access-list"><div class="muted" style="font-size:12px">Loading…</div></div>
         ${auth.isAdmin() ? `
         <div class="row" style="gap:8px;margin-top:8px">
@@ -1095,14 +1095,11 @@ const accounts = {
     }
     const rows = data || [];
     if(!rows.length){
-      wrap.innerHTML = `<div class="muted" style="font-size:12px">Nobody authorized yet. This account's primary email is auto-added when set.</div>`;
+      wrap.innerHTML = `<div class="muted" style="font-size:12px">Nobody authorized yet. Type an email below to grant access.</div>`;
       return;
     }
     const isAdmin = auth.isAdmin();
     wrap.innerHTML = rows.map(r => {
-      const badge = r.source === 'primary'
-        ? `<span class="badge" title="Auto-added from account email">primary</span>`
-        : `<span class="badge">admin-added</span>`;
       const status = r.disabled
         ? `<span class="badge warn">revoked</span>`
         : `<span class="badge ok">active</span>`;
@@ -1113,12 +1110,10 @@ const accounts = {
         } else {
           controls += ` <button type="button" class="icon-btn ghost" onclick="accounts.revokePortalEmail(${r.id})">Revoke</button>`;
         }
-        if(r.source === 'admin'){
-          controls += ` <button type="button" class="icon-btn danger" title="Permanently delete" onclick="accounts.deletePortalEmail(${r.id})">✕</button>`;
-        }
+        controls += ` <button type="button" class="icon-btn danger" title="Permanently delete" onclick="accounts.deletePortalEmail(${r.id})">✕</button>`;
       }
       return `<div class="list-item" style="align-items:center;gap:8px">
-        <div class="grow"><b>${esc(r.email)}</b> ${badge} ${status}</div>
+        <div class="grow"><b>${esc(r.email)}</b> ${status}</div>
         <div>${controls}</div>
       </div>`;
     }).join('');
