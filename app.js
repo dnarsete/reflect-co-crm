@@ -949,6 +949,18 @@ const accounts = {
         <button type="button" class="icon-btn ghost" style="margin-top:8px" onclick="accounts.addContactRow()">+ Add contact</button>
       </div>
 
+      ${!isNew ? `
+      <div style="margin-top:12px;padding:10px;border:1px solid var(--line);background:var(--panel-2);border-radius:8px">
+        <div style="font-weight:600;font-size:13px;margin-bottom:4px">🎬 Media portal access</div>
+        <div class="muted" style="font-size:11px;margin:0 0 8px">Emails allowed to sign in at <a href="https://media.thereflectco.com" target="_blank" rel="noopener">media.thereflectco.com</a> for THIS account. The account's primary email is auto-added; you can also add support staff, marketing hires, etc.</div>
+        <div id="f-portal-access-list"><div class="muted" style="font-size:12px">Loading…</div></div>
+        ${auth.isAdmin() ? `
+        <div class="row" style="gap:8px;margin-top:8px">
+          <input id="f-portal-new-email" type="email" placeholder="add-someone@customer.com" style="flex:1" autocapitalize="none" spellcheck="false"/>
+          <button type="button" class="icon-btn" onclick="accounts.addPortalEmail('${acc.id}')">+ Authorize email</button>
+        </div>` : `<div class="muted" style="font-size:11px;margin-top:6px">Admin-only: your rep can request additions.</div>`}
+      </div>` : ''}
+
       <div class="grid-2" style="margin-top:12px">
         <div><label>Sales tax license #</label><input id="f-stl" value="${esc(acc.sales_tax_license)}"/></div>
         <div><label>License state</label><select id="f-sts">${usStateOptions(acc.sales_tax_state)}</select></div>
@@ -1001,6 +1013,7 @@ const accounts = {
       accounts.renderNotes(acc.id);
       reminders.renderAccountSection(acc.id);
       accounts._renderContacts(acc.id);
+      accounts._renderPortalAccess(acc.id);
       /* Default the datetime picker to tomorrow 9am local so a
          one-click "Set reminder" without picking a time still lands
          somewhere sensible instead of erroring. */
@@ -1066,6 +1079,101 @@ const accounts = {
     const holder = document.createElement('div');
     holder.innerHTML = accounts._contactRowHTML(null, {});
     wrap.appendChild(holder.firstElementChild);
+  },
+
+  /* --- Media portal access (per-account allow-list) --- */
+  async _renderPortalAccess(accountId){
+    const wrap = document.getElementById('f-portal-access-list');
+    if(!wrap || !accountId) return;
+    const { data, error } = await sb.from('portal_authorized_emails')
+      .select('id, email, source, disabled, added_at')
+      .eq('account_id', accountId)
+      .order('added_at', { ascending: true });
+    if(error){
+      wrap.innerHTML = `<div class="muted" style="font-size:12px">Portal access table missing. Run supabase/media-portal.sql first.</div>`;
+      return;
+    }
+    const rows = data || [];
+    if(!rows.length){
+      wrap.innerHTML = `<div class="muted" style="font-size:12px">Nobody authorized yet. This account's primary email is auto-added when set.</div>`;
+      return;
+    }
+    const isAdmin = auth.isAdmin();
+    wrap.innerHTML = rows.map(r => {
+      const badge = r.source === 'primary'
+        ? `<span class="badge" title="Auto-added from account email">primary</span>`
+        : `<span class="badge">admin-added</span>`;
+      const status = r.disabled
+        ? `<span class="badge warn">revoked</span>`
+        : `<span class="badge ok">active</span>`;
+      let controls = '';
+      if(isAdmin){
+        if(r.disabled){
+          controls += ` <button type="button" class="icon-btn" onclick="accounts.enablePortalEmail(${r.id})">Re-enable</button>`;
+        } else {
+          controls += ` <button type="button" class="icon-btn ghost" onclick="accounts.revokePortalEmail(${r.id})">Revoke</button>`;
+        }
+        if(r.source === 'admin'){
+          controls += ` <button type="button" class="icon-btn danger" title="Permanently delete" onclick="accounts.deletePortalEmail(${r.id})">✕</button>`;
+        }
+      }
+      return `<div class="list-item" style="align-items:center;gap:8px">
+        <div class="grow"><b>${esc(r.email)}</b> ${badge} ${status}</div>
+        <div>${controls}</div>
+      </div>`;
+    }).join('');
+  },
+
+  async addPortalEmail(accountId){
+    if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
+    const inp = document.getElementById('f-portal-new-email');
+    const email = (inp?.value || '').trim().toLowerCase();
+    if(!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){
+      ui.toast('Enter a valid email address.'); return;
+    }
+    const r = await sb.from('portal_authorized_emails').insert({
+      account_id: accountId,
+      email,
+      source: 'admin',
+      added_by: (await sb.auth.getUser()).data.user?.id
+    });
+    if(r.error){
+      /* Unique-index violation = email is already on this account's list */
+      if(/duplicate key|unique constraint/i.test(r.error.message || '')){
+        ui.toast('That email is already authorized for this account.');
+      } else {
+        ui.err(r.error);
+      }
+      return;
+    }
+    inp.value = '';
+    ui.toast('Authorized. They can sign in at media.thereflectco.com now.');
+    accounts._renderPortalAccess(accountId);
+  },
+
+  async revokePortalEmail(id){
+    if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
+    const r = await sb.from('portal_authorized_emails').update({ disabled: true }).eq('id', id);
+    if(r.error){ ui.err(r.error); return; }
+    ui.toast('Revoked.');
+    accounts._renderPortalAccess(accounts._currentAccountId);
+  },
+
+  async enablePortalEmail(id){
+    if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
+    const r = await sb.from('portal_authorized_emails').update({ disabled: false }).eq('id', id);
+    if(r.error){ ui.err(r.error); return; }
+    ui.toast('Re-enabled.');
+    accounts._renderPortalAccess(accounts._currentAccountId);
+  },
+
+  async deletePortalEmail(id){
+    if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
+    if(!confirm('Permanently delete this authorized email? Use "Revoke" instead if you want to keep the row for audit history.')) return;
+    const r = await sb.from('portal_authorized_emails').delete().eq('id', id);
+    if(r.error){ ui.err(r.error); return; }
+    ui.toast('Deleted.');
+    accounts._renderPortalAccess(accounts._currentAccountId);
   },
 
   /* Save every contact row in the modal — new ones with content get
