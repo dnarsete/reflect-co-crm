@@ -1138,9 +1138,11 @@ const accounts = {
       added_by: (await sb.auth.getUser()).data.user?.id
     });
     if(r.error){
-      /* Unique-index violation = email is already on this account's list */
-      if(/duplicate key|unique constraint/i.test(r.error.message || '')){
+      const msg = r.error.message || '';
+      if(/duplicate key|unique constraint/i.test(msg)){
         ui.toast('That email is already authorized for this account.');
+      } else if(/staff email/i.test(msg)){
+        ui.toast('Staff emails can\'t be portal users — they sign in through the CRM.');
       } else {
         ui.err(r.error);
       }
