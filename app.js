@@ -6348,8 +6348,8 @@ const portalAccess = {
       <p class="muted" style="font-size:13px;margin:0 0 12px">Grant an email access to one specific account's library on <a href="https://media.thereflectco.com" target="_blank" rel="noopener">media.thereflectco.com</a>.</p>
       <label>Account</label>
       <input id="pa-acc-search" placeholder="Search by business name, account #, city, email, phone, contact…" oninput="portalAccess._filterOptions()" style="margin-bottom:4px" autocomplete="off"/>
-      <select id="pa-acc-select" size="8" style="width:100%">${options}</select>
-      <div class="muted" style="font-size:11px;margin-top:4px"><span id="pa-acc-count">${accs?.length || 0}</span> account${accs?.length===1?'':'s'} — multi-word search (AND): "lone tree medspa" matches both.</div>
+      <select id="pa-acc-select" size="8" style="width:100%;min-height:220px">${options}</select>
+      <div class="muted" style="font-size:11px;margin-top:4px">Showing <span id="pa-acc-count">${accs?.length || 0}</span> of <b>${accs?.length || 0}</b> account${accs?.length===1?'':'s'} — multi-word search (AND): "lone tree medspa" matches both. <button type="button" class="icon-btn ghost" style="padding:2px 8px;font-size:11px;margin-left:4px" onclick="document.getElementById('pa-acc-search').value='';portalAccess._filterOptions();document.getElementById('pa-acc-search').focus()">Clear</button></div>
       <label style="margin-top:12px">Email to authorize</label>
       <input id="pa-email" type="email" placeholder="customer@example.com" autocapitalize="none" spellcheck="false"/>
       <div class="row" style="gap:8px;margin-top:14px;justify-content:flex-end">
