@@ -6277,6 +6277,132 @@ const messages = {
 };
 
 /* ---------- ADMIN ---------- */
+/* ---------- MEDIA PORTAL ACCESS (admin tab) ----------
+   Standalone management view for every portal_access row across every
+   account. Per-account editing still lives in the account edit modal
+   (see accounts._renderPortalAccess) — this is the admin-wide view. */
+const portalAccess = {
+  async render(){
+    const wrap = document.getElementById('portal-access-admin-list');
+    if(!wrap) return;
+    if(!auth.isAdmin()){
+      wrap.innerHTML = '<div class="muted" style="font-size:12px">Admin only.</div>';
+      return;
+    }
+    const r = await sb.from('portal_access')
+      .select('id, email, disabled, added_at, account:accounts(id, account_number, business_name)')
+      .order('added_at', { ascending: false });
+    if(r.error){
+      wrap.innerHTML = `<div class="muted" style="font-size:12px">Table missing. Run supabase/media-portal.sql.</div>`;
+      return;
+    }
+    const rows = r.data || [];
+    if(!rows.length){
+      wrap.innerHTML = `<div class="muted" style="font-size:12px">No accounts authorized yet. Click "+ Add account" to grant access.</div>`;
+      return;
+    }
+    wrap.innerHTML = `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="border-bottom:1px solid var(--line);text-align:left">
+        <th style="padding:8px 10px">Account</th>
+        <th style="padding:8px 10px">Email</th>
+        <th style="padding:8px 10px">Status</th>
+        <th style="padding:8px 10px">Added</th>
+        <th style="padding:8px 10px"></th>
+      </tr></thead>
+      <tbody>${rows.map(r => `<tr style="border-bottom:1px solid var(--line)">
+        <td style="padding:8px 10px"><b>${esc(r.account?.business_name || '(deleted)')}</b> <span class="muted">${esc(r.account?.account_number || '')}</span></td>
+        <td style="padding:8px 10px">${esc(r.email)}</td>
+        <td style="padding:8px 10px">${r.disabled ? '<span class="badge warn">revoked</span>' : '<span class="badge ok">active</span>'}</td>
+        <td style="padding:8px 10px" class="muted">${r.added_at?.slice(0,10) || ''}</td>
+        <td style="padding:8px 10px;white-space:nowrap">
+          ${r.disabled
+            ? `<button class="icon-btn" style="padding:4px 10px;font-size:12px" onclick="portalAccess.enable(${r.id})">Re-enable</button>`
+            : `<button class="icon-btn ghost" style="padding:4px 10px;font-size:12px" onclick="portalAccess.revoke(${r.id})">Revoke</button>`}
+          <button class="icon-btn danger" style="padding:4px 10px;font-size:12px;margin-left:4px" onclick="portalAccess.remove(${r.id})" title="Permanently delete">✕</button>
+        </td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+  },
+
+  async openAdd(){
+    if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
+    const accs = await sb.from('accounts').select('id, account_number, business_name, business_city').order('business_name');
+    if(accs.error){ ui.err(accs.error); return; }
+    const list = (accs.data || []);
+    const options = list.map(a =>
+      `<option value="${a.id}" data-search="${esc(((a.business_name||'')+' '+(a.account_number||'')+' '+(a.business_city||'')).toLowerCase())}">${esc(a.account_number)} — ${esc(a.business_name||'(unnamed)')}${a.business_city?' · '+esc(a.business_city):''}</option>`
+    ).join('');
+    ui.modal(`
+      <h3>Add media portal access</h3>
+      <p class="muted" style="font-size:13px;margin:0 0 12px">Grant an email access to one specific account's library on <a href="https://media.thereflectco.com" target="_blank" rel="noopener">media.thereflectco.com</a>.</p>
+      <label>Account</label>
+      <input id="pa-acc-search" placeholder="Type to filter…" oninput="portalAccess._filterOptions()" style="margin-bottom:4px"/>
+      <select id="pa-acc-select" size="8" style="width:100%">${options}</select>
+      <label style="margin-top:12px">Email to authorize</label>
+      <input id="pa-email" type="email" placeholder="customer@example.com" autocapitalize="none" spellcheck="false"/>
+      <div class="row" style="gap:8px;margin-top:14px;justify-content:flex-end">
+        <button class="icon-btn ghost" onclick="ui.closeModal()">Cancel</button>
+        <button class="icon-btn primary" onclick="portalAccess.submitAdd()">Authorize</button>
+      </div>
+    `);
+  },
+
+  _filterOptions(){
+    const q = (document.getElementById('pa-acc-search')?.value || '').trim().toLowerCase();
+    const sel = document.getElementById('pa-acc-select');
+    if(!sel) return;
+    for(const o of sel.options){
+      const hay = o.getAttribute('data-search') || '';
+      o.hidden = q && !hay.includes(q);
+    }
+  },
+
+  async submitAdd(){
+    const accId = document.getElementById('pa-acc-select')?.value;
+    const email = (document.getElementById('pa-email')?.value || '').trim().toLowerCase();
+    if(!accId){ ui.toast('Pick an account.'); return; }
+    if(!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){ ui.toast('Enter a valid email.'); return; }
+    const r = await sb.from('portal_access').insert({
+      account_id: accId,
+      email,
+      added_by: (await sb.auth.getUser()).data.user?.id
+    });
+    if(r.error){
+      if(/duplicate key|unique constraint/i.test(r.error.message||'')){
+        ui.toast('That email is already authorized for this account.');
+      } else {
+        ui.err(r.error);
+      }
+      return;
+    }
+    ui.closeModal();
+    ui.toast('Authorized.');
+    portalAccess.render();
+  },
+
+  async revoke(id){
+    const r = await sb.from('portal_access').update({ disabled: true }).eq('id', id);
+    if(r.error){ ui.err(r.error); return; }
+    ui.toast('Revoked.');
+    portalAccess.render();
+  },
+
+  async enable(id){
+    const r = await sb.from('portal_access').update({ disabled: false }).eq('id', id);
+    if(r.error){ ui.err(r.error); return; }
+    ui.toast('Re-enabled.');
+    portalAccess.render();
+  },
+
+  async remove(id){
+    if(!confirm('Permanently delete this authorization? Use Revoke instead to keep the row for audit history.')) return;
+    const r = await sb.from('portal_access').delete().eq('id', id);
+    if(r.error){ ui.err(r.error); return; }
+    ui.toast('Deleted.');
+    portalAccess.render();
+  }
+};
+
 const adminPanel = {
   /* One-shot backfill for legacy reps whose profile.rep_id is NULL
      (created before the auto-assign trigger existed). Runs every time
@@ -6413,6 +6539,8 @@ const adminPanel = {
     try { sqlRunner.renderHistory(); } catch(_){}
     /* messages */
     messages.renderAdmin();
+    /* portal access */
+    try { portalAccess.render(); } catch(_){}
     /* shopify */
     shopify.render();
   },
