@@ -1506,6 +1506,21 @@ const accounts = {
         return;
       }
     }
+
+    /* Pre-save email check — if the email field is empty, warn before
+       saving. ACC-0107 silently went to Shopify with no email, which
+       then meant invoices couldn't ever be sent to that customer.
+       Shopify invoices require an email. Admin can override if the
+       account genuinely doesn't have one yet (prospect, lead, etc). */
+    const emailValue = (document.getElementById('f-em')?.value || '').trim();
+    if(!emailValue && !bypassDupeCheck){
+      const proceed = confirm(
+        'This account has no email on file.\n\n' +
+        'Shopify cannot send invoices to a customer without an email, so any order you push for this account will fail at invoice time.\n\n' +
+        'OK — save without an email anyway\nCancel — go back and add one'
+      );
+      if(!proceed) return;
+    }
     const same = document.getElementById('f-billing-same').checked;
     /* Whatever's in the fields is what gets saved. The auto-populate happens
        at CHECKBOX-CLICK time (see toggleBillingSame), so by the time we get
@@ -2569,6 +2584,21 @@ const accounts = {
       /* 3. Delete the folded-in row. At this point nothing points to it. */
       const del = await sb.from('accounts').delete().eq('id', otherId).select();
       if(del.error) throw del.error;
+
+      /* 4. Push the surviving account to Shopify so the linked Shopify
+         customer picks up any field that was filled from the fold-in
+         (crucially the email — this was the ORD-1037 gap: merge
+         consolidated CRM data but left Shopify customer A emailless). */
+      const inTestMode = !!(cache.me && cache.me.test_mode && cache.me.role !== 'admin');
+      if(shopify.mode() === 'live' && !inTestMode){
+        try {
+          await shopify.call('update_account', { account_id: keepId });
+        } catch(e){
+          console.warn('[merge] post-merge Shopify sync failed:', e?.message || e);
+          /* Non-fatal — the CRM-side merge is already done. Dan can
+             re-sync later via the account's save button. */
+        }
+      }
 
       accounts._mergePlan = null;
       /* Prune from the dupe review state and re-render. */
