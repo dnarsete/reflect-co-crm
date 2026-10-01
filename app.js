@@ -4688,7 +4688,11 @@ const reports = {
 /* ---------- MARKETING MATERIALS (Supabase Storage) ---------- */
 const materials = {
   BUCKET: 'materials',
-  CATEGORIES: ['Product Sheets', 'Sell Sheets', 'Brand Assets', 'Order Forms', 'Training', 'Social Media', 'Other'],
+  /* Social Media and Videos are media-portal-only (handled on
+     media.thereflectco.com). Dropped from the CRM's category list so
+     files uploaded here stay rep-side; files uploaded on the portal
+     stay customer-facing. Zero overlap by design. */
+  CATEGORIES: ['Product Sheets', 'Sell Sheets', 'Brand Assets', 'Order Forms', 'Training', 'Other'],
   _files: [],
 
   /* Load all files across every category folder. Signed download URLs are
