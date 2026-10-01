@@ -6326,18 +6326,30 @@ const portalAccess = {
 
   async openAdd(){
     if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
-    const accs = await sb.from('accounts').select('id, account_number, business_name, business_city').order('business_name');
-    if(accs.error){ ui.err(accs.error); return; }
-    const list = (accs.data || []);
-    const options = list.map(a =>
-      `<option value="${a.id}" data-search="${esc(((a.business_name||'')+' '+(a.account_number||'')+' '+(a.business_city||'')).toLowerCase())}">${esc(a.account_number)} — ${esc(a.business_name||'(unnamed)')}${a.business_city?' · '+esc(a.business_city):''}</option>`
-    ).join('');
+    /* Same pattern the Accounts tab uses: pull contacts along for free
+       so the search can match a contact's name, email, phone, title, or
+       note too — not just the business's own fields. */
+    const accs = await accounts.list();
+    const options = (accs || []).map(a => {
+      const contactHay = (a.contacts || []).map(c =>
+        `${c.name||''} ${c.title||''} ${c.phone||''} ${c.email||''} ${c.notes||''}`
+      ).join(' ');
+      const hay = normSearch([
+        a.business_name, a.billing_name, a.account_number,
+        a.business_city, a.business_state, a.business_street, a.business_zip,
+        a.email, a.business_phone, a.cell, a.website,
+        contactHay
+      ].filter(Boolean).join(' '));
+      const label = `${esc(a.account_number)} — ${esc(a.business_name||'(unnamed)')}${a.business_city?' · '+esc(a.business_city):''}`;
+      return `<option value="${a.id}" data-search="${esc(hay)}">${label}</option>`;
+    }).join('');
     ui.modal(`
       <h3>Add media portal access</h3>
       <p class="muted" style="font-size:13px;margin:0 0 12px">Grant an email access to one specific account's library on <a href="https://media.thereflectco.com" target="_blank" rel="noopener">media.thereflectco.com</a>.</p>
       <label>Account</label>
-      <input id="pa-acc-search" placeholder="Type to filter…" oninput="portalAccess._filterOptions()" style="margin-bottom:4px"/>
+      <input id="pa-acc-search" placeholder="Search by business name, account #, city, email, phone, contact…" oninput="portalAccess._filterOptions()" style="margin-bottom:4px" autocomplete="off"/>
       <select id="pa-acc-select" size="8" style="width:100%">${options}</select>
+      <div class="muted" style="font-size:11px;margin-top:4px"><span id="pa-acc-count">${accs?.length || 0}</span> account${accs?.length===1?'':'s'} — multi-word search (AND): "lone tree medspa" matches both.</div>
       <label style="margin-top:12px">Email to authorize</label>
       <input id="pa-email" type="email" placeholder="customer@example.com" autocapitalize="none" spellcheck="false"/>
       <div class="row" style="gap:8px;margin-top:14px;justify-content:flex-end">
@@ -6348,13 +6360,20 @@ const portalAccess = {
   },
 
   _filterOptions(){
-    const q = (document.getElementById('pa-acc-search')?.value || '').trim().toLowerCase();
+    const raw = (document.getElementById('pa-acc-search')?.value || '').trim();
+    const q = normSearch(raw);
+    const words = q ? q.split(/\s+/).filter(Boolean) : [];
     const sel = document.getElementById('pa-acc-select');
+    const countEl = document.getElementById('pa-acc-count');
     if(!sel) return;
+    let visible = 0;
     for(const o of sel.options){
       const hay = o.getAttribute('data-search') || '';
-      o.hidden = q && !hay.includes(q);
+      const matches = !words.length || words.every(w => hay.includes(w));
+      o.hidden = !matches;
+      if(matches) visible++;
     }
+    if(countEl) countEl.textContent = String(visible);
   },
 
   async submitAdd(){
