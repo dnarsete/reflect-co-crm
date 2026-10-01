@@ -6324,15 +6324,14 @@ const portalAccess = {
     </table></div>`;
   },
 
-  _addState: { all: [], picked: null },
+  _addState: { all: [], picked: null, emailsForPicked: [] },
 
   async openAdd(){
     if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
     const accs = (await accounts.list()) || [];
-    /* Pre-compute search hay once so filter is pure string includes. */
     portalAccess._addState.all = accs.map(a => {
       const contactHay = (a.contacts || []).map(c =>
-        `${c.name||''} ${c.title||''} ${c.phone||''} ${c.email||''} ${c.notes||''}`
+        `${c.name||''} ${c.title||''} ${c.phone||''} ${c.email||''}`
       ).join(' ');
       const hay = normSearch([
         a.business_name, a.billing_name, a.account_number,
@@ -6340,27 +6339,32 @@ const portalAccess = {
         a.email, a.business_phone, a.cell, a.website,
         contactHay
       ].filter(Boolean).join(' '));
-      return { id: a.id, number: a.account_number, name: a.business_name || '(unnamed)', city: a.business_city || '', hay };
+      /* Pre-compute the emails we'll grant access to for this account:
+         the primary email + every non-deleted contact's email. */
+      const emails = new Set();
+      if(a.email) emails.add(String(a.email).trim().toLowerCase());
+      (a.contacts || []).forEach(c => {
+        if(c.email) emails.add(String(c.email).trim().toLowerCase());
+      });
+      return {
+        id: a.id, number: a.account_number, name: a.business_name || '(unnamed)',
+        city: a.business_city || '', hay, emails: Array.from(emails).filter(Boolean)
+      };
     });
     portalAccess._addState.picked = null;
-    console.log('[portalAccess] openAdd loaded', portalAccess._addState.all.length, 'accounts');
+    portalAccess._addState.emailsForPicked = [];
     ui.modal(`
-      <h3>Add media portal access</h3>
-      <p class="muted" style="font-size:13px;margin:0 0 12px">Grant an email access to one specific account's library on <a href="https://media.thereflectco.com" target="_blank" rel="noopener">media.thereflectco.com</a>.</p>
-      <div style="padding:6px 10px;background:rgba(0,0,0,0.12);border-radius:6px;font-size:11px;margin-bottom:8px" class="muted">${accs.length} accounts loaded. If this says 1 something is wrong with the fetch — tell Claude.</div>
-      <label>Account</label>
+      <h3>Grant media portal access</h3>
+      <p class="muted" style="font-size:13px;margin:0 0 12px">Pick an account. The CRM will automatically authorize every email already on file for that account (primary + all contacts). Nothing to type.</p>
       <div class="row" style="gap:6px">
-        <input id="pa-acc-search" placeholder="Search business name, account #, city, email, phone, contact…" oninput="portalAccess._filterOptions()" autocomplete="off" style="flex:1"/>
-        <button type="button" class="icon-btn ghost" onclick="document.getElementById('pa-acc-search').value='';portalAccess._filterOptions();document.getElementById('pa-acc-search').focus()">Clear</button>
+        <input id="pa-acc-search" placeholder="Search by business name, account #, city, email, contact…" oninput="portalAccess._filterOptions()" autocomplete="off" style="flex:1"/>
       </div>
-      <div id="pa-acc-list" style="margin-top:6px;border:1px solid var(--line);border-radius:6px;max-height:240px;overflow-y:auto;background:rgba(0,0,0,0.08)"></div>
+      <div id="pa-acc-list" style="margin-top:6px;border:1px solid var(--line);border-radius:6px;max-height:260px;overflow-y:auto;background:rgba(0,0,0,0.08)"></div>
       <div class="muted" style="font-size:11px;margin-top:4px">Showing <span id="pa-acc-count">${accs.length}</span> of <b>${accs.length}</b></div>
-      <div id="pa-acc-picked" class="muted" style="font-size:12px;margin-top:8px">No account selected yet.</div>
-      <label style="margin-top:12px">Email to authorize</label>
-      <input id="pa-email" type="email" placeholder="customer@example.com" autocapitalize="none" spellcheck="false"/>
+      <div id="pa-acc-picked" style="margin-top:12px;padding:10px 12px;border:1px dashed var(--line);border-radius:6px;font-size:13px;color:var(--muted)">Pick an account above to see which emails will get access.</div>
       <div class="row" style="gap:8px;margin-top:14px;justify-content:flex-end">
         <button class="icon-btn ghost" onclick="ui.closeModal()">Cancel</button>
-        <button class="icon-btn primary" onclick="portalAccess.submitAdd()">Authorize</button>
+        <button class="icon-btn primary" onclick="portalAccess.submitAdd()">Grant access</button>
       </div>
     `);
     portalAccess._filterOptions();
@@ -6378,13 +6382,13 @@ const portalAccess = {
     );
     const pickedId = portalAccess._addState.picked;
     if(!matched.length){
-      list.innerHTML = `<div class="muted" style="padding:12px;font-size:12px;text-align:center">No matches. ${portalAccess._addState.all.length} account(s) total loaded.</div>`;
+      list.innerHTML = `<div class="muted" style="padding:12px;font-size:12px;text-align:center">No matches.</div>`;
     } else {
-      list.innerHTML = matched.slice(0, 200).map(a =>
+      list.innerHTML = matched.slice(0, 300).map(a =>
         `<div onclick="portalAccess._pickAccount('${a.id}')" style="padding:8px 12px;border-bottom:1px solid var(--line);cursor:pointer;${pickedId===a.id?'background:rgba(191,90,42,0.25);':''}" onmouseover="this.style.background='rgba(191,90,42,0.15)'" onmouseout="this.style.background='${pickedId===a.id?'rgba(191,90,42,0.25)':'transparent'}'">
           <div style="font-size:13px"><b>${esc(a.number)}</b> — ${esc(a.name)}${a.city?` <span class="muted">· ${esc(a.city)}</span>`:''}</div>
         </div>`
-      ).join('') + (matched.length > 200 ? `<div class="muted" style="padding:8px 12px;font-size:11px">+ ${matched.length - 200} more — narrow your search</div>` : '');
+      ).join('') + (matched.length > 300 ? `<div class="muted" style="padding:8px 12px;font-size:11px">+ ${matched.length - 300} more — narrow your search</div>` : '');
     }
     if(countEl) countEl.textContent = String(matched.length);
   },
@@ -6392,34 +6396,44 @@ const portalAccess = {
   _pickAccount(id){
     portalAccess._addState.picked = id;
     const a = portalAccess._addState.all.find(x => x.id === id);
+    portalAccess._addState.emailsForPicked = a?.emails || [];
     const pickedEl = document.getElementById('pa-acc-picked');
     if(pickedEl && a){
-      pickedEl.innerHTML = `Selected: <b>${esc(a.number)} — ${esc(a.name)}</b>${a.city?` <span class="muted">· ${esc(a.city)}</span>`:''}`;
-      pickedEl.style.color = 'var(--ink)';
+      if(a.emails.length){
+        pickedEl.style.color = 'var(--ink)';
+        pickedEl.style.borderStyle = 'solid';
+        pickedEl.innerHTML = `<div><b>${esc(a.number)} — ${esc(a.name)}</b>${a.city?` <span class="muted">· ${esc(a.city)}</span>`:''}</div>
+          <div class="muted" style="font-size:12px;margin-top:6px">Will authorize ${a.emails.length} email${a.emails.length===1?'':'s'}:</div>
+          <div style="margin-top:4px;font-size:12px">${a.emails.map(e => esc(e)).join('<br/>')}</div>`;
+      } else {
+        pickedEl.style.color = 'var(--danger,#b53535)';
+        pickedEl.style.borderStyle = 'solid';
+        pickedEl.innerHTML = `<div><b>${esc(a.number)} — ${esc(a.name)}</b>${a.city?` <span class="muted">· ${esc(a.city)}</span>`:''}</div>
+          <div style="font-size:12px;margin-top:6px">⚠ No emails on file for this account. Add an email to the account record (or a contact) first, then come back.</div>`;
+      }
     }
     portalAccess._filterOptions();
   },
 
   async submitAdd(){
     const accId = portalAccess._addState.picked;
-    const email = (document.getElementById('pa-email')?.value || '').trim().toLowerCase();
-    if(!accId){ ui.toast('Pick an account.'); return; }
-    if(!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){ ui.toast('Enter a valid email.'); return; }
-    const r = await sb.from('portal_access').insert({
-      account_id: accId,
-      email,
-      added_by: (await sb.auth.getUser()).data.user?.id
-    });
-    if(r.error){
-      if(/duplicate key|unique constraint/i.test(r.error.message||'')){
-        ui.toast('That email is already authorized for this account.');
-      } else {
-        ui.err(r.error);
-      }
-      return;
+    const emails = portalAccess._addState.emailsForPicked || [];
+    if(!accId){ ui.toast('Pick an account first.'); return; }
+    if(!emails.length){ ui.toast('That account has no email on file. Add one to the account record or a contact first.'); return; }
+    const userId = (await sb.auth.getUser()).data.user?.id;
+    let added = 0, skipped = 0, failed = 0;
+    for(const email of emails){
+      const r = await sb.from('portal_access').insert({ account_id: accId, email, added_by: userId });
+      if(!r.error){ added++; }
+      else if(/duplicate key|unique constraint/i.test(r.error.message || '')) skipped++;
+      else { failed++; console.warn('[portal access] insert failed', r.error); }
     }
     ui.closeModal();
-    ui.toast('Authorized.');
+    const parts = [];
+    if(added) parts.push(`${added} authorized`);
+    if(skipped) parts.push(`${skipped} already active`);
+    if(failed) parts.push(`${failed} failed`);
+    ui.toast(parts.join(' · ') || 'Nothing changed.');
     portalAccess.render();
   },
 
