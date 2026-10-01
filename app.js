@@ -1081,16 +1081,16 @@ const accounts = {
     wrap.appendChild(holder.firstElementChild);
   },
 
-  /* --- Media portal access (per-account allow-list) --- */
+  /* --- Media portal access (v2 — portal_access table, 100% opt-in) --- */
   async _renderPortalAccess(accountId){
     const wrap = document.getElementById('f-portal-access-list');
     if(!wrap || !accountId) return;
-    const { data, error } = await sb.from('portal_authorized_emails')
-      .select('id, email, source, disabled, added_at')
+    const { data, error } = await sb.from('portal_access')
+      .select('id, email, disabled, added_at')
       .eq('account_id', accountId)
       .order('added_at', { ascending: true });
     if(error){
-      wrap.innerHTML = `<div class="muted" style="font-size:12px">Portal access table missing. Run supabase/media-portal.sql first.</div>`;
+      wrap.innerHTML = `<div class="muted" style="font-size:12px">Portal access table missing. Run supabase/media-portal.sql from the reflect-media-portal repo.</div>`;
       return;
     }
     const rows = data || [];
@@ -1126,10 +1126,9 @@ const accounts = {
     if(!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){
       ui.toast('Enter a valid email address.'); return;
     }
-    const r = await sb.from('portal_authorized_emails').insert({
+    const r = await sb.from('portal_access').insert({
       account_id: accountId,
       email,
-      source: 'admin',
       added_by: (await sb.auth.getUser()).data.user?.id
     });
     if(r.error){
@@ -1150,7 +1149,7 @@ const accounts = {
 
   async revokePortalEmail(id){
     if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
-    const r = await sb.from('portal_authorized_emails').update({ disabled: true }).eq('id', id);
+    const r = await sb.from('portal_access').update({ disabled: true }).eq('id', id);
     if(r.error){ ui.err(r.error); return; }
     ui.toast('Revoked.');
     accounts._renderPortalAccess(accounts._currentAccountId);
@@ -1158,7 +1157,7 @@ const accounts = {
 
   async enablePortalEmail(id){
     if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
-    const r = await sb.from('portal_authorized_emails').update({ disabled: false }).eq('id', id);
+    const r = await sb.from('portal_access').update({ disabled: false }).eq('id', id);
     if(r.error){ ui.err(r.error); return; }
     ui.toast('Re-enabled.');
     accounts._renderPortalAccess(accounts._currentAccountId);
@@ -1167,7 +1166,7 @@ const accounts = {
   async deletePortalEmail(id){
     if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
     if(!confirm('Permanently delete this authorized email? Use "Revoke" instead if you want to keep the row for audit history.')) return;
-    const r = await sb.from('portal_authorized_emails').delete().eq('id', id);
+    const r = await sb.from('portal_access').delete().eq('id', id);
     if(r.error){ ui.err(r.error); return; }
     ui.toast('Deleted.');
     accounts._renderPortalAccess(accounts._currentAccountId);
