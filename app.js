@@ -1163,6 +1163,94 @@ const accounts = {
     accounts._renderPortalAccess(accounts._currentAccountId);
   },
 
+  /* ---- Pre-save duplicate detection ----
+     Reads the current form, queries existing accounts, returns any
+     where ALL of the following are true:
+       - Not the account being edited (if any)
+       - Matches on name+city OR shared email OR street+city
+     Fuzzy on name (trim + lowercase + strip common suffixes).
+     This is INTENTIONALLY aggressive — a few false positives is
+     better than silently creating a duplicate like ACC-0107 next to
+     ACC-0203 and losing an invoice because of it. */
+  async _findDuplicateCandidates(currentId){
+    const g = id => (document.getElementById(id)?.value || '').trim();
+    const name = g('f-bn');
+    const email = g('f-em').toLowerCase();
+    const city = g('f-b-city').toLowerCase();
+    const street = g('f-b-street').toLowerCase();
+    const normName = (s) => String(s || '')
+      .toLowerCase().trim()
+      .replace(/\s+/g, ' ')
+      .replace(/[,.]/g, '')
+      /* Common misspellings - normalize to catch them */
+      .replace(/opthalmology/g, 'ophthalmology')
+      .replace(/opthal/g, 'ophthal')
+      /* Strip common company-suffix noise so "ABC Spa" matches "ABC Spa LLC" */
+      .replace(/\b(llc|inc|corp|co|ltd|pllc|pc)\b\.?$/g, '').trim();
+    const nName = normName(name);
+    const nCity = city.replace(/\s+/g,' ').trim();
+    const nStreet = street.replace(/\s+/g,' ').trim();
+    if(!nName && !email && !nStreet) return [];
+
+    /* Pull a slim account projection to match against. Admin sees all;
+       reps see their own (RLS). Both scopes are correct here — a rep
+       shouldn't silently create a dup of another rep's account either,
+       but they can only see their own matches, which is acceptable. */
+    const r = await sb.from('accounts')
+      .select('id, account_number, business_name, business_city, business_state, business_street, email, rep_id')
+      .limit(5000);
+    if(r.error || !r.data) return [];
+
+    const matches = [];
+    for(const a of r.data){
+      if(currentId && a.id === currentId) continue;
+      const aName = normName(a.business_name);
+      const aCity = String(a.business_city||'').toLowerCase().trim();
+      const aEmail = String(a.email||'').toLowerCase().trim();
+      const aStreet = String(a.business_street||'').toLowerCase().trim();
+      const byName = nName && aName && nName === aName && (!nCity || !aCity || nCity === aCity);
+      const byEmail = email && aEmail && email === aEmail;
+      const byStreet = nStreet && aStreet && nStreet === aStreet && nCity && aCity && nCity === aCity;
+      if(byName || byEmail || byStreet){
+        matches.push({
+          id: a.id,
+          account_number: a.account_number,
+          business_name: a.business_name,
+          business_city: a.business_city,
+          business_state: a.business_state,
+          business_street: a.business_street,
+          email: a.email,
+          rep_id: a.rep_id,
+          reasons: [byName && 'same name', byEmail && 'same email', byStreet && 'same address'].filter(Boolean)
+        });
+      }
+    }
+    return matches;
+  },
+
+  _showDupeConfirm(matches, currentId, isNew){
+    const rows = matches.map(m => {
+      const addr = [m.business_street, m.business_city, m.business_state].filter(Boolean).join(', ');
+      return `<div class="list-item" style="align-items:flex-start;gap:8px;flex-wrap:wrap">
+        <div class="grow">
+          <div><b>${esc(m.business_name)}</b> · <span class="muted">${esc(m.account_number)}</span></div>
+          <div class="muted" style="font-size:12px">${esc(addr)}${m.email ? ' · ' + esc(m.email) : ' · <i>no email on file</i>'}</div>
+          <div style="margin-top:4px">${m.reasons.map(r => `<span class="badge warn">${esc(r)}</span>`).join(' ')}</div>
+        </div>
+        <button type="button" class="icon-btn" onclick="ui.closeModal(); accounts.open('${m.id}')">Open this account instead</button>
+      </div>`;
+    }).join('');
+    ui.modal(`
+      <h3>⚠ Possible duplicate${matches.length===1?'':'s'}</h3>
+      <p class="muted" style="font-size:13px">Before ${isNew?'creating this new account':'saving these changes'}, double-check — one or more existing accounts look like the same business. Picking an existing one is almost always safer than making a new row.</p>
+      ${rows}
+      <div class="row" style="gap:8px;margin-top:14px;justify-content:flex-end">
+        <button class="icon-btn ghost" onclick="ui.closeModal()">Back to form</button>
+        <button class="icon-btn danger" onclick="ui.closeModal(); accounts.save('${currentId||''}', ${isNew}, true)">Save anyway (not a duplicate)</button>
+      </div>
+    `);
+  },
+
   async deletePortalEmail(id){
     if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
     if(!confirm('Permanently delete this authorized email? Use "Revoke" instead if you want to keep the row for audit history.')) return;
@@ -1394,7 +1482,7 @@ const accounts = {
     }
     /* both empty OR both filled and equal: no-op */
   },
-  async save(id, isNew){
+  async save(id, isNew, bypassDupeCheck){
     const get = i => document.getElementById(i).value;
     /* Preflight: if a rep is creating a NEW account and they have no rep_id
        assigned on their profile, the RLS policy will reject the insert with
@@ -1404,6 +1492,19 @@ const accounts = {
     if(isNew && !auth.isAdmin() && !auth.repId()){
       alert("Your profile doesn't have a Rep ID assigned yet, so you can't create accounts.\n\nAsk your admin to open the Reps tab → Edit your profile → set a Rep ID → Save. Then sign out and back in.");
       return;
+    }
+
+    /* Pre-save duplicate check — catches cases like ORD-1037 where a
+       misspelled "Opthalmology" sat on ACC-0107 while the correct spelling
+       on ACC-0203 had the real email. If any existing account matches on
+       name+city, email, or street+city, show a confirm modal before the
+       insert/update. User can bail out, open the match, or override. */
+    if(!bypassDupeCheck){
+      const candidates = await accounts._findDuplicateCandidates(id);
+      if(candidates && candidates.length){
+        accounts._showDupeConfirm(candidates, id, isNew);
+        return;
+      }
     }
     const same = document.getElementById('f-billing-same').checked;
     /* Whatever's in the fields is what gets saved. The auto-populate happens
