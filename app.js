@@ -6324,13 +6324,13 @@ const portalAccess = {
     </table></div>`;
   },
 
+  _addState: { all: [], picked: null },
+
   async openAdd(){
     if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
-    /* Same pattern the Accounts tab uses: pull contacts along for free
-       so the search can match a contact's name, email, phone, title, or
-       note too — not just the business's own fields. */
-    const accs = await accounts.list();
-    const options = (accs || []).map(a => {
+    const accs = (await accounts.list()) || [];
+    /* Pre-compute search hay once so filter is pure string includes. */
+    portalAccess._addState.all = accs.map(a => {
       const contactHay = (a.contacts || []).map(c =>
         `${c.name||''} ${c.title||''} ${c.phone||''} ${c.email||''} ${c.notes||''}`
       ).join(' ');
@@ -6340,16 +6340,22 @@ const portalAccess = {
         a.email, a.business_phone, a.cell, a.website,
         contactHay
       ].filter(Boolean).join(' '));
-      const label = `${esc(a.account_number)} — ${esc(a.business_name||'(unnamed)')}${a.business_city?' · '+esc(a.business_city):''}`;
-      return `<option value="${a.id}" data-search="${esc(hay)}">${label}</option>`;
-    }).join('');
+      return { id: a.id, number: a.account_number, name: a.business_name || '(unnamed)', city: a.business_city || '', hay };
+    });
+    portalAccess._addState.picked = null;
+    console.log('[portalAccess] openAdd loaded', portalAccess._addState.all.length, 'accounts');
     ui.modal(`
       <h3>Add media portal access</h3>
       <p class="muted" style="font-size:13px;margin:0 0 12px">Grant an email access to one specific account's library on <a href="https://media.thereflectco.com" target="_blank" rel="noopener">media.thereflectco.com</a>.</p>
+      <div style="padding:6px 10px;background:rgba(0,0,0,0.12);border-radius:6px;font-size:11px;margin-bottom:8px" class="muted">${accs.length} accounts loaded. If this says 1 something is wrong with the fetch — tell Claude.</div>
       <label>Account</label>
-      <input id="pa-acc-search" placeholder="Search by business name, account #, city, email, phone, contact…" oninput="portalAccess._filterOptions()" style="margin-bottom:4px" autocomplete="off"/>
-      <select id="pa-acc-select" size="8" style="width:100%;min-height:220px">${options}</select>
-      <div class="muted" style="font-size:11px;margin-top:4px">Showing <span id="pa-acc-count">${accs?.length || 0}</span> of <b>${accs?.length || 0}</b> account${accs?.length===1?'':'s'} — multi-word search (AND): "lone tree medspa" matches both. <button type="button" class="icon-btn ghost" style="padding:2px 8px;font-size:11px;margin-left:4px" onclick="document.getElementById('pa-acc-search').value='';portalAccess._filterOptions();document.getElementById('pa-acc-search').focus()">Clear</button></div>
+      <div class="row" style="gap:6px">
+        <input id="pa-acc-search" placeholder="Search business name, account #, city, email, phone, contact…" oninput="portalAccess._filterOptions()" autocomplete="off" style="flex:1"/>
+        <button type="button" class="icon-btn ghost" onclick="document.getElementById('pa-acc-search').value='';portalAccess._filterOptions();document.getElementById('pa-acc-search').focus()">Clear</button>
+      </div>
+      <div id="pa-acc-list" style="margin-top:6px;border:1px solid var(--line);border-radius:6px;max-height:240px;overflow-y:auto;background:rgba(0,0,0,0.08)"></div>
+      <div class="muted" style="font-size:11px;margin-top:4px">Showing <span id="pa-acc-count">${accs.length}</span> of <b>${accs.length}</b></div>
+      <div id="pa-acc-picked" class="muted" style="font-size:12px;margin-top:8px">No account selected yet.</div>
       <label style="margin-top:12px">Email to authorize</label>
       <input id="pa-email" type="email" placeholder="customer@example.com" autocapitalize="none" spellcheck="false"/>
       <div class="row" style="gap:8px;margin-top:14px;justify-content:flex-end">
@@ -6357,27 +6363,45 @@ const portalAccess = {
         <button class="icon-btn primary" onclick="portalAccess.submitAdd()">Authorize</button>
       </div>
     `);
+    portalAccess._filterOptions();
   },
 
   _filterOptions(){
     const raw = (document.getElementById('pa-acc-search')?.value || '').trim();
     const q = normSearch(raw);
     const words = q ? q.split(/\s+/).filter(Boolean) : [];
-    const sel = document.getElementById('pa-acc-select');
+    const list = document.getElementById('pa-acc-list');
     const countEl = document.getElementById('pa-acc-count');
-    if(!sel) return;
-    let visible = 0;
-    for(const o of sel.options){
-      const hay = o.getAttribute('data-search') || '';
-      const matches = !words.length || words.every(w => hay.includes(w));
-      o.hidden = !matches;
-      if(matches) visible++;
+    if(!list) return;
+    const matched = portalAccess._addState.all.filter(a =>
+      !words.length || words.every(w => a.hay.includes(w))
+    );
+    const pickedId = portalAccess._addState.picked;
+    if(!matched.length){
+      list.innerHTML = `<div class="muted" style="padding:12px;font-size:12px;text-align:center">No matches. ${portalAccess._addState.all.length} account(s) total loaded.</div>`;
+    } else {
+      list.innerHTML = matched.slice(0, 200).map(a =>
+        `<div onclick="portalAccess._pickAccount('${a.id}')" style="padding:8px 12px;border-bottom:1px solid var(--line);cursor:pointer;${pickedId===a.id?'background:rgba(191,90,42,0.25);':''}" onmouseover="this.style.background='rgba(191,90,42,0.15)'" onmouseout="this.style.background='${pickedId===a.id?'rgba(191,90,42,0.25)':'transparent'}'">
+          <div style="font-size:13px"><b>${esc(a.number)}</b> — ${esc(a.name)}${a.city?` <span class="muted">· ${esc(a.city)}</span>`:''}</div>
+        </div>`
+      ).join('') + (matched.length > 200 ? `<div class="muted" style="padding:8px 12px;font-size:11px">+ ${matched.length - 200} more — narrow your search</div>` : '');
     }
-    if(countEl) countEl.textContent = String(visible);
+    if(countEl) countEl.textContent = String(matched.length);
+  },
+
+  _pickAccount(id){
+    portalAccess._addState.picked = id;
+    const a = portalAccess._addState.all.find(x => x.id === id);
+    const pickedEl = document.getElementById('pa-acc-picked');
+    if(pickedEl && a){
+      pickedEl.innerHTML = `Selected: <b>${esc(a.number)} — ${esc(a.name)}</b>${a.city?` <span class="muted">· ${esc(a.city)}</span>`:''}`;
+      pickedEl.style.color = 'var(--ink)';
+    }
+    portalAccess._filterOptions();
   },
 
   async submitAdd(){
-    const accId = document.getElementById('pa-acc-select')?.value;
+    const accId = portalAccess._addState.picked;
     const email = (document.getElementById('pa-email')?.value || '').trim().toLowerCase();
     if(!accId){ ui.toast('Pick an account.'); return; }
     if(!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){ ui.toast('Enter a valid email.'); return; }
