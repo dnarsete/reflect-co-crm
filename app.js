@@ -1327,8 +1327,14 @@ const accounts = {
     ui.toast('Contact deleted');
     accounts._renderContacts(accounts._currentAccountId);
   },
-  async renderNotes(accountId){
-    const nw = document.getElementById('acc-notes'); if(!nw) return;
+  async renderNotes(accountId, targetId){
+    /* targetId lets other modules (e.g. forecasts) render the same
+       account note stream into their own container. Defaults to the
+       account edit modal's own 'acc-notes' div, falls through to
+       'fc-acc-notes' so edit/delete triggered from the forecast modal
+       still refresh the right section. */
+    const nw = document.getElementById(targetId || 'acc-notes') || document.getElementById('fc-acc-notes');
+    if(!nw) return;
     const { data, error } = await sb.from('account_notes')
       .select('id, account_id, author_id, rep_id, text, created_at, updated_at')
       .eq('account_id', accountId)
@@ -5521,6 +5527,28 @@ const forecasts = {
     return out.join('');
   },
   async openNew(){ forecasts.open(null) },
+
+  /* Add a note to the forecast's linked account's call/visit log.
+     Writes to account_notes (same table the account edit modal uses),
+     so a note added here shows up on the account page too — one source
+     of truth. */
+  async addAccountNote(accountId){
+    if(!accountId) return;
+    const inp = document.getElementById('fc-note-text');
+    const text = (inp?.value || '').trim();
+    if(!text) return;
+    const userId = (await sb.auth.getUser()).data.user?.id;
+    const r = await sb.from('account_notes').insert({
+      account_id: accountId,
+      text,
+      author_id: userId,
+      rep_id: auth.repId() || null
+    });
+    if(r.error){ ui.err(r.error); return; }
+    if(inp) inp.value = '';
+    accounts.renderNotes(accountId, 'fc-acc-notes');
+    ui.toast('Note saved to account.');
+  },
   _casePrice(){ return Number(cache.settings.forecast_case_price || 552); },
   _caseOptions(currentAmount){
     const price = forecasts._casePrice();
@@ -5681,14 +5709,29 @@ const forecasts = {
           </select>
         </div>
         <div><label>Source of business</label><input id="f-source" value="${esc(fc.source||'')}" placeholder="Referral, trade show, cold call…"/></div>
-        <div style="grid-column:1/-1"><label>Comments / notes</label><textarea id="f-notes">${esc(fc.notes||'')}</textarea></div>
+        <div style="grid-column:1/-1"><label>Forecast-only notes <span class="muted" style="font-size:11px">— stays on this forecast</span></label><textarea id="f-notes">${esc(fc.notes||'')}</textarea></div>
       </div>
+      ${fc.account_id ? `
+      <div style="margin-top:16px;padding:12px;border:1px solid var(--line);border-radius:6px;background:var(--panel-2)">
+        <div style="font-weight:600;font-size:13px;margin-bottom:4px">📋 Account call / visit log</div>
+        <div class="muted" style="font-size:11px;margin:0 0 10px">Synced with the account's main log — notes you add here show up on the account page, and vice versa.</div>
+        <div id="fc-acc-notes"><div class="muted" style="font-size:12px">Loading…</div></div>
+        <div class="row" style="gap:8px;margin-top:8px">
+          <input id="fc-note-text" placeholder="Add a note (call, visit, update…)" onkeydown="if(event.key==='Enter')forecasts.addAccountNote('${fc.account_id}')"/>
+          <button class="icon-btn" onclick="forecasts.addAccountNote('${fc.account_id}')">Add</button>
+        </div>
+      </div>` : ''}
       <div class="row" style="gap:8px;margin-top:12px">
         <button class="icon-btn primary" onclick="forecasts.save('${fc.id||''}', ${isNew})">Save</button>
         ${!isNew?`<button class="icon-btn danger" onclick="forecasts.remove('${fc.id}')">Delete</button>`:''}
         <button class="icon-btn ghost" onclick="ui.closeModal()">Close</button>
       </div>
     `);
+    /* Load the linked account's existing call/visit log into the inline
+       section. Skipped for prospect-based forecasts (no account yet). */
+    if(fc.account_id){
+      accounts.renderNotes(fc.account_id, 'fc-acc-notes');
+    }
   },
   async convertSelectedProspect(){
     const tgt = document.getElementById('f-target')?.value || '';
