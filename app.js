@@ -4766,47 +4766,73 @@ const materials = {
       <button class="icon-btn ghost" onclick="materials._clearSelection()">Clear</button>
     </div>`;
 
-    wrap.innerHTML = banner + Object.keys(groups).sort().map(cat => `
-      <div style="margin-bottom:14px">
-        <h3 style="margin:0 0 6px 0;font-size:14px;color:var(--muted)">${esc(cat)}</h3>
-        ${groups[cat].map(f => {
-          const ext = (f.name.split('.').pop()||'').toLowerCase();
-          const icon = ({pdf:'📄',png:'🖼',jpg:'🖼',jpeg:'🖼',gif:'🖼',mp4:'🎬',mov:'🎬',doc:'📃',docx:'📃',xls:'📊',xlsx:'📊',ppt:'📽',pptx:'📽',zip:'🗜'}[ext] || '📎');
-          const kb = f.metadata?.size ? (f.metadata.size < 1024*1024 ? (f.metadata.size/1024).toFixed(0)+' KB' : (f.metadata.size/1024/1024).toFixed(1)+' MB') : '';
-          const when = f.created_at ? new Date(f.created_at).toLocaleDateString() : '';
-          const p = esc(f.path).replace(/'/g,'&#39;');
-          /* Rep-restricted items: internal rep training materials (name contains
-             both "training" and "rep") or the 12-Reasons deck (name contains
-             "12" and "reason"). Reps get View + Save only — no email, no
-             checkbox — so these never leave the practice. Admin sees them
-             unrestricted. */
-          const nameNormal = f.name.toLowerCase().replace(/[_\-.]/g, ' ');
-          const isRepOnly = (/\btraining\b/.test(nameNormal) && /\brep/.test(nameNormal))
-                         || /\b12\b.*\breason/.test(nameNormal);
-          const repHidden = !isAdmin && isRepOnly;
-          const isChecked = materials._selected.has(f.path);
-          const cbCell = repHidden
-            ? `<div style="width:22px;flex:0 0 22px"></div>`
-            : `<input type="checkbox" style="flex:0 0 auto;width:18px;height:18px;cursor:pointer" ${isChecked?'checked':''} data-mat-path="${p}" onchange="materials._toggleSelection('${p}', this.checked)"/>`;
-          return `<div class="list-item">
-            ${cbCell}
-            <div class="grow">
-              <div class="title">${icon} ${esc(f.name)}${repHidden?' <span class="muted" style="font-size:11px;font-style:italic">· internal — View/Save only</span>':''}</div>
-              <div class="meta">${esc(cat)}${kb?' · '+esc(kb):''}${when?' · uploaded '+esc(when):''}</div>
-            </div>
-            <button class="icon-btn primary" style="width:100px;text-align:center;flex:0 0 auto" onclick="materials.view('${p}')">👁 View</button>
-            <button class="icon-btn" style="width:100px;text-align:center;flex:0 0 auto" onclick="materials.download('${p}')">⬇ Save</button>
-            ${repHidden ? '' : `<button class="icon-btn" style="width:100px;text-align:center;flex:0 0 auto" onclick="materials.copyLink('${p}')" title="Copy a 7-day download link for this asset — paste into email, SMS, social, wherever.">🔗 Copy link</button>`}
-            ${repHidden ? '' : `<button class="icon-btn" style="width:100px;text-align:center;flex:0 0 auto" onclick="materials.email('${p}')">📧 Email</button>`}
-            ${isAdmin?`<select class="icon-btn" style="width:100px;text-align:center;padding:6px 8px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;cursor:pointer;flex:0 0 auto" onchange="materials.recategorize('${p}', this.value); this.value='__edit'">
-              <option value="__edit">✏️ Edit</option>
-              ${materials.CATEGORIES.map(c => `<option value="${esc(c)}" ${c===cat?'disabled':''}>${esc(c)}${c===cat?' (current)':''}</option>`).join('')}
-            </select>`:''}
-            ${isAdmin?`<button class="icon-btn danger" style="width:100px;text-align:center;flex:0 0 auto" onclick="materials.remove('${p}')">Delete</button>`:''}
-          </div>`;
-        }).join('')}
-      </div>
-    `).join('');
+    /* Card helper — produces the portal-style thumbnail/preview block
+       for an asset. Images and videos get a real preview, other file
+       types fall back to an emoji icon. */
+    const cardFor = (f, cat) => {
+      const ext = (f.name.split('.').pop()||'').toLowerCase();
+      const isImage = ['png','jpg','jpeg','gif','webp'].includes(ext);
+      const isVideo = ['mp4','mov','webm','m4v'].includes(ext);
+      const icon = ({pdf:'📄',png:'🖼',jpg:'🖼',jpeg:'🖼',gif:'🖼',mp4:'🎬',mov:'🎬',doc:'📃',docx:'📃',xls:'📊',xlsx:'📊',ppt:'📽',pptx:'📽',zip:'🗜'}[ext] || '📎');
+      const kb = f.metadata?.size ? (f.metadata.size < 1024*1024 ? (f.metadata.size/1024).toFixed(0)+' KB' : (f.metadata.size/1024/1024).toFixed(1)+' MB') : '';
+      const when = f.created_at ? new Date(f.created_at).toLocaleDateString() : '';
+      const p = esc(f.path).replace(/'/g,'&#39;');
+      const nameNormal = f.name.toLowerCase().replace(/[_\-.]/g, ' ');
+      const isRepOnly = (/\btraining\b/.test(nameNormal) && /\brep/.test(nameNormal))
+                     || /\b12\b.*\breason/.test(nameNormal);
+      const repHidden = !isAdmin && isRepOnly;
+      const isChecked = materials._selected.has(f.path);
+
+      /* Public URL for thumbnails only — same bucket the portal reads.
+         Real view/download still routes through signed URLs. */
+      const publicUrl = sb.storage.from(materials.BUCKET).getPublicUrl(f.path).data.publicUrl;
+      let thumb;
+      if (isImage) {
+        thumb = `<img src="${esc(publicUrl)}" alt="${esc(f.name)}" loading="lazy" style="width:100%;height:100%;object-fit:cover;display:block"/>`;
+      } else if (isVideo) {
+        thumb = `<video src="${esc(publicUrl)}#t=0.5" muted preload="metadata" style="width:100%;height:100%;object-fit:cover;display:block"></video><div class="mp-asset-play">▶</div>`;
+      } else {
+        thumb = `<div class="mp-asset-icon">${icon}</div>`;
+      }
+
+      const checkbox = repHidden ? '' : `<label class="mp-asset-check">
+        <input type="checkbox" ${isChecked?'checked':''} data-mat-path="${p}" onchange="materials._toggleSelection('${p}', this.checked)"/>
+      </label>`;
+
+      const bulkActions = repHidden ? '' : `
+        <button class="mp-icon-btn" onclick="materials.copyLink('${p}')" title="Copy 7-day link">🔗</button>
+        <button class="mp-icon-btn" onclick="materials.email('${p}')" title="Email this file">📧</button>`;
+      const adminActions = !isAdmin ? '' : `
+        <select class="mp-icon-btn" onchange="materials.recategorize('${p}', this.value); this.value='__edit'" title="Move to another category">
+          <option value="__edit">✏️</option>
+          ${materials.CATEGORIES.map(c => `<option value="${esc(c)}" ${c===cat?'disabled':''}>${esc(c)}${c===cat?' (current)':''}</option>`).join('')}
+        </select>
+        <button class="mp-icon-btn mp-danger" onclick="materials.remove('${p}')" title="Delete">🗑</button>`;
+
+      return `<div class="mp-asset-card">
+        <div class="mp-asset-thumb">
+          ${thumb}
+          ${checkbox}
+        </div>
+        <div class="mp-asset-meta">
+          <div class="mp-asset-name" title="${esc(f.name)}">${esc(f.name)}${repHidden?' <span class="mp-asset-tag">internal</span>':''}</div>
+          <div class="mp-asset-sub">${esc(cat)}${kb?' · '+esc(kb):''}${when?' · '+esc(when):''}</div>
+        </div>
+        <div class="mp-asset-actions">
+          <button class="mp-btn mp-ghost" onclick="materials.view('${p}')">Preview</button>
+          <button class="mp-btn mp-primary" onclick="materials.download('${p}')">Download</button>
+        </div>
+        ${(bulkActions || adminActions) ? `<div class="mp-asset-extra">${bulkActions}${adminActions}</div>` : ''}
+      </div>`;
+    };
+
+    wrap.innerHTML = `<div class="mp-materials">
+      ${banner}
+      ${Object.keys(groups).sort().map(cat => `
+        <h2 class="mp-category-h">${esc(cat)}</h2>
+        <div class="mp-asset-grid">${groups[cat].map(f => cardFor(f, cat)).join('')}</div>
+      `).join('')}
+    </div>`;
   },
 
   _toggleSelection(path, checked){
