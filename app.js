@@ -6392,8 +6392,12 @@ const portalAccess = {
         <th style="padding:8px 10px">Added</th>
         <th style="padding:8px 10px"></th>
       </tr></thead>
-      <tbody>${rows.map(r => `<tr style="border-bottom:1px solid var(--line)">
-        <td style="padding:8px 10px"><b>${esc(r.account?.business_name || '(deleted)')}</b> <span class="muted">${esc(r.account?.account_number || '')}</span></td>
+      <tbody>${rows.map(r => {
+        const accCell = r.account?.id
+          ? `<a href="#" onclick="event.preventDefault();accounts.open('${r.account.id}')" style="color:var(--brand);text-decoration:underline;text-underline-offset:3px" title="Open account to add or change emails"><b>${esc(r.account.business_name || '(unnamed)')}</b> <span class="muted">${esc(r.account.account_number || '')}</span></a>`
+          : `<span class="muted"><i>(deleted account)</i></span>`;
+        return `<tr style="border-bottom:1px solid var(--line)">
+        <td style="padding:8px 10px">${accCell}</td>
         <td style="padding:8px 10px">${esc(r.email)}</td>
         <td style="padding:8px 10px">${r.disabled ? '<span class="badge warn">revoked</span>' : '<span class="badge ok">active</span>'}</td>
         <td style="padding:8px 10px" class="muted">${r.added_at?.slice(0,10) || ''}</td>
@@ -6403,7 +6407,8 @@ const portalAccess = {
             : `<button class="icon-btn ghost" style="padding:4px 10px;font-size:12px" onclick="portalAccess.revoke(${r.id})">Revoke</button>`}
           <button class="icon-btn danger" style="padding:4px 10px;font-size:12px;margin-left:4px" onclick="portalAccess.remove(${r.id})" title="Permanently delete">✕</button>
         </td>
-      </tr>`).join('')}</tbody>
+      </tr>`;
+      }).join('')}</tbody>
     </table></div>`;
   },
 
