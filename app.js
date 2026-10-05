@@ -4767,12 +4767,16 @@ const materials = {
     </div>`;
 
     /* Card helper — produces the portal-style thumbnail/preview block
-       for an asset. Images and videos get a real preview, other file
-       types fall back to an emoji icon. */
+       for an asset. Images and videos get a real preview via public
+       URL; PDFs get rendered natively by the browser inside an iframe;
+       Office files (PPTX/DOC/XLS) get Microsoft's Office Online Viewer
+       inside an iframe. Everything else falls back to an emoji icon. */
     const cardFor = (f, cat) => {
       const ext = (f.name.split('.').pop()||'').toLowerCase();
       const isImage = ['png','jpg','jpeg','gif','webp'].includes(ext);
       const isVideo = ['mp4','mov','webm','m4v'].includes(ext);
+      const isPdf = ext === 'pdf';
+      const isOffice = ['pptx','ppt','docx','doc','xlsx','xls'].includes(ext);
       const icon = ({pdf:'📄',png:'🖼',jpg:'🖼',jpeg:'🖼',gif:'🖼',mp4:'🎬',mov:'🎬',doc:'📃',docx:'📃',xls:'📊',xlsx:'📊',ppt:'📽',pptx:'📽',zip:'🗜'}[ext] || '📎');
       const kb = f.metadata?.size ? (f.metadata.size < 1024*1024 ? (f.metadata.size/1024).toFixed(0)+' KB' : (f.metadata.size/1024/1024).toFixed(1)+' MB') : '';
       const when = f.created_at ? new Date(f.created_at).toLocaleDateString() : '';
@@ -4791,6 +4795,16 @@ const materials = {
         thumb = `<img src="${esc(publicUrl)}" alt="${esc(f.name)}" loading="lazy" style="width:100%;height:100%;object-fit:cover;display:block"/>`;
       } else if (isVideo) {
         thumb = `<video src="${esc(publicUrl)}#t=0.5" muted preload="metadata" style="width:100%;height:100%;object-fit:cover;display:block"></video><div class="mp-asset-play">▶</div>`;
+      } else if (isPdf) {
+        /* Browser-native PDF rendering. #toolbar=0&navpanes=0 hides Chrome's
+           PDF chrome; #page=1 locks to the first page for the thumbnail. */
+        thumb = `<iframe src="${esc(publicUrl)}#toolbar=0&navpanes=0&page=1&view=FitH" style="width:100%;height:100%;border:0;pointer-events:none" loading="lazy" title="${esc(f.name)}"></iframe>`;
+      } else if (isOffice) {
+        /* Microsoft's free Office Online Viewer renders PPTX/DOCX/XLSX from
+           any public URL. pointer-events:none prevents stealing clicks from
+           the card's Preview/Download buttons. */
+        const officeUrl = `https://view.officeapps.live.com/op/view.aspx?src=${encodeURIComponent(publicUrl)}`;
+        thumb = `<iframe src="${esc(officeUrl)}" style="width:100%;height:100%;border:0;pointer-events:none" loading="lazy" title="${esc(f.name)}"></iframe>`;
       } else {
         thumb = `<div class="mp-asset-icon">${icon}</div>`;
       }

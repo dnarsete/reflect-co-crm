@@ -25,7 +25,7 @@
      also validated server-side (see supabase/security-hardening.sql).
      frame-ancestors is delivered by the JS block above, not here — browsers
      ignore it in a meta tag. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' https://*.supabase.co wss://*.supabase.co; img-src 'self' data: https://*.supabase.co https://*.myshopify.com https://cdn.shopify.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' https://*.supabase.co wss://*.supabase.co; img-src 'self' data: https://*.supabase.co https://*.myshopify.com https://cdn.shopify.com; media-src 'self' https://*.supabase.co; frame-src 'self' https://*.supabase.co https://view.officeapps.live.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'" />
 <meta name="referrer" content="strict-origin-when-cross-origin" />
 
 <!-- Preconnect to third-party origins the app hits on startup — parallelises
