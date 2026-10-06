@@ -1286,15 +1286,33 @@ const accounts = {
           if(!hasContent) continue;
           const r = await sb.from('account_contacts').insert({ ...payload, account_id: accountId });
           if(r.error) console.warn('[bulk contacts] insert failed', r.error);
+          else if(payload.email) await accounts._grantContactPortalAccess(accountId, payload.email);
         } else if(hasContent){
           /* Existing contact — update in place. Skip if all fields were
              cleared (rep probably meant to leave it). */
           const r = await sb.from('account_contacts').update(payload).eq('id', cid);
           if(r.error) console.warn('[bulk contacts] update failed', r.error);
+          else if(payload.email) await accounts._grantContactPortalAccess(accountId, payload.email);
         }
       } catch(e){ console.warn('[bulk contacts] row save failed', e); }
     }
   },
+  /* When a contact is added OR a contact's email is changed, and the
+     account has already been added to the media portal, auto-grant
+     portal access to the new email. If the account has no portal_access
+     rows, do nothing — this account isn't on the portal yet. */
+  async _grantContactPortalAccess(accountId, email){
+    const e = (email || '').trim().toLowerCase();
+    if(!accountId || !e) return;
+    const existing = await sb.from('portal_access').select('id').eq('account_id', accountId).limit(1);
+    if(existing.error || !existing.data?.length) return;
+    const userId = (await sb.auth.getUser()).data.user?.id;
+    const r = await sb.from('portal_access').insert({ account_id: accountId, email: e, added_by: userId });
+    if(r.error && !/duplicate key|unique constraint/i.test(r.error.message || '')){
+      console.warn('[portal] auto-grant on contact save failed:', r.error);
+    }
+  },
+
   async saveContact(cid){
     const row = document.querySelector(`[data-cid="${CSS.escape(cid)}"]`);
     if(!row) return;
@@ -1317,8 +1335,10 @@ const accounts = {
       r = await sb.from('account_contacts').update(payload).eq('id', cid).select().single();
     }
     if(r.error){ ui.err(r.error); return; }
+    if(payload.email) await accounts._grantContactPortalAccess(accountId, payload.email);
     ui.toast(isNew ? 'Contact added' : 'Contact saved');
     accounts._renderContacts(accountId);
+    accounts._renderPortalAccess(accountId);
   },
   async deleteContact(id){
     if(!confirm('Delete this contact? It stays on the backend for 90 days before permanent removal.')) return;
