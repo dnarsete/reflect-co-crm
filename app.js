@@ -952,13 +952,13 @@ const accounts = {
       ${!isNew ? `
       <div style="margin-top:12px;padding:10px;border:1px solid var(--line);background:var(--panel-2);border-radius:8px">
         <div style="font-weight:600;font-size:13px;margin-bottom:4px">🎬 Media portal access</div>
-        <div class="muted" style="font-size:11px;margin:0 0 10px">When ON, this account can sign in at <a href="https://media.thereflectco.com" target="_blank" rel="noopener">media.thereflectco.com</a> using the account email OR any email in the Additional contacts list above. Add a contact → access. Remove a contact → access gone.</div>
-        <label class="toggle" style="display:flex;gap:10px;align-items:center;${auth.isAdmin()?'':'opacity:0.6;pointer-events:none'}">
-          <input type="checkbox" id="f-portal-enabled" ${acc.portal_enabled?'checked':''} onchange="accounts.togglePortalEnabled('${acc.id}', this.checked)"/>
-          <span><b>Enable media portal access for this account</b></span>
-        </label>
-        ${!auth.isAdmin() ? `<div class="muted" style="font-size:11px;margin-top:6px">Admin-only — your rep can request changes.</div>` : ''}
-        <div id="f-portal-emails-preview" class="muted" style="font-size:12px;margin-top:8px"></div>
+        <div class="muted" style="font-size:11px;margin:0 0 8px">Emails you've explicitly authorized to sign in at <a href="https://media.thereflectco.com" target="_blank" rel="noopener">media.thereflectco.com</a> for THIS account. Nothing is auto-added — every entry here is an admin decision.</div>
+        <div id="f-portal-access-list"><div class="muted" style="font-size:12px">Loading…</div></div>
+        ${auth.isAdmin() ? `
+        <div class="row" style="gap:8px;margin-top:8px">
+          <input id="f-portal-new-email" type="email" placeholder="add-someone@customer.com" style="flex:1" autocapitalize="none" spellcheck="false"/>
+          <button type="button" class="icon-btn" onclick="accounts.addPortalEmail('${acc.id}')">+ Authorize email</button>
+        </div>` : `<div class="muted" style="font-size:11px;margin-top:6px">Admin-only: your rep can request additions.</div>`}
       </div>` : ''}
 
       <div class="grid-2" style="margin-top:12px">
@@ -1083,46 +1083,84 @@ const accounts = {
 
   /* --- Media portal access (v2 — portal_access table, 100% opt-in) --- */
   async _renderPortalAccess(accountId){
-    /* v3 model — single boolean on accounts. Render a preview of which
-       emails will have access when the toggle is ON. */
-    const previewEl = document.getElementById('f-portal-emails-preview');
-    if(!previewEl || !accountId) return;
-    const [accR, contactsR] = await Promise.all([
-      sb.from('accounts').select('email').eq('id', accountId).maybeSingle(),
-      sb.from('account_contacts').select('email').eq('account_id', accountId).is('deleted_at', null)
-    ]);
-    const emails = new Set();
-    const primary = (accR.data?.email || '').trim().toLowerCase();
-    if(primary) emails.add(primary);
-    (contactsR.data || []).forEach(c => {
-      const e = (c.email || '').trim().toLowerCase();
-      if(e) emails.add(e);
-    });
-    const list = Array.from(emails);
-    if(!list.length){
-      previewEl.innerHTML = `⚠ No emails on file for this account — nobody will be able to sign in even with the toggle ON. Add the account email above or an Additional contact with an email.`;
-      previewEl.style.color = 'var(--danger,#b53535)';
-    } else {
-      previewEl.innerHTML = `Access granted to ${list.length} email${list.length===1?'':'s'} when ON:<br/>${list.map(e => esc(e)).join('<br/>')}`;
-      previewEl.style.color = '';
+    const wrap = document.getElementById('f-portal-access-list');
+    if(!wrap || !accountId) return;
+    const { data, error } = await sb.from('portal_access')
+      .select('id, email, disabled, added_at')
+      .eq('account_id', accountId)
+      .order('added_at', { ascending: true });
+    if(error){
+      wrap.innerHTML = `<div class="muted" style="font-size:12px">Portal access table missing. Run supabase/media-portal.sql from the reflect-media-portal repo.</div>`;
+      return;
     }
+    const rows = data || [];
+    if(!rows.length){
+      wrap.innerHTML = `<div class="muted" style="font-size:12px">Nobody authorized yet. Type an email below to grant access.</div>`;
+      return;
+    }
+    const isAdmin = auth.isAdmin();
+    wrap.innerHTML = rows.map(r => {
+      const status = r.disabled
+        ? `<span class="badge warn">revoked</span>`
+        : `<span class="badge ok">active</span>`;
+      let controls = '';
+      if(isAdmin){
+        if(r.disabled){
+          controls += ` <button type="button" class="icon-btn" onclick="accounts.enablePortalEmail(${r.id})">Re-enable</button>`;
+        } else {
+          controls += ` <button type="button" class="icon-btn ghost" onclick="accounts.revokePortalEmail(${r.id})">Revoke</button>`;
+        }
+        controls += ` <button type="button" class="icon-btn danger" title="Permanently delete" onclick="accounts.deletePortalEmail(${r.id})">✕</button>`;
+      }
+      return `<div class="list-item" style="align-items:center;gap:8px">
+        <div class="grow"><b>${esc(r.email)}</b> ${status}</div>
+        <div>${controls}</div>
+      </div>`;
+    }).join('');
   },
 
-  async togglePortalEnabled(accountId, enabled){
-    if(!auth.isAdmin()){
-      ui.toast('Admin only.');
-      const cb = document.getElementById('f-portal-enabled');
-      if(cb) cb.checked = !enabled;
-      return;
+  async addPortalEmail(accountId){
+    if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
+    const inp = document.getElementById('f-portal-new-email');
+    const email = (inp?.value || '').trim().toLowerCase();
+    if(!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){
+      ui.toast('Enter a valid email address.'); return;
     }
-    const r = await sb.from('accounts').update({ portal_enabled: !!enabled }).eq('id', accountId);
+    const r = await sb.from('portal_access').insert({
+      account_id: accountId,
+      email,
+      added_by: (await sb.auth.getUser()).data.user?.id
+    });
     if(r.error){
-      ui.err(r.error);
-      const cb = document.getElementById('f-portal-enabled');
-      if(cb) cb.checked = !enabled;
+      const msg = r.error.message || '';
+      if(/duplicate key|unique constraint/i.test(msg)){
+        ui.toast('That email is already authorized for this account.');
+      } else if(/staff email/i.test(msg)){
+        ui.toast('Staff emails can\'t be portal users — they sign in through the CRM.');
+      } else {
+        ui.err(r.error);
+      }
       return;
     }
-    ui.toast(enabled ? 'Portal access enabled.' : 'Portal access disabled.');
+    inp.value = '';
+    ui.toast('Authorized. They can sign in at media.thereflectco.com now.');
+    accounts._renderPortalAccess(accountId);
+  },
+
+  async revokePortalEmail(id){
+    if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
+    const r = await sb.from('portal_access').update({ disabled: true }).eq('id', id);
+    if(r.error){ ui.err(r.error); return; }
+    ui.toast('Revoked.');
+    accounts._renderPortalAccess(accounts._currentAccountId);
+  },
+
+  async enablePortalEmail(id){
+    if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
+    const r = await sb.from('portal_access').update({ disabled: false }).eq('id', id);
+    if(r.error){ ui.err(r.error); return; }
+    ui.toast('Re-enabled.');
+    accounts._renderPortalAccess(accounts._currentAccountId);
   },
 
   /* ---- Pre-save duplicate detection ----
@@ -1211,6 +1249,15 @@ const accounts = {
         <button class="icon-btn danger" onclick="ui.closeModal(); accounts.save('${currentId||''}', ${isNew}, true)">Save anyway (not a duplicate)</button>
       </div>
     `);
+  },
+
+  async deletePortalEmail(id){
+    if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
+    if(!confirm('Permanently delete this authorized email? Use "Revoke" instead if you want to keep the row for audit history.')) return;
+    const r = await sb.from('portal_access').delete().eq('id', id);
+    if(r.error){ ui.err(r.error); return; }
+    ui.toast('Deleted.');
+    accounts._renderPortalAccess(accounts._currentAccountId);
   },
 
   /* Save every contact row in the modal — new ones with content get
@@ -6318,10 +6365,6 @@ const messages = {
    account. Per-account editing still lives in the account edit modal
    (see accounts._renderPortalAccess) — this is the admin-wide view. */
 const portalAccess = {
-  /* v3 model — admin view lists every account with portal_enabled=TRUE
-     and shows the count of emails that will be granted access (primary
-     + non-deleted contacts). Clicking the account opens its edit modal
-     where the toggle lives. */
   async render(){
     const wrap = document.getElementById('portal-access-admin-list');
     if(!wrap) return;
@@ -6329,66 +6372,44 @@ const portalAccess = {
       wrap.innerHTML = '<div class="muted" style="font-size:12px">Admin only.</div>';
       return;
     }
-    const r = await sb.from('accounts')
-      .select('id, account_number, business_name, email, contacts:account_contacts(email, deleted_at)')
-      .eq('portal_enabled', true)
-      .order('business_name', { ascending: true });
+    const r = await sb.from('portal_access')
+      .select('id, email, disabled, added_at, account:accounts(id, account_number, business_name)')
+      .order('added_at', { ascending: false });
     if(r.error){
-      wrap.innerHTML = `<div class="muted" style="font-size:12px">Could not load: ${esc(r.error.message||'')}. Run supabase/portal-enabled-model.sql if you haven't.</div>`;
+      wrap.innerHTML = `<div class="muted" style="font-size:12px">Table missing. Run supabase/media-portal.sql.</div>`;
       return;
     }
     const rows = r.data || [];
     if(!rows.length){
-      wrap.innerHTML = `<div class="muted" style="font-size:12px">No accounts have portal access enabled yet. Click "+ Add account" to enable one.</div>`;
+      wrap.innerHTML = `<div class="muted" style="font-size:12px">No accounts authorized yet. Click "+ Add account" to grant access.</div>`;
       return;
     }
     wrap.innerHTML = `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
       <thead><tr style="border-bottom:1px solid var(--line);text-align:left">
         <th style="padding:8px 10px">Account</th>
-        <th style="padding:8px 10px">Emails with access</th>
+        <th style="padding:8px 10px">Email</th>
+        <th style="padding:8px 10px">Status</th>
+        <th style="padding:8px 10px">Added</th>
         <th style="padding:8px 10px"></th>
       </tr></thead>
-      <tbody>${rows.map(a => {
-        const emails = new Set();
-        if(a.email) emails.add(a.email.trim().toLowerCase());
-        (a.contacts || []).forEach(c => {
-          if(c.deleted_at) return;
-          if(c.email) emails.add(c.email.trim().toLowerCase());
-        });
-        const list = Array.from(emails);
-        const emailsCell = list.length
-          ? `<span class="badge ok">${list.length}</span> <span class="muted" style="font-size:12px">${list.slice(0,3).map(e => esc(e)).join(', ')}${list.length>3?` <i>+${list.length-3} more</i>`:''}</span>`
-          : `<span class="badge warn">0</span> <span class="muted" style="font-size:11px"><i>no emails on file — nobody can sign in</i></span>`;
+      <tbody>${rows.map(r => {
+        const accCell = r.account?.id
+          ? `<a href="#" onclick="event.preventDefault();accounts.open('${r.account.id}')" style="color:var(--brand);text-decoration:underline;text-underline-offset:3px" title="Open account to add or change emails"><b>${esc(r.account.business_name || '(unnamed)')}</b> <span class="muted">${esc(r.account.account_number || '')}</span></a>`
+          : `<span class="muted"><i>(deleted account)</i></span>`;
         return `<tr style="border-bottom:1px solid var(--line)">
-          <td style="padding:8px 10px">
-            <a href="#" onclick="event.preventDefault();accounts.open('${a.id}')" style="color:var(--brand);text-decoration:underline;text-underline-offset:3px" title="Open account to manage contacts or toggle access">
-              <b>${esc(a.business_name || '(unnamed)')}</b> <span class="muted">${esc(a.account_number || '')}</span>
-            </a>
-          </td>
-          <td style="padding:8px 10px">${emailsCell}</td>
-          <td style="padding:8px 10px;white-space:nowrap">
-            <button class="icon-btn danger" style="padding:4px 10px;font-size:12px" onclick="portalAccess.disableAccount('${a.id}')" title="Disable portal access for this account">Disable</button>
-          </td>
-        </tr>`;
+        <td style="padding:8px 10px">${accCell}</td>
+        <td style="padding:8px 10px">${esc(r.email)}</td>
+        <td style="padding:8px 10px">${r.disabled ? '<span class="badge warn">revoked</span>' : '<span class="badge ok">active</span>'}</td>
+        <td style="padding:8px 10px" class="muted">${r.added_at?.slice(0,10) || ''}</td>
+        <td style="padding:8px 10px;white-space:nowrap">
+          ${r.disabled
+            ? `<button class="icon-btn" style="padding:4px 10px;font-size:12px" onclick="portalAccess.enable(${r.id})">Re-enable</button>`
+            : `<button class="icon-btn ghost" style="padding:4px 10px;font-size:12px" onclick="portalAccess.revoke(${r.id})">Revoke</button>`}
+          <button class="icon-btn danger" style="padding:4px 10px;font-size:12px;margin-left:4px" onclick="portalAccess.remove(${r.id})" title="Permanently delete">✕</button>
+        </td>
+      </tr>`;
       }).join('')}</tbody>
     </table></div>`;
-  },
-
-  async disableAccount(accountId){
-    if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
-    if(!confirm('Disable media portal access for this account? Nobody at this account will be able to sign in until re-enabled.')) return;
-    const r = await sb.from('accounts').update({ portal_enabled: false }).eq('id', accountId);
-    if(r.error){ ui.err(r.error); return; }
-    ui.toast('Disabled.');
-    portalAccess.render();
-  },
-
-  async enableAccount(accountId){
-    if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
-    const r = await sb.from('accounts').update({ portal_enabled: true }).eq('id', accountId);
-    if(r.error){ ui.err(r.error); return; }
-    ui.toast('Enabled.');
-    portalAccess.render();
   },
 
   _addState: { all: [], picked: null, emailsForPicked: [] },
@@ -6486,19 +6507,45 @@ const portalAccess = {
     const accId = portalAccess._addState.picked;
     const emails = portalAccess._addState.emailsForPicked || [];
     if(!accId){ ui.toast('Pick an account first.'); return; }
-    if(!emails.length){
-      ui.toast('That account has no email on file. Add one to the account record or a contact first.');
-      return;
+    if(!emails.length){ ui.toast('That account has no email on file. Add one to the account record or a contact first.'); return; }
+    const userId = (await sb.auth.getUser()).data.user?.id;
+    let added = 0, skipped = 0, failed = 0;
+    for(const email of emails){
+      const r = await sb.from('portal_access').insert({ account_id: accId, email, added_by: userId });
+      if(!r.error){ added++; }
+      else if(/duplicate key|unique constraint/i.test(r.error.message || '')) skipped++;
+      else { failed++; console.warn('[portal access] insert failed', r.error); }
     }
-    /* v3 model — just flip the toggle. Access automatically covers
-       accounts.email + all current (and future) Additional contacts. */
-    const r = await sb.from('accounts').update({ portal_enabled: true }).eq('id', accId);
-    if(r.error){ ui.err(r.error); return; }
     ui.closeModal();
-    ui.toast(`Portal access enabled — ${emails.length} email${emails.length===1?'':'s'} on file can sign in.`);
+    const parts = [];
+    if(added) parts.push(`${added} authorized`);
+    if(skipped) parts.push(`${skipped} already active`);
+    if(failed) parts.push(`${failed} failed`);
+    ui.toast(parts.join(' · ') || 'Nothing changed.');
     portalAccess.render();
   },
 
+  async revoke(id){
+    const r = await sb.from('portal_access').update({ disabled: true }).eq('id', id);
+    if(r.error){ ui.err(r.error); return; }
+    ui.toast('Revoked.');
+    portalAccess.render();
+  },
+
+  async enable(id){
+    const r = await sb.from('portal_access').update({ disabled: false }).eq('id', id);
+    if(r.error){ ui.err(r.error); return; }
+    ui.toast('Re-enabled.');
+    portalAccess.render();
+  },
+
+  async remove(id){
+    if(!confirm('Permanently delete this authorization? Use Revoke instead to keep the row for audit history.')) return;
+    const r = await sb.from('portal_access').delete().eq('id', id);
+    if(r.error){ ui.err(r.error); return; }
+    ui.toast('Deleted.');
+    portalAccess.render();
+  }
 };
 
 const adminPanel = {
