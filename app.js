@@ -6392,42 +6392,113 @@ const portalAccess = {
       wrap.innerHTML = '<div class="muted" style="font-size:12px">Admin only.</div>';
       return;
     }
-    const r = await sb.from('portal_access')
+    /* Pull direct portal_access rows AND, for every account that has
+       at least one active portal_access row, all of its current
+       contacts. Contact-sourced rows are flagged 'via contact' so
+       admin knows they're derived from account_contacts, not entered
+       into portal_access directly. */
+    const paRes = await sb.from('portal_access')
       .select('id, email, disabled, added_at, account:accounts(id, account_number, business_name)')
       .order('added_at', { ascending: false });
-    if(r.error){
+    if(paRes.error){
       wrap.innerHTML = `<div class="muted" style="font-size:12px">Table missing. Run supabase/media-portal.sql.</div>`;
       return;
     }
-    const rows = r.data || [];
-    if(!rows.length){
+    const paRows = paRes.data || [];
+    if(!paRows.length){
       wrap.innerHTML = `<div class="muted" style="font-size:12px">No accounts authorized yet. Click "+ Add account" to grant access.</div>`;
       return;
     }
+
+    const portalAccountIds = Array.from(new Set(
+      paRows.filter(r => !r.disabled && r.account?.id).map(r => r.account.id)
+    ));
+    let contactRows = [];
+    if(portalAccountIds.length){
+      const ccRes = await sb.from('account_contacts')
+        .select('id, email, name, title, created_at, account_id, account:accounts(id, account_number, business_name)')
+        .in('account_id', portalAccountIds)
+        .is('deleted_at', null)
+        .not('email', 'is', null);
+      contactRows = (ccRes.data || []).filter(c => c.email && c.email.trim());
+    }
+
+    /* Dedupe: if a contact's email is already in portal_access for
+       the same account, skip the contact row (direct row wins — it
+       has Revoke/Delete controls). */
+    const directKey = (accId, email) => `${accId}|${(email||'').toLowerCase().trim()}`;
+    const directSet = new Set(
+      paRows.filter(r => r.account?.id).map(r => directKey(r.account.id, r.email))
+    );
+
+    const display = [];
+    for(const r of paRows){
+      display.push({
+        kind: 'direct',
+        id: r.id,
+        email: r.email,
+        disabled: r.disabled,
+        added_at: r.added_at,
+        account: r.account,
+        contact_name: null
+      });
+    }
+    for(const c of contactRows){
+      if(directSet.has(directKey(c.account_id, c.email))) continue;
+      display.push({
+        kind: 'contact',
+        id: c.id,
+        email: c.email.trim(),
+        disabled: false,
+        added_at: c.created_at,
+        account: c.account,
+        contact_name: c.name || null,
+        contact_title: c.title || null
+      });
+    }
+    /* Sort: group by account name, then direct rows first then contact rows */
+    display.sort((a, b) => {
+      const an = (a.account?.business_name || '').toLowerCase();
+      const bn = (b.account?.business_name || '').toLowerCase();
+      if(an !== bn) return an < bn ? -1 : 1;
+      if(a.kind !== b.kind) return a.kind === 'direct' ? -1 : 1;
+      return (a.email||'').localeCompare(b.email||'');
+    });
+
     wrap.innerHTML = `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
       <thead><tr style="border-bottom:1px solid var(--line);text-align:left">
         <th style="padding:8px 10px">Account</th>
         <th style="padding:8px 10px">Email</th>
+        <th style="padding:8px 10px">Source</th>
         <th style="padding:8px 10px">Status</th>
-        <th style="padding:8px 10px">Added</th>
         <th style="padding:8px 10px"></th>
       </tr></thead>
-      <tbody>${rows.map(r => {
+      <tbody>${display.map(r => {
         const accCell = r.account?.id
           ? `<a href="#" onclick="event.preventDefault();accounts.open('${r.account.id}')" style="color:var(--brand);text-decoration:underline;text-underline-offset:3px" title="Open account to add or change emails"><b>${esc(r.account.business_name || '(unnamed)')}</b> <span class="muted">${esc(r.account.account_number || '')}</span></a>`
           : `<span class="muted"><i>(deleted account)</i></span>`;
+        const emailCell = r.kind === 'contact' && r.contact_name
+          ? `${esc(r.email)} <span class="muted" style="font-size:11px">— ${esc(r.contact_name)}${r.contact_title?' · '+esc(r.contact_title):''}</span>`
+          : esc(r.email);
+        const sourceCell = r.kind === 'direct'
+          ? '<span class="badge info" title="Entered directly in Media portal access">direct</span>'
+          : '<span class="badge" title="From Additional contacts — delete the contact to revoke">via contact</span>';
+        const statusCell = r.disabled
+          ? '<span class="badge warn">revoked</span>'
+          : '<span class="badge ok">active</span>';
+        const actionsCell = r.kind === 'direct'
+          ? `${r.disabled
+              ? `<button class="icon-btn" style="padding:4px 10px;font-size:12px" onclick="portalAccess.enable(${r.id})">Re-enable</button>`
+              : `<button class="icon-btn ghost" style="padding:4px 10px;font-size:12px" onclick="portalAccess.revoke(${r.id})">Revoke</button>`}
+             <button class="icon-btn danger" style="padding:4px 10px;font-size:12px;margin-left:4px" onclick="portalAccess.remove(${r.id})" title="Permanently delete">✕</button>`
+          : `<span class="muted" style="font-size:11px">Edit in the account's Additional contacts</span>`;
         return `<tr style="border-bottom:1px solid var(--line)">
-        <td style="padding:8px 10px">${accCell}</td>
-        <td style="padding:8px 10px">${esc(r.email)}</td>
-        <td style="padding:8px 10px">${r.disabled ? '<span class="badge warn">revoked</span>' : '<span class="badge ok">active</span>'}</td>
-        <td style="padding:8px 10px" class="muted">${r.added_at?.slice(0,10) || ''}</td>
-        <td style="padding:8px 10px;white-space:nowrap">
-          ${r.disabled
-            ? `<button class="icon-btn" style="padding:4px 10px;font-size:12px" onclick="portalAccess.enable(${r.id})">Re-enable</button>`
-            : `<button class="icon-btn ghost" style="padding:4px 10px;font-size:12px" onclick="portalAccess.revoke(${r.id})">Revoke</button>`}
-          <button class="icon-btn danger" style="padding:4px 10px;font-size:12px;margin-left:4px" onclick="portalAccess.remove(${r.id})" title="Permanently delete">✕</button>
-        </td>
-      </tr>`;
+          <td style="padding:8px 10px">${accCell}</td>
+          <td style="padding:8px 10px">${emailCell}</td>
+          <td style="padding:8px 10px">${sourceCell}</td>
+          <td style="padding:8px 10px">${statusCell}</td>
+          <td style="padding:8px 10px;white-space:nowrap">${actionsCell}</td>
+        </tr>`;
       }).join('')}</tbody>
     </table></div>`;
   },
