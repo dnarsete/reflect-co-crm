@@ -651,36 +651,53 @@ async function createDraftOrder(db: any, payload: any) {
   };
   if (ord.shopify_draft_order_id) {
     /* When the client explicitly asks to re-send an existing draft's invoice
-       (customer says they never got it, etc.), skip the create-new-draft
-       branch entirely and re-fire the send_invoice email against the
-       existing draft. No new draft, no duplicate — same recipient, same
-       "Lip TX Invoice" subject line. */
+       (customer says they never got it, wrong email at the time, billing
+       contact wants a copy, etc.), skip the create-new-draft branch entirely
+       and re-fire the send_invoice email against the existing draft. No new
+       draft, no duplicate — SAME invoice link, same "Lip TX Invoice"
+       subject.
+
+       The client may pass `override_to` to send the SAME invoice to a
+       different email than the one on the account. Shopify's send_invoice
+       API lets us override the To header per call without touching the
+       draft itself. */
     if (forceResend) {
       const draftId = ord.shopify_draft_order_id;
-      const customerEmail = ord.account?.email || null;
-      if (!customerEmail) {
+      const overrideTo = typeof payload?.override_to === "string" ? payload.override_to.trim() : "";
+      const sendTo = overrideTo || ord.account?.email || null;
+      if (!sendTo) {
         return {
           already_linked: true,
           shopify_draft_order_id: draftId,
           invoice_sent: false,
-          invoice_send_error: "No customer email on the account — cannot re-send invoice.",
+          invoice_send_error: "No email provided and no email on the account — cannot re-send invoice.",
+          resent: true,
+        };
+      }
+      /* Validate the override shape server-side so a bad client call can't
+         push an obviously-broken address to Shopify. */
+      if (overrideTo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(overrideTo)) {
+        return {
+          already_linked: true,
+          shopify_draft_order_id: draftId,
+          invoice_sent: false,
+          invoice_send_error: "Override email is not a valid address: " + overrideTo,
           resent: true,
         };
       }
       try {
-        /* BCC the rep on the invoice so they have a copy in their inbox
-           for records / follow-up, without exposing their email in the
-           customer's To header. Shopify's send_invoice API supports
-           `bcc` (array of strings) but not `cc`, so BCC is the only
-           silent-copy option. */
-        const repEmail = await getRepEmailForOrder(db, ord);
+        /* Deliberately NOT setting bcc on resend. Shopify's send_invoice
+           API only accepts BCC addresses that belong to a Shopify staff
+           user on the store, so BCC-ing a rep's gmail returns 422
+           "<email> is not a valid bcc address" and the whole call fails.
+           The rep triggered the resend from the CRM and sees the outcome
+           on screen — a BCC copy isn't worth killing the delivery. */
         await shopifyFetch(db, `draft_orders/${draftId}/send_invoice.json`, {
           method: "POST",
           body: JSON.stringify({
             draft_order_invoice: {
-              to: customerEmail,
+              to: sendTo,
               subject: "Lip TX Invoice",
-              ...(repEmail ? { bcc: [repEmail] } : {}),
             },
           }),
         });
@@ -688,7 +705,8 @@ async function createDraftOrder(db: any, payload: any) {
           already_linked: true,
           shopify_draft_order_id: draftId,
           invoice_sent: true,
-          bcc_rep: repEmail || null,
+          sent_to: sendTo,
+          override_used: !!overrideTo,
           resent: true,
         };
       } catch (e: any) {

@@ -3422,40 +3422,77 @@ const orders = {
      drafts + duplicate invoice emails class of bug. On confirm, calls the
      Edge Function with force_resend:true which skips the create-draft
      step (order.shopify_draft_order_id already exists) and just re-fires
-     the send_invoice email to the same draft. NO new draft, NO duplicate. */
+     the send_invoice email to the same draft. NO new draft, NO duplicate.
+     The rep can edit the destination email — the SAME invoice link goes
+     to whichever address they type. */
   async resendInvoice(id){
+    /* Pre-fill the email input with the account's primary email. The
+       rep usually just resends to the same place; override is for the
+       "wrong email at the time" case or sending to a billing contact. */
+    let defaultEmail = '';
+    try {
+      const acctId = orders._draft?.account_id;
+      if(acctId){
+        const r = await sb.from('accounts').select('email').eq('id', acctId).single();
+        defaultEmail = r.data?.email || '';
+      }
+    } catch(_){ /* non-fatal — rep can type the address */ }
+    const safeId = esc(id).replace(/'/g,'&#39;');
     ui.modal(`
       <h3>📧 Re-send invoice?</h3>
       <p style="margin:0 0 10px">The invoice for this order was already emailed to the customer when it was finalized.</p>
-      <p style="margin:0 0 10px"><b>Only re-send if the customer says they never received it</b> (link expired, went to spam, wrong email at the time, etc.).</p>
+      <p style="margin:0 0 10px"><b>Only re-send if the customer says they never received it</b>, or you need to send the same invoice to a different person at the account (billing contact, assistant, etc.).</p>
       <p class="muted" style="font-size:12px;margin:0 0 12px">
-        This will send a SECOND email with the same invoice link — it will NOT create a duplicate Shopify draft.
+        This will send the SAME invoice link to the email below. It will NOT create a duplicate Shopify draft.
       </p>
+      <div style="margin:12px 0">
+        <label style="display:block;font-size:12px;margin-bottom:4px">Send to</label>
+        <input id="resend-to" type="email" value="${esc(defaultEmail)}" placeholder="billing@example.com" style="width:100%" required/>
+      </div>
       <div class="row" style="gap:8px;margin-top:12px">
         <button class="icon-btn ghost" onclick="ui.closeModal()">Cancel</button>
         <div class="grow"></div>
-        <button class="icon-btn primary" onclick="ui.closeModal();orders._doResendInvoice('${esc(id).replace(/'/g,'&#39;')}')">Yes, re-send</button>
+        <button class="icon-btn primary" onclick="orders._submitResend('${safeId}')">Yes, re-send</button>
       </div>
     `);
+    setTimeout(() => { const el = document.getElementById('resend-to'); if(el){ el.focus(); el.select(); } }, 50);
   },
 
-  async _doResendInvoice(id){
+  /* Pull the email out of the modal, validate shape, close modal, fire. */
+  _submitResend(id){
+    const el = document.getElementById('resend-to');
+    const email = (el?.value || '').trim();
+    if(!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){
+      alert('Enter a valid email address to send the invoice to.');
+      el?.focus();
+      return;
+    }
+    ui.closeModal();
+    orders._doResendInvoice(id, email);
+  },
+
+  async _doResendInvoice(id, overrideTo){
     return orders._guardClick(async () => {
       /* Track exactly what happened so we can reopen the order modal with
          a persistent banner instead of a fleeting toast that vanishes right
          after the confirm dialog closed. */
       let outcome = null;
       try {
-        const r = await shopify.call('create_draft_order', { order_id: id, force_resend: true });
+        const r = await shopify.call('create_draft_order', {
+          order_id: id,
+          force_resend: true,
+          ...(overrideTo ? { override_to: overrideTo } : {}),
+        });
         console.log('[resend invoice] Edge Function response:', r);
+        const sentWhere = r.sent_to ? ` to ${r.sent_to}` : '';
         if(r.invoice_sent){
-          outcome = { ok: true, msg: 'Invoice re-sent. The customer should receive it in the next few minutes. Check spam if it doesn\'t arrive within 15 minutes.' };
+          outcome = { ok: true, msg: `Invoice re-sent${sentWhere}. The recipient should receive it in the next few minutes. Check spam if it doesn't arrive within 15 minutes.` };
         } else if(r.invoice_send_error){
           outcome = { ok: false, msg: 'Re-send failed: ' + r.invoice_send_error };
         } else if(!r.resent){
           outcome = { ok: false, msg: 'Re-send action not yet available on the Edge Function. Redeploy shopify-sync/index.ts on Supabase and try again.' };
         } else {
-          outcome = { ok: true, msg: 'Re-send accepted by Shopify — the invoice should arrive shortly.' };
+          outcome = { ok: true, msg: `Re-send accepted by Shopify${sentWhere} — the invoice should arrive shortly.` };
         }
       } catch(e){
         console.error('[resend invoice] threw:', e);
