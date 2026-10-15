@@ -4795,6 +4795,26 @@ const materials = {
     };
     const results = await Promise.all(materials.CATEGORIES.map(listOne));
     materials._files = results.flat();
+
+    /* Batch-sign every file for thumbnails. The materials bucket is
+       private; getPublicUrl would return a dead URL. Signed URLs with
+       1-hour TTL cover the typical browse session, and the Preview /
+       Download / Copy-link paths all re-sign fresh at click time. */
+    if (materials._files.length) {
+      try {
+        const paths = materials._files.map(f => f.path);
+        const { data: signed, error } = await sb.storage
+          .from(materials.BUCKET)
+          .createSignedUrls(paths, 3600);
+        if (!error && Array.isArray(signed)) {
+          const byPath = Object.create(null);
+          signed.forEach(s => { if (s && s.path) byPath[s.path] = s.signedUrl; });
+          materials._files.forEach(f => { f._signedUrl = byPath[f.path] || ''; });
+        }
+      } catch (e) {
+        console.warn('[materials] batch sign failed:', e);
+      }
+    }
   },
 
   async render(){
@@ -4865,24 +4885,32 @@ const materials = {
       const repHidden = !isAdmin && isRepOnly;
       const isChecked = materials._selected.has(f.path);
 
-      /* Public URL for thumbnails only — same bucket the portal reads.
-         Real view/download still routes through signed URLs. */
-      const publicUrl = sb.storage.from(materials.BUCKET).getPublicUrl(f.path).data.publicUrl;
+      /* Thumbnail URL — populated by loadAll() via batch
+         createSignedUrls (bucket is private, no permanent URL exists).
+         A missing _signedUrl falls back to the file-type icon so the
+         card still renders. */
+      const thumbUrl = f._signedUrl || '';
       let thumb;
       if (isImage) {
-        thumb = `<img src="${esc(publicUrl)}" alt="${esc(f.name)}" loading="lazy" style="width:100%;height:100%;object-fit:cover;display:block"/>`;
+        thumb = thumbUrl ? `<img src="${esc(thumbUrl)}" alt="${esc(f.name)}" loading="lazy" style="width:100%;height:100%;object-fit:cover;display:block"/>` : `<div class="mp-asset-icon">${icon}</div>`;
       } else if (isVideo) {
-        thumb = `<video src="${esc(publicUrl)}#t=0.5" muted preload="metadata" style="width:100%;height:100%;object-fit:cover;display:block"></video><div class="mp-asset-play">▶</div>`;
+        thumb = thumbUrl ? `<video src="${esc(thumbUrl)}#t=0.5" muted preload="metadata" style="width:100%;height:100%;object-fit:cover;display:block"></video><div class="mp-asset-play">▶</div>` : `<div class="mp-asset-icon">${icon}</div>`;
       } else if (isPdf) {
         /* Browser-native PDF rendering. #toolbar=0&navpanes=0 hides Chrome's
            PDF chrome; #page=1 locks to the first page for the thumbnail. */
-        thumb = `<iframe src="${esc(publicUrl)}#toolbar=0&navpanes=0&page=1&view=FitH" style="width:100%;height:100%;border:0;pointer-events:none" loading="lazy" title="${esc(f.name)}"></iframe>`;
+        thumb = thumbUrl ? `<iframe src="${esc(thumbUrl)}#toolbar=0&navpanes=0&page=1&view=FitH" style="width:100%;height:100%;border:0;pointer-events:none" loading="lazy" title="${esc(f.name)}"></iframe>` : `<div class="mp-asset-icon">${icon}</div>`;
       } else if (isOffice) {
-        /* Microsoft's free Office Online Viewer renders PPTX/DOCX/XLSX from
-           any public URL. pointer-events:none prevents stealing clicks from
-           the card's Preview/Download buttons. */
-        const officeUrl = `https://view.officeapps.live.com/op/view.aspx?src=${encodeURIComponent(publicUrl)}`;
-        thumb = `<iframe src="${esc(officeUrl)}" style="width:100%;height:100%;border:0;pointer-events:none" loading="lazy" title="${esc(f.name)}"></iframe>`;
+        /* Microsoft's free Office Online Viewer renders PPTX/DOCX/XLSX
+           from a URL it can fetch. Signed URL means the viewer src
+           still works for 1 hour, then expires — no permanent public
+           URL to leak. pointer-events:none prevents stealing clicks
+           from the card's Preview/Download buttons. */
+        if (thumbUrl) {
+          const officeUrl = `https://view.officeapps.live.com/op/view.aspx?src=${encodeURIComponent(thumbUrl)}`;
+          thumb = `<iframe src="${esc(officeUrl)}" style="width:100%;height:100%;border:0;pointer-events:none" loading="lazy" title="${esc(f.name)}"></iframe>`;
+        } else {
+          thumb = `<div class="mp-asset-icon">${icon}</div>`;
+        }
       } else {
         thumb = `<div class="mp-asset-icon">${icon}</div>`;
       }
