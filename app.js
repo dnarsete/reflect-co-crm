@@ -15,6 +15,11 @@ const fmt$ = n => '$' + (Number(n||0)).toLocaleString(undefined,{minimumFraction
 const todayISO = () => new Date().toISOString().slice(0,10);
 const startOfMonth = () => { const d=new Date(); return new Date(d.getFullYear(),d.getMonth(),1).toISOString().slice(0,10) };
 const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+/* Permissive RFC-lite email check used anywhere the CRM validates an
+   address client-side (resend invoice, contact save, etc.). One source
+   so client + server don't drift; the server copy lives in
+   supabase/functions/shopify-sync/index.ts. */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /* US-only phone normalization. Called from onblur on every phone input.
    Accepts any input (dashes, parens, dots, spaces, leading +1) and rewrites
@@ -3426,18 +3431,31 @@ const orders = {
      The rep can edit the destination email — the SAME invoice link goes
      to whichever address they type. */
   async resendInvoice(id){
-    /* Pre-fill the email input with the account's primary email. The
-       rep usually just resends to the same place; override is for the
-       "wrong email at the time" case or sending to a billing contact. */
+    /* Catch any early throw (auth session issue, DOM race, etc.) so the
+       fire-and-forget onclick caller doesn't produce a silent unhandled
+       promise rejection — the rep sees a visible error instead. */
+    try { return await orders._resendInvoiceBody(id); }
+    catch(e){
+      console.error('[resendInvoice]', e);
+      alert('Could not open the Re-send dialog: ' + (e?.message || e));
+    }
+  },
+  async _resendInvoiceBody(id){
+    /* Pre-fill the email input with the account's primary email, looked
+       up by the id argument. Reading orders._draft would misfire if the
+       user had just opened a different order's modal — the pre-fill
+       could show the wrong account's email and a one-click send could
+       hit the wrong recipient. */
     let defaultEmail = '';
     try {
-      const acctId = orders._draft?.account_id;
+      const or = await sb.from('orders').select('account_id').eq('id', id).single();
+      const acctId = or.data?.account_id;
       if(acctId){
-        const r = await sb.from('accounts').select('email').eq('id', acctId).single();
-        defaultEmail = r.data?.email || '';
+        const ar = await sb.from('accounts').select('email').eq('id', acctId).single();
+        defaultEmail = ar.data?.email || '';
       }
     } catch(_){ /* non-fatal — rep can type the address */ }
-    const safeId = esc(id).replace(/'/g,'&#39;');
+    const safeId = esc(id);
     ui.modal(`
       <h3>📧 Re-send invoice?</h3>
       <p style="margin:0 0 10px">The invoice for this order was already emailed to the customer when it was finalized.</p>
@@ -3446,8 +3464,9 @@ const orders = {
         This will send the SAME invoice link to the email below. It will NOT create a duplicate Shopify draft.
       </p>
       <div style="margin:12px 0">
-        <label style="display:block;font-size:12px;margin-bottom:4px">Send to</label>
-        <input id="resend-to" type="email" value="${esc(defaultEmail)}" placeholder="billing@example.com" style="width:100%" required/>
+        <label for="resend-to" style="display:block;font-size:12px;margin-bottom:4px">Send to</label>
+        <input id="resend-to" type="email" value="${esc(defaultEmail)}" placeholder="billing@example.com" style="width:100%" autofocus
+               onkeydown="if(event.key==='Enter'){event.preventDefault();orders._submitResend('${safeId}')}"/>
       </div>
       <div class="row" style="gap:8px;margin-top:12px">
         <button class="icon-btn ghost" onclick="ui.closeModal()">Cancel</button>
@@ -3455,14 +3474,16 @@ const orders = {
         <button class="icon-btn primary" onclick="orders._submitResend('${safeId}')">Yes, re-send</button>
       </div>
     `);
-    setTimeout(() => { const el = document.getElementById('resend-to'); if(el){ el.focus(); el.select(); } }, 50);
+    /* autofocus is unreliable when the modal appends asynchronously —
+       belt-and-braces focus on the next frame. */
+    requestAnimationFrame(() => { const el = document.getElementById('resend-to'); if(el){ el.focus(); el.select(); } });
   },
 
   /* Pull the email out of the modal, validate shape, close modal, fire. */
   _submitResend(id){
     const el = document.getElementById('resend-to');
     const email = (el?.value || '').trim();
-    if(!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){
+    if(!email || !EMAIL_RE.test(email)){
       alert('Enter a valid email address to send the invoice to.');
       el?.focus();
       return;

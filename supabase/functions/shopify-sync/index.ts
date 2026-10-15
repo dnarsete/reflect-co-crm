@@ -603,6 +603,20 @@ async function findExistingDraftByOrderNumber(db: any, orderNumber: string): Pro
 async function createDraftOrder(db: any, payload: any) {
   const orderId = payload?.order_id;
   const forceResend = payload?.force_resend === true;
+  /* Hoisted so the 404 fall-through, orphan-adopt and create-new-draft
+     paths can all deliver the invoice to the rep's chosen recipient.
+     Previously the override was captured inside the forceResend branch
+     and silently discarded whenever a resend landed in a different code
+     path (e.g. stored draft 404s → create fresh draft → invoice goes to
+     the account email, not the override). */
+  const overrideTo = typeof payload?.override_to === "string" ? payload.override_to.trim() : "";
+  if (overrideTo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(overrideTo)) {
+    return {
+      invoice_sent: false,
+      invoice_send_error: "Override email is not a valid address: " + overrideTo,
+      resent: forceResend,
+    };
+  }
   if (!orderId) throw new Error("payload.order_id required");
   const { data: ord, error } = await db
     .from("orders").select("*, account:accounts(*)").eq("id", orderId).single();
@@ -612,13 +626,20 @@ async function createDraftOrder(db: any, payload: any) {
      the counter if the function crashes mid-run. `push_state` was set
      to 'in_progress' by shopify_claim_retry_batch() or by the client
      immediately before this call. Manual "Push now" clicks pre-set it
-     too (see app.js orders.pushToShopify). */
-  const currentAttempts: number = Number(ord.shopify_push_attempts || 0) + 1;
-  await db.from("orders").update({
-    shopify_push_attempts: currentAttempts,
-    shopify_push_last_attempt_at: new Date().toISOString(),
-    shopify_push_locked_until: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-  }).eq("id", orderId);
+     too (see app.js orders.pushToShopify).
+
+     SKIP on force_resend. A user-triggered resend is not a retry; counting
+     it against the attempt budget would mean 25 resends to a billing
+     contact flipped the order to failed_permanent on its next real retry.
+     Resends also don't need the 5-min lock since the user initiated them. */
+  const currentAttempts: number = Number(ord.shopify_push_attempts || 0) + (forceResend ? 0 : 1);
+  if (!forceResend) {
+    await db.from("orders").update({
+      shopify_push_attempts: currentAttempts,
+      shopify_push_last_attempt_at: new Date().toISOString(),
+      shopify_push_locked_until: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+    }).eq("id", orderId);
+  }
 
   /* Wrap the whole rest of the function so any failure gets the
      pending_retry treatment (next_at scheduled by backoff, error saved
@@ -663,7 +684,6 @@ async function createDraftOrder(db: any, payload: any) {
        draft itself. */
     if (forceResend) {
       const draftId = ord.shopify_draft_order_id;
-      const overrideTo = typeof payload?.override_to === "string" ? payload.override_to.trim() : "";
       const sendTo = overrideTo || ord.account?.email || null;
       if (!sendTo) {
         return {
@@ -671,17 +691,6 @@ async function createDraftOrder(db: any, payload: any) {
           shopify_draft_order_id: draftId,
           invoice_sent: false,
           invoice_send_error: "No email provided and no email on the account — cannot re-send invoice.",
-          resent: true,
-        };
-      }
-      /* Validate the override shape server-side so a bad client call can't
-         push an obviously-broken address to Shopify. */
-      if (overrideTo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(overrideTo)) {
-        return {
-          already_linked: true,
-          shopify_draft_order_id: draftId,
-          invoice_sent: false,
-          invoice_send_error: "Override email is not a valid address: " + overrideTo,
           resent: true,
         };
       }
@@ -766,21 +775,29 @@ async function createDraftOrder(db: any, payload: any) {
         shopify_invoice_url: orphanInvoiceUrl,
       }).eq("id", orderId);
       /* If Shopify says the invoice was already sent on this orphan
-         draft, don't send it again. Otherwise send it now. */
-      if (!orphanInvoiceSent && ord.account?.email) {
+         draft, don't send it again. Otherwise send it now. Honor
+         overrideTo so a resend that landed here (via 404 fall-through)
+         still reaches the recipient the rep chose. */
+      const orphanSendTo = overrideTo || ord.account?.email || null;
+      let orphanInvoiceSentNow = false;
+      if (!orphanInvoiceSent && orphanSendTo) {
         try {
-          const repEmail = await getRepEmailForOrder(db, ord);
+          /* No BCC — Shopify's send_invoice rejects any BCC address that
+             isn't a staff user on the store (422), which killed every
+             send_invoice call that tried to BCC a rep's gmail. Reps see
+             the outcome in the CRM; a BCC copy is not worth losing the
+             customer's invoice over. */
           await shopifyFetch(db, `draft_orders/${orphanId}/send_invoice.json`, {
             method: "POST",
             body: JSON.stringify({
               draft_order_invoice: {
-                to: ord.account.email,
+                to: orphanSendTo,
                 subject: "Lip TX Invoice",
-                ...(repEmail ? { bcc: [repEmail] } : {}),
               },
             }),
           });
           await db.from("orders").update({ shopify_status: "invoice_sent" }).eq("id", orderId);
+          orphanInvoiceSentNow = true;
         } catch (e: any) {
           /* Non-fatal — adoption still happened. Report but don't fail. */
           console.warn("[shopify-sync] Orphan adopted, but send_invoice failed:", e?.message || e);
@@ -791,7 +808,10 @@ async function createDraftOrder(db: any, payload: any) {
         adopted: true,
         shopify_draft_order_id: orphanId,
         invoice_url: orphanInvoiceUrl,
-        invoice_sent: orphanInvoiceSent,
+        invoice_sent: orphanInvoiceSent || orphanInvoiceSentNow,
+        sent_to: orphanInvoiceSentNow ? orphanSendTo : null,
+        override_used: orphanInvoiceSentNow && !!overrideTo && overrideTo !== (ord.account?.email || ""),
+        resent: forceResend,
       };
     }
   }
@@ -959,26 +979,31 @@ async function createDraftOrder(db: any, payload: any) {
      Reference: https://shopify.dev/docs/api/admin-rest/latest/resources/draftorder#post-draft-orders-draft-order-id-send-invoice */
   let invoiceSent = false;
   let invoiceSendError: string | null = null;
+  let invoiceSentTo: string | null = null;
+  /* Honor overrideTo so a resend that fell through here (stored draft
+     404 → cleared → create fresh) still delivers to the recipient the
+     rep chose. Without this the override was silently discarded and
+     the invoice went to the account's primary email. */
+  const sendTo = overrideTo || ord.account?.email || null;
   if (draftId && (payload?.send_invoice !== false)) {
-    const customerEmail = ord.account?.email || null;
-    if (!customerEmail) {
+    if (!sendTo) {
       invoiceSendError = "No customer email on the account — cannot auto-send invoice. Add an email to the account or send it manually from Shopify.";
     } else {
       try {
-        /* BCC the rep-on-file so they get a silent copy of the invoice
-           email in their inbox. See getRepEmailForOrder + notes on the
-           resend path — same rationale, same limitation (Shopify's API
-           supports `bcc` but not `cc`). */
-        const repEmail = await getRepEmailForOrder(db, ord);
+        /* No BCC — Shopify's send_invoice rejects any BCC address that
+           isn't a staff user on the store (422 "<email> is not a valid
+           bcc address"), which killed every send_invoice call that tried
+           to BCC a rep's gmail. Reps see the outcome in the CRM; a BCC
+           copy is not worth losing the customer's invoice over.
+
+           Subject is explicitly set to "Lip TX Invoice" per merchant
+           request so the recipient's inbox shows a branded, recognizable
+           subject line instead of Shopify's default "Invoice from
+           [Shop]". */
         const invoicePayload: any = {
           draft_order_invoice: {
-            to: customerEmail,
+            to: sendTo,
             subject: "Lip TX Invoice",
-            ...(repEmail ? { bcc: [repEmail] } : {}),
-            /* custom_message uses Shopify's default template — subject
-               explicitly set to "Lip TX Invoice" per merchant request so
-               the recipient's inbox shows a branded, recognizable subject
-               line instead of Shopify's default "Invoice from [Shop]". */
           }
         };
         await shopifyFetch(db, `draft_orders/${draftId}/send_invoice.json`, {
@@ -986,6 +1011,7 @@ async function createDraftOrder(db: any, payload: any) {
           body: JSON.stringify(invoicePayload),
         });
         invoiceSent = true;
+        invoiceSentTo = sendTo;
         /* Update CRM order to reflect the sent state */
         await db.from("orders").update({
           shopify_status: "invoice_sent",
@@ -1012,6 +1038,12 @@ async function createDraftOrder(db: any, payload: any) {
     invoice_url: invoiceUrl,
     invoice_sent: invoiceSent,
     invoice_send_error: invoiceSendError,
+    sent_to: invoiceSentTo,
+    override_used: invoiceSent && !!overrideTo && overrideTo !== (ord.account?.email || ""),
+    /* When this path ran because of a 404 fall-through from a resend
+       request, surface that to the client so the UI phrases the banner
+       as "re-sent" rather than "sent" for the first time. */
+    resent: forceResend,
   };
 }
 
