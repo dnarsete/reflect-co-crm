@@ -707,14 +707,40 @@ const accounts = {
     /* Strip a trailing country marker (with or without leading comma). */
     s = s.replace(/,?\s*(usa|united states|us)\s*$/i, '').trim();
     s = s.replace(/,\s*$/, '');
-    /* Pull STATE + ZIP off the end. Handles "CO 80246", ", CO 80246",
-       ", CO, 80246", "CO, 80246". */
-    const stateZipRegex = /,?\s+([A-Z]{2})\s*,?\s+(\d{5})(?:-\d{4})?\s*$/i;
-    const m = stateZipRegex.exec(s);
-    if(!m) return null;
-    const state = m[1].toUpperCase();
-    const zip = m[2];
-    let head = s.slice(0, m.index).trim().replace(/,\s*$/, '');
+    /* Peel ZIP off the end — OPTIONAL. If the rep didn't include a ZIP,
+       we still parse street/city/state and leave ZIP blank for them to
+       fill in. Was previously required, which blocked common input like
+       "8015 W Alameda Ave, Denver, Colorado". */
+    let zip = '';
+    const zipMatch = /[,\s]+(\d{5})(?:-\d{4})?\s*$/.exec(s);
+    if(zipMatch){
+      zip = zipMatch[1];
+      s = s.slice(0, zipMatch.index).trim().replace(/,\s*$/, '');
+    }
+    /* Peel STATE off the end. Accept either the 2-letter code ("CO") or
+       the full name ("Colorado"), case-insensitive. Longest match wins
+       so multi-word names like "New York" and "District of Columbia"
+       resolve correctly. */
+    const stateMap = Object.create(null);
+    (typeof US_STATES !== 'undefined' ? US_STATES : []).forEach(pair => {
+      stateMap[pair[0].toLowerCase()] = pair[0];
+      stateMap[pair[1].toLowerCase()] = pair[0];
+    });
+    let state = '';
+    for(const wordCount of [3, 2, 1]){
+      const inner = wordCount === 1
+        ? '([A-Za-z]+)'
+        : `((?:[A-Za-z]+\\s+){${wordCount - 1}}[A-Za-z]+)`;
+      const pattern = new RegExp(`[,\\s]+${inner}\\s*$`);
+      const sm = pattern.exec(s);
+      if(sm && stateMap[sm[1].toLowerCase()]){
+        state = stateMap[sm[1].toLowerCase()];
+        s = s.slice(0, sm.index).trim().replace(/,\s*$/, '');
+        break;
+      }
+    }
+    if(!state) return null;
+    let head = s;
     if(!head) return null;
     /* Split what's before state+zip by comma. */
     const looksLikeUnit = (str) => /^(ste|suite|unit|apt|apartment|room|rm|floor|fl|bldg|building|#)\b/i.test(str) || /^\d+[A-Z]?$/i.test(str);
@@ -769,6 +795,13 @@ const accounts = {
         city = cityLead[3].trim();
       }
     }
+    /* Safety net: if "city" came out as a lone street-suffix word (St,
+       Ave, Blvd, Dr, etc.), the state-peel probably ate a real city
+       name. Return null so the rep's input is left untouched instead
+       of filled with garbage. */
+    if(/^(st|street|ave|avenue|rd|road|blvd|boulevard|dr|drive|pkwy|parkway|ln|lane|ct|court|pl|place|way|hwy|highway|trail|tr|cir|circle|loop|ter|terrace)$/i.test(city)){
+      return null;
+    }
     return { street, suite, city, state, zip };
   },
 
@@ -791,7 +824,11 @@ const accounts = {
     streetEl.value = parsed.street;
     cityEl.value = parsed.city;
     stateEl.value = parsed.state;
-    zipEl.value = parsed.zip;
+    /* ZIP: only overwrite if the parse actually found one. The parser
+       now accepts addresses without a ZIP (e.g. "Denver, Colorado"), so
+       filling with '' here would wipe a ZIP the rep typed into the ZIP
+       field directly. */
+    if(parsed.zip) zipEl.value = parsed.zip;
     /* Suite: overwrite if parsed value found one; leave alone otherwise
        (so a rep who added a suite by hand doesn't lose it when they
        re-paste a street-only correction). */
