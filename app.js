@@ -1795,6 +1795,18 @@ const accounts = {
   },
   async save(id, isNew, bypassDupeCheck){
     const get = i => document.getElementById(i).value;
+    /* Auto-save may have created the account row before Save was clicked.
+       The Save button's onclick args (id='', isNew=true) are baked into
+       the HTML at modal-render time and go stale the moment auto-save
+       runs the first INSERT. Resolve the live id/isNew from
+       accounts._currentAccountId so the dupe check correctly excludes
+       the row that auto-save just created (otherwise the form matches
+       itself and fires a spurious "possible duplicate" warning), and so
+       Save does an UPDATE rather than a second INSERT. */
+    if(!id && accounts._currentAccountId){
+      id = accounts._currentAccountId;
+      isNew = false;
+    }
     /* Preflight: if a rep is creating a NEW account and they have no rep_id
        assigned on their profile, the RLS policy will reject the insert with
        a cryptic "new row violates row-level security policy" error. Block
