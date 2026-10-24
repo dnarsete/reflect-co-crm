@@ -832,6 +832,73 @@ const accounts = {
     return 'https://' + s;
   },
 
+  /* ==================== WEBSITE AUTOFILL ====================
+     Fire the free scraper edge function with the Website field's value.
+     Fills ONLY the fields the rep hasn't typed into — never clobbers
+     anything they've already entered. Shows a small status line under
+     the Website row with hit/miss summary and warnings from the server. */
+  async _scrapeFromWebsite(){
+    const webEl = document.getElementById('f-web');
+    const statusEl = document.getElementById('f-scrape-status');
+    const url = accounts._normalizeWebsite(webEl?.value || '');
+    if(!url){
+      if(statusEl){ statusEl.textContent = 'Enter a website first.'; statusEl.style.color = '#e57373'; }
+      return;
+    }
+    webEl.value = url; // normalize what the rep typed before the request
+    if(statusEl){ statusEl.textContent = 'Looking up…'; statusEl.style.color = 'var(--muted)'; }
+    try {
+      const session = await sb.auth.getSession();
+      const token = session?.data?.session?.access_token;
+      if(!token){ throw new Error('Not signed in.'); }
+      const base = (window.REFLECT_CONFIG?.SUPABASE_URL || '').replace(/\/+$/, '');
+      const res = await fetch(`${base}/functions/v1/scrape-business-info`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'apikey': window.REFLECT_CONFIG?.SUPABASE_KEY || '',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ url })
+      });
+      const data = await res.json();
+      if(!res.ok){ throw new Error(data?.error || `HTTP ${res.status}`); }
+      /* Fill only empty fields — never overwrite rep input. */
+      const setIfEmpty = (id, value) => {
+        if(!value) return false;
+        const el = document.getElementById(id);
+        if(!el) return false;
+        if((el.value || '').trim()) return false;
+        el.value = value;
+        /* Fire input/change so the auto-save hooks pick it up. */
+        try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch(_) {}
+        try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch(_) {}
+        return true;
+      };
+      const filled = [];
+      if(setIfEmpty('f-bp',      data.phone))  filled.push('phone');
+      if(setIfEmpty('f-em',      data.email))  filled.push('email');
+      if(setIfEmpty('f-b-street',data.street)) filled.push('street');
+      if(setIfEmpty('f-b-suite', data.suite))  filled.push('suite');
+      if(setIfEmpty('f-b-city',  data.city))   filled.push('city');
+      if(setIfEmpty('f-b-state', data.state))  filled.push('state');
+      if(setIfEmpty('f-b-zip',   data.zip))    filled.push('ZIP');
+
+      if(statusEl){
+        if(filled.length){
+          const warns = (data.warnings || []).join(' ');
+          statusEl.textContent = `Filled: ${filled.join(', ')}.${warns ? ' ' + warns : ''}`;
+          statusEl.style.color = '#4caf50';
+        } else {
+          statusEl.textContent = (data.warnings || []).join(' ') || 'Nothing new to fill — all fields already have values.';
+          statusEl.style.color = '#e57373';
+        }
+      }
+    } catch (e) {
+      if(statusEl){ statusEl.textContent = 'Lookup failed: ' + (e?.message || e); statusEl.style.color = '#e57373'; }
+    }
+  },
+
   /* ==================== AUTO-SAVE ====================
      Every field blur in the account modal persists to the DB in the
      background so a rep who gets interrupted mid-entry doesn't lose
@@ -1107,7 +1174,14 @@ const accounts = {
         <div><label>Account email</label><input id="f-em" type="email" value="${esc(acc.email)}"/></div>
         <div><label>Cell (responsible)</label><input id="f-cell" type="tel" autocomplete="tel" inputmode="tel" placeholder="555-555-5555" value="${esc(acc.cell)}" onblur="normalizeUSPhone(this)"/></div>
         <div><label>Business phone</label><input id="f-bp" type="tel" autocomplete="tel" inputmode="tel" placeholder="555-555-5555" value="${esc(acc.business_phone)}" onblur="normalizeUSPhone(this)"/></div>
-        <div style="grid-column:1/-1"><label>Website</label><input id="f-web" type="url" value="${esc(acc.website||'')}" placeholder="https://…" autocapitalize="none" spellcheck="false" onblur="this.value = accounts._normalizeWebsite(this.value) || ''"/></div>
+        <div style="grid-column:1/-1">
+          <label>Website</label>
+          <div class="row" style="gap:6px;align-items:stretch">
+            <input id="f-web" type="url" value="${esc(acc.website||'')}" placeholder="https://…" autocapitalize="none" spellcheck="false" style="flex:1" onblur="this.value = accounts._normalizeWebsite(this.value) || ''"/>
+            <button type="button" class="icon-btn ghost" title="Fetch phone / email / address from this website" onclick="accounts._scrapeFromWebsite()">🔍 Autofill</button>
+          </div>
+          <span id="f-scrape-status" style="font-size:12px;color:var(--muted)"></span>
+        </div>
       </div>
 
       <!-- Business address block -->
