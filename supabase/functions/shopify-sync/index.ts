@@ -822,8 +822,23 @@ async function createDraftOrder(db: any, payload: any) {
   (prods || []).forEach((p: any) => { if (p.shopify_variant_id) variantBySku[p.sku] = p.shopify_variant_id; });
 
   const line_items = (ord.items || []).map((i: any) => {
+    const isFree = Number(i.price) === 0;
     if (variantBySku[i.sku]) {
-      return { variant_id: Number(variantBySku[i.sku]), quantity: i.qty };
+      const line: any = { variant_id: Number(variantBySku[i.sku]), quantity: i.qty };
+      /* FREE lines (BOGO48 bonus units, etc.) still pin to the variant
+         so inventory decrements correctly for the full doubled
+         shipment, but a 100% applied_discount zeroes the line so the
+         customer isn't charged for the bonus. Without this, Shopify
+         would price the free line at the catalog rate and double-bill
+         the customer. */
+      if (isFree) {
+        line.applied_discount = {
+          value_type: "percentage",
+          value: "100.0",
+          description: (i.name && /FREE/.test(i.name)) ? i.name : "FREE",
+        };
+      }
+      return line;
     }
     return { title: `${i.name} (${i.sku})`, price: String(i.price), quantity: i.qty };
   });
