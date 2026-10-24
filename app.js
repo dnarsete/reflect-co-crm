@@ -3561,9 +3561,29 @@ const orders = {
     const sub = d.items.reduce((s,i)=>s+i.qty*i.price,0);
     const discPct = sub>0 ? (Number(d.discount)/sub*100) : 0;
     const adminFlag = discPct >= ref.highDiscPct() ? `High discount (${discPct.toFixed(1)}%) — admin will be notified.\n` : '';
+    /* Account identity banner — "highlight the account" per Dan so a
+       rep can't finalize against the wrong one. For non-test orders
+       the account was already fetched above for the address check;
+       for test-mode orders fetch it now. Native confirm() can't bold
+       text, so use ALL CAPS and separator lines for visual emphasis. */
+    let acctLabel = '';
+    try {
+      let acct = (typeof a !== 'undefined' && a && a.business_name) ? a : null;
+      if(!acct){
+        const r = await sb.from('accounts').select('business_name, account_number').eq('id', d.account_id).single();
+        acct = r.data || null;
+      } else {
+        const r = await sb.from('accounts').select('account_number').eq('id', d.account_id).single();
+        if(r.data?.account_number) acct = { ...acct, account_number: r.data.account_number };
+      }
+      if(acct){
+        const num = acct.account_number ? `${acct.account_number} — ` : '';
+        acctLabel = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nACCOUNT: ${num}${(acct.business_name || '').toUpperCase()}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+      }
+    } catch(_) { /* non-fatal — fall back to the plain confirm */ }
     const confirmText = inTestMode
-      ? adminFlag + '🧪 TEST MODE — complete this order?\n\nOrder is marked finalized in the CRM. No Shopify draft is created. No invoice is sent. No card is charged.'
-      : adminFlag + 'Finalize this order? This generates an order #, invoice, and charges payment.';
+      ? acctLabel + adminFlag + '🧪 TEST MODE — complete this order?\n\nOrder is marked finalized in the CRM. No Shopify draft is created. No invoice is sent. No card is charged.'
+      : acctLabel + adminFlag + 'Finalize this order? This generates an order #, invoice, and charges payment.';
     if(!confirm(confirmText)) return;
 
     d.status='finalized';
