@@ -707,6 +707,13 @@ const accounts = {
     /* Strip a trailing country marker (with or without leading comma). */
     s = s.replace(/,?\s*(usa|united states|us)\s*$/i, '').trim();
     s = s.replace(/,\s*$/, '');
+    /* Normalize " - " and " | " separators to commas. Some sites and
+       business cards write "501 S. Cherry St - Suite 310 - Glendale,
+       CO 80246" instead of using commas; the comma-based splitter
+       below then handles it identically to a comma-separated line.
+       Only touches dashes with spaces on BOTH sides, so "Route 66-A"
+       and ZIP+4 like "80246-1234" are left alone. */
+    s = s.replace(/\s+[-|]\s+/g, ', ');
     /* Peel ZIP off the end — OPTIONAL. If the rep didn't include a ZIP,
        we still parse street/city/state and leave ZIP blank for them to
        fill in. Was previously required, which blocked common input like

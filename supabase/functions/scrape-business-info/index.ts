@@ -166,8 +166,12 @@ interface Address { street: string; suite: string; city: string; state: string; 
 function extractAddress(text: string): Address | null {
   /* Walk every line, look for one that ends with a 5-digit ZIP preceded
      by a 2-letter state. That line is the full address — the street +
-     suite are usually on the same line or the preceding line. */
-  const lines = text.split(/\n/).map(l => l.trim()).filter(Boolean);
+     suite are usually on the same line or the preceding line.
+     Pre-process: normalize " - " and " | " separators to commas so
+     "501 S. Cherry St - Suite 310 - Glendale, CO 80246" parses the
+     same as the comma-separated form. Dashes without spaces (ZIP+4,
+     Route 66-A) are left alone. */
+  const lines = text.split(/\n/).map(l => l.replace(/\s+[-|]\s+/g, ', ').trim()).filter(Boolean);
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const zipMatch = /([A-Z]{2})\s*,?\s+(\d{5})(?:-\d{4})?\s*(?:,?\s*(?:USA|United States|US))?\s*$/i.exec(line);
