@@ -3262,7 +3262,7 @@ const orders = {
     orders._draft.promo_code = p.code;
     if(p.kind==='percent') orders._draft.promo_effect = `${p.value}% off subtotal`;
     else if(p.kind==='shipping') orders._draft.promo_effect = 'Free shipping';
-    else if(p.kind==='bonus') orders._draft.promo_effect = 'Bonus product included with shipment';
+    else if(p.kind==='bonus') orders._draft.promo_effect = `Buy ${p.min_qty}, get ${p.min_qty} free — doubles the shipment at save`;
     else if(p.kind==='access') orders._draft.promo_effect = p.perks || 'Access perk';
     document.getElementById('o-promo-msg').textContent = orders._draft.promo_effect;
     orders.recompute();
@@ -3356,8 +3356,27 @@ const orders = {
     return d;
   },
   buildPayload(d){
+    /* Bonus-kind promos (BOGO48 is the only one today) double the
+       shipment: add a free line of the same SKU + same qty for every
+       paid line in the cart. Shopify sees the full doubled quantity
+       so the warehouse ships 96 when the rep ordered 48. The $0 price
+       on the free lines means the customer's total stays unchanged.
+       Filter on price>0 so re-saving an already-doubled order does
+       not add free lines on top of free lines. */
+    const promo = (typeof cache !== 'undefined' && cache.promotions || []).find(x => x.code === d.promo_code);
+    let items = Array.isArray(d.items) ? d.items : [];
+    if(promo && promo.kind === 'bonus'){
+      const paid = items.filter(i => Number(i.qty) > 0 && Number(i.price) > 0);
+      const freeLines = paid.map(i => ({
+        sku: i.sku,
+        name: `${i.name} (FREE — ${promo.code})`,
+        price: 0,
+        qty: Number(i.qty)
+      }));
+      items = [...items, ...freeLines];
+    }
     return {
-      account_id: d.account_id, rep_id: d.rep_id, items: d.items||[],
+      account_id: d.account_id, rep_id: d.rep_id, items,
       shipping: Number(d.shipping||0), tax: Number(d.tax||0), tax_label: d.tax_label,
       promo_code: d.promo_code, promo_effect: d.promo_effect, discount: Number(d.discount||0),
       payment: d.payment, status: d.status, total: Number(d.total||0),
