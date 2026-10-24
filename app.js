@@ -3248,15 +3248,24 @@ const orders = {
     document.getElementById('o-promo').value = code;
     const p = cache.promotions.find(x=>x.code===code && x.active);
     const items = orders._draft.items || [];
-    const qty = items.reduce((s,i)=>s+i.qty,0);
+    /* Promo min_qty is in UNITS (BOGO48 means 48 units, FREESHIP24 means
+       24 units). The cart's qty field is in whatever the SKU represents
+       (cases, singles, etc.) — "APP-LIP-TX-24" is 1 case = 24 units.
+       Pack size is parsed off the trailing "-NN" on the SKU; a SKU
+       without that suffix is treated as 1 unit per entry.  */
+    const unitsPerPack = (sku) => {
+      const m = String(sku || '').match(/-(\d+)$/);
+      return m ? parseInt(m[1], 10) || 1 : 1;
+    };
+    const units = items.reduce((s, i) => s + (Number(i.qty) || 0) * unitsPerPack(i.sku), 0);
     if(!p){
       orders._draft.promo_code=''; orders._draft.promo_effect=''; orders._draft.discount=0;
       document.getElementById('o-promo-msg').textContent = code ? 'Code not found / inactive' : 'No code applied';
       orders.recompute(); return;
     }
-    if(p.min_qty && qty < p.min_qty){
+    if(p.min_qty && units < p.min_qty){
       orders._draft.promo_code=''; orders._draft.promo_effect=''; orders._draft.discount=0;
-      document.getElementById('o-promo-msg').textContent = `Requires ${p.min_qty}+ units (current ${qty}).`;
+      document.getElementById('o-promo-msg').textContent = `Requires ${p.min_qty}+ units (current ${units}).`;
       orders.recompute(); return;
     }
     orders._draft.promo_code = p.code;
