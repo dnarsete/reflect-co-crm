@@ -805,6 +805,33 @@ const accounts = {
     return { street, suite, city, state, zip };
   },
 
+  /* Normalize a website entry so reps/admins can type "undoneaesthetic.com"
+     and have it saved as "https://undoneaesthetic.com". Runs on blur
+     and again at save-time so it works whether the user tabs out or
+     clicks Save straight from the field.
+     - Preserves an explicit http:// if the user typed it (some older
+       sites don't support https — rare, but we don't override intent).
+     - Does NOT auto-add "www" — many modern sites don't use www and
+       forcing it can land on a cert mismatch. The server-side redirect
+       handles www when the host actually uses it.
+     - Returns null for empty input so the DB column stays NULL. */
+  _normalizeWebsite(raw){
+    let s = String(raw || '').trim();
+    if(!s) return null;
+    /* Already has a protocol? Keep it (just normalize the scheme to
+       lowercase so "HTTP://..." doesn't look weird in the DB). */
+    const protoMatch = /^(https?):\/\//i.exec(s);
+    if(protoMatch){
+      return protoMatch[1].toLowerCase() + s.slice(protoMatch[1].length);
+    }
+    /* Strip any accidental leading "//" (protocol-relative paste). */
+    s = s.replace(/^\/+/, '');
+    /* Reject obvious non-URLs (no dot anywhere) — leave as-is so the
+       rep sees their typo instead of a bogus "https://typo" value. */
+    if(!/\./.test(s)) return s;
+    return 'https://' + s;
+  },
+
   /* Safety net for reps who paste (or browser-autofill) a full address
      into the Street field. Runs whenever the street text parses as a
      complete address (ends in ", ST NNNNN") — regardless of what's
@@ -942,7 +969,7 @@ const accounts = {
         <div><label>Account email</label><input id="f-em" type="email" value="${esc(acc.email)}"/></div>
         <div><label>Cell (responsible)</label><input id="f-cell" type="tel" autocomplete="tel" inputmode="tel" placeholder="555-555-5555" value="${esc(acc.cell)}" onblur="normalizeUSPhone(this)"/></div>
         <div><label>Business phone</label><input id="f-bp" type="tel" autocomplete="tel" inputmode="tel" placeholder="555-555-5555" value="${esc(acc.business_phone)}" onblur="normalizeUSPhone(this)"/></div>
-        <div style="grid-column:1/-1"><label>Website</label><input id="f-web" type="url" value="${esc(acc.website||'')}" placeholder="https://…" autocapitalize="none" spellcheck="false"/></div>
+        <div style="grid-column:1/-1"><label>Website</label><input id="f-web" type="url" value="${esc(acc.website||'')}" placeholder="https://…" autocapitalize="none" spellcheck="false" onblur="this.value = accounts._normalizeWebsite(this.value) || ''"/></div>
       </div>
 
       <!-- Business address block -->
@@ -1622,7 +1649,7 @@ const accounts = {
       billing_same_as_business: same,
       business_address: businessAddressLine, billing_address: billingAddressLine,
       cell:get('f-cell'), business_phone:get('f-bp'),
-      website: (document.getElementById('f-web')?.value || '').trim() || null,
+      website: accounts._normalizeWebsite(document.getElementById('f-web')?.value),
       sales_tax_license:get('f-stl'), sales_tax_state:get('f-sts'),
       tax_exempt: document.getElementById('f-exempt').checked,
       opt_in:get('f-opt')==='true', rep_id: (get('f-rep').trim() || auth.repId() || null)
@@ -2011,7 +2038,7 @@ const accounts = {
       email: accounts._extractEmail(cell('email')),
       cell: accounts._extractPhone(cell('cell')),
       business_phone: accounts._extractPhone(cell('business_phone')),
-      website: cell('website'),
+      website: accounts._normalizeWebsite(cell('website')),
       business_street: cell('business_street'),
       business_suite: cell('business_suite'),
       business_city: cell('business_city'),
