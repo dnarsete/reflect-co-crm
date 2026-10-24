@@ -832,6 +832,144 @@ const accounts = {
     return 'https://' + s;
   },
 
+  /* ==================== AUTO-SAVE ====================
+     Every field blur in the account modal persists to the DB in the
+     background so a rep who gets interrupted mid-entry doesn't lose
+     their typing. For a NEW account the row is INSERTED on the first
+     save after Business name is non-empty; subsequent saves become
+     UPDATEs against the new id. Shopify sync + dupe check + empty-
+     email warn stay on the explicit Save button — auto-save is pure
+     data persistence. A small "Saved just now" indicator next to the
+     Save button is the only UI difference. */
+  _autoSaveState: null,
+  _bindAutoSave(){
+    accounts._autoSaveState = { timer: null, busy: false, bound: true };
+    const modal = document.getElementById('modal-root') || document.body;
+    const onFieldChange = (e) => {
+      const el = e.target;
+      if(!el || !el.id || !el.id.startsWith('f-')) return;
+      if(el.tagName === 'BUTTON') return;
+      /* Skip the Media Portal access input — it has its own save flow
+         via the + Authorize button, not account-row persistence. */
+      if(el.id === 'f-portal-new-email') return;
+      accounts._queueAutoSave();
+    };
+    modal.addEventListener('focusout', onFieldChange, true);
+    modal.addEventListener('change',   onFieldChange, true);
+  },
+  _queueAutoSave(){
+    const st = accounts._autoSaveState;
+    if(!st) return;
+    clearTimeout(st.timer);
+    /* 500ms debounce so a rep tabbing through five fields in a burst
+       triggers one save at the end, not five racing updates. */
+    st.timer = setTimeout(() => accounts._runAutoSave(), 500);
+  },
+  async _runAutoSave(){
+    const st = accounts._autoSaveState;
+    if(!st || st.busy) return;
+    const businessName = (document.getElementById('f-bn')?.value || '').trim();
+    const id = accounts._currentAccountId;
+    /* New account — don't persist until a Business name exists.
+       Prevents junk rows if a rep opens the form and bails. */
+    if(!id && !businessName) return;
+
+    st.busy = true;
+    accounts._setSaveStatus('Saving…', 'pending');
+    try {
+      const payload = accounts._gatherFormPayload();
+      let q;
+      if(id){
+        q = await sb.from('accounts').update(payload).eq('id', id).select().single();
+      } else {
+        payload.created_by = (await sb.auth.getUser()).data.user?.id || null;
+        q = await sb.from('accounts').insert(payload).select().single();
+      }
+      /* Legacy-column fallback — mirrors the explicit Save path at
+         ~line 1667. If the structured-address columns aren't on the
+         DB yet, re-send the legacy single-line columns only. */
+      if(q.error && /business_street|business_suite|billing_street|billing_suite|billing_same_as_business|billing_city|billing_state|billing_zip|business_city|business_state|business_zip|website/.test(q.error.message || '')){
+        const legacy = {
+          business_name: payload.business_name, type: payload.type, billing_name: payload.billing_name,
+          email: payload.email, cell: payload.cell, business_phone: payload.business_phone,
+          business_address: payload.business_address, billing_address: payload.billing_address,
+          sales_tax_license: payload.sales_tax_license, sales_tax_state: payload.sales_tax_state,
+          tax_exempt: payload.tax_exempt, opt_in: payload.opt_in, rep_id: payload.rep_id,
+          ...(payload.created_by ? { created_by: payload.created_by } : {})
+        };
+        if(id){
+          q = await sb.from('accounts').update(legacy).eq('id', id).select().single();
+        } else {
+          q = await sb.from('accounts').insert(legacy).select().single();
+        }
+      }
+      if(q.error) throw q.error;
+      /* First save after INSERT — flip the modal into update mode so
+         subsequent blurs become UPDATEs, and update the header text so
+         the rep sees the assigned account number. */
+      if(!id && q.data?.id){
+        accounts._currentAccountId = q.data.id;
+        const header = document.querySelector('#modal-root h3');
+        if(header && q.data.account_number){
+          header.textContent = `Account · ${q.data.account_number}`;
+        }
+      }
+      accounts._setSaveStatus(`Saved · ${new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}`, 'ok');
+    } catch (e) {
+      console.error('[auto-save]', e);
+      accounts._setSaveStatus('Auto-save failed — click Save manually', 'err');
+    } finally {
+      st.busy = false;
+    }
+  },
+  _gatherFormPayload(){
+    const get = i => (document.getElementById(i)?.value || '').trim();
+    const same = !!document.getElementById('f-billing-same')?.checked;
+    const bStreet = get('f-b-street'), bSuite = get('f-b-suite'), bCity = get('f-b-city'), bState = get('f-b-state'), bZip = get('f-b-zip');
+    const lStreet = get('f-l-street'), lSuite = get('f-l-suite'), lCity = get('f-l-city'), lState = get('f-l-state'), lZip = get('f-l-zip');
+    const joinAddr = (s, su, c, st, z) => [
+      [s, su].filter(Boolean).join(', '),
+      [c, st].filter(Boolean).join(', '),
+      z
+    ].filter(Boolean).join(', ');
+    return {
+      business_name: get('f-bn'),
+      type: get('f-type'),
+      billing_name: get('f-rn'),
+      email: get('f-em'),
+      business_street: bStreet, business_suite: bSuite, business_city: bCity, business_state: bState, business_zip: bZip,
+      billing_street: lStreet, billing_suite: lSuite, billing_city: lCity, billing_state: lState, billing_zip: lZip,
+      billing_same_as_business: same,
+      business_address: joinAddr(bStreet, bSuite, bCity, bState, bZip),
+      billing_address:  joinAddr(lStreet, lSuite, lCity, lState, lZip),
+      cell: get('f-cell'),
+      business_phone: get('f-bp'),
+      website: accounts._normalizeWebsite(document.getElementById('f-web')?.value),
+      sales_tax_license: get('f-stl'),
+      sales_tax_state: get('f-sts'),
+      tax_exempt: !!document.getElementById('f-exempt')?.checked,
+      opt_in: get('f-opt') === 'true',
+      rep_id: (get('f-rep') || auth.repId() || null)
+    };
+  },
+  _setSaveStatus(text, kind){
+    const el = document.getElementById('acc-save-status');
+    if(!el) return;
+    el.textContent = text;
+    el.dataset.kind = kind || '';
+    /* Styling via inline style since the modal CSS doesn't own this. */
+    const colors = { pending: 'var(--muted)', ok: '#4caf50', err: '#e57373' };
+    el.style.color = colors[kind] || 'var(--muted)';
+    /* Fade a successful save line after a few seconds — don't clobber
+       errors or pending states. */
+    if(kind === 'ok'){
+      clearTimeout(accounts._savedFadeT);
+      accounts._savedFadeT = setTimeout(() => {
+        if(el.textContent === text) el.textContent = '';
+      }, 4000);
+    }
+  },
+
   /* Safety net for reps who paste (or browser-autofill) a full address
      into the Street field. Runs whenever the street text parses as a
      complete address (ends in ", ST NNNNN") — regardless of what's
@@ -1066,10 +1204,11 @@ const accounts = {
         <div style="margin-bottom:6px"><b>Shopify link:</b> customer ID <code>${esc(acc.shopify_customer_id)}</code> · <span class="muted">If Shopify returns "Record is invalid" on this account's orders, the customer may have been deleted or merged in Shopify. Reset the link to fall back to email-based checkout.</span></div>
         <button class="icon-btn ghost" onclick="accounts.resetShopifyLink('${acc.id}')">🔗 Reset Shopify link</button>
       </div>` : ''}
-      <div class="row" style="gap:8px;margin-top:12px">
+      <div class="row" style="gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap">
         <button class="icon-btn primary" onclick="accounts.save('${acc.id||''}', ${isNew})">Save</button>
         ${!isNew?`<button class="icon-btn danger" onclick="accounts.remove('${acc.id}')">Delete</button>`:''}
         <button class="icon-btn ghost" onclick="ui.closeModal()">Close</button>
+        <span id="acc-save-status" style="font-size:12px;margin-left:4px"></span>
       </div>
     `);
     /* Trigger the "same as" initial state — if the checkbox is
@@ -1078,6 +1217,9 @@ const accounts = {
       accounts.toggleBillingSame(true);
     }
     accounts._currentAccountId = isNew ? null : acc.id;
+    /* Attach auto-save after the modal DOM exists. Every field blur
+       in this modal will debounce and persist to the DB. */
+    accounts._bindAutoSave();
     if(!isNew){
       accounts.renderNotes(acc.id);
       reminders.renderAccountSection(acc.id);
