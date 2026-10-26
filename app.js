@@ -5119,18 +5119,29 @@ const reports = {
 /* ---------- MARKETING MATERIALS (Supabase Storage) ---------- */
 const materials = {
   BUCKET: 'materials',
-  /* Shared Supabase 'materials' bucket is read by both the CRM and the
-     customer-facing Media Portal (media.thereflectco.com). Each surface
-     lists the categories it cares about:
-       - CRM reps use selling tools (product/sell sheets, brand assets,
-         order forms) PLUS Social Media so they can show/send customer
-         content on the fly.
-       - Media portal exposes Training, Instructions, Social Media,
-         Videos — the files customers download themselves.
-     Social Media appears in BOTH lists (restored per Dan 2026-10-26
-     after being removed in 84d699e); files uploaded under that folder
-     from either surface show up in both. Videos remain portal-only. */
+  /* Shared Supabase 'materials' bucket, but each surface writes/reads
+     from DIFFERENT physical folders so rep content and customer content
+     stay fully separate:
+       - CRM reps upload/read from `materials/<category>/` for every
+         category EXCEPT Social Media, which maps to `materials/Social
+         Media Rep/` so rep-side graphics never leak into the Media
+         Portal (and vice versa — the portal keeps using the plain
+         `materials/Social Media/` folder).
+       - Media Portal reads Training, Instructions, Social Media, Videos
+         from their own folder names — code at media.thereflectco.com
+         is untouched by this.
+     Social Media is the only split category today. _folder() maps the
+     UI category name to its storage folder; add new entries here if a
+     future category needs the same rep/customer split. */
   CATEGORIES: ['Product Sheets', 'Sell Sheets', 'Brand Assets', 'Order Forms', 'Social Media', 'Training', 'Other'],
+  _FOLDER_OVERRIDES: { 'Social Media': 'Social Media Rep' },
+  _folder(category){ return materials._FOLDER_OVERRIDES[category] || category; },
+  _category(folder){
+    for(const [cat, fld] of Object.entries(materials._FOLDER_OVERRIDES)){
+      if(fld === folder) return cat;
+    }
+    return folder;
+  },
   _files: [],
 
   /* Load all files across every category folder. Signed download URLs are
@@ -5139,13 +5150,18 @@ const materials = {
      bucket call, not sum-of-6. Cuts first-tap latency from ~2s to ~350ms. */
   async loadAll(){
     const listOne = async (cat) => {
-      const { data, error } = await sb.storage.from(materials.BUCKET).list(cat, {
+      const folder = materials._folder(cat);
+      const { data, error } = await sb.storage.from(materials.BUCKET).list(folder, {
         limit: 500, sortBy: { column: 'name', order: 'asc' }
       });
       if(error) return [];
       return (data||[])
         .filter(f => f.name && f.name !== '.emptyFolderPlaceholder')
-        .map(f => ({ ...f, category: cat, path: `${cat}/${f.name}` }));
+        /* category stays as the UI label (what the dropdown shows) so
+           cards and filters display the clean name; path reflects the
+           real storage folder so signed URLs / move / delete land in
+           the right place. */
+        .map(f => ({ ...f, category: cat, path: `${folder}/${f.name}` }));
     };
     const results = await Promise.all(materials.CATEGORIES.map(listOne));
     materials._files = results.flat();
@@ -5433,7 +5449,9 @@ const materials = {
     /* Sanitize filename — strip risky chars, keep the extension */
     const rawName = renameTo || file.name;
     const safeName = rawName.replace(/[^\w.\- ]+/g, '_').replace(/\s+/g, '_');
-    const path = `${cat}/${safeName}`;
+    /* Use the mapped folder name so Social Media uploads land in the
+       rep-only "Social Media Rep" folder, not the customer-shared one. */
+    const path = `${materials._folder(cat)}/${safeName}`;
 
     ui.busy(true);
     const { error } = await sb.storage.from(materials.BUCKET).upload(path, file, {
@@ -5613,9 +5631,10 @@ const materials = {
     const links = [];
     try {
       for(const cat of materials.CATEGORIES){
-        const { data: files } = await sb.storage.from(materials.BUCKET).list(cat);
+        const folder = materials._folder(cat);
+        const { data: files } = await sb.storage.from(materials.BUCKET).list(folder);
         for(const f of (files || [])){
-          const path = `${cat}/${f.name}`;
+          const path = `${folder}/${f.name}`;
           const url = await materials._shorten(path, f.name);
           if(url) links.push({ cat, name: f.name, url });
         }
@@ -5677,10 +5696,14 @@ const materials = {
     if(!auth.isAdmin()){ ui.toast('Admin only.'); return; }
     if(!newCat || newCat === '__edit') return;  /* placeholder option picked */
     const filename = oldPath.split('/').pop() || '';
-    const oldCat = oldPath.split('/').slice(0, -1).join('/');
+    /* oldPath holds the raw storage folder (e.g. "Social Media Rep");
+       convert back to the UI category for the confirm message so the
+       prompt reads "Social Media" not "Social Media Rep". */
+    const oldFolder = oldPath.split('/').slice(0, -1).join('/');
+    const oldCat = materials._category(oldFolder);
     if(newCat === oldCat) return;  /* no-op */
     if(!confirm(`Move "${filename}" from ${oldCat} to ${newCat}?`)) return;
-    const newPath = `${newCat}/${filename}`;
+    const newPath = `${materials._folder(newCat)}/${filename}`;
     ui.busy(true);
     const { error } = await sb.storage.from(materials.BUCKET).move(oldPath, newPath);
     ui.busy(false);
