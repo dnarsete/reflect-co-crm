@@ -5270,17 +5270,15 @@ const materials = {
            PDF chrome; #page=1 locks to the first page for the thumbnail. */
         thumb = thumbUrl ? `<iframe src="${esc(thumbUrl)}#toolbar=0&navpanes=0&page=1&view=FitH" style="width:100%;height:100%;border:0;pointer-events:none" loading="lazy" title="${esc(f.name)}"></iframe>` : `<div class="mp-asset-icon">${icon}</div>`;
       } else if (isOffice) {
-        /* Microsoft's free Office Online Viewer renders PPTX/DOCX/XLSX
-           from a URL it can fetch. Signed URL means the viewer src
-           still works for 1 hour, then expires — no permanent public
-           URL to leak. pointer-events:none prevents stealing clicks
-           from the card's Preview/Download buttons. */
-        if (thumbUrl) {
-          const officeUrl = `https://view.officeapps.live.com/op/view.aspx?src=${encodeURIComponent(thumbUrl)}`;
-          thumb = `<iframe src="${esc(officeUrl)}" style="width:100%;height:100%;border:0;pointer-events:none" loading="lazy" title="${esc(f.name)}"></iframe>`;
-        } else {
-          thumb = `<div class="mp-asset-icon">${icon}</div>`;
-        }
+        /* Office thumbnails intentionally render as a plain icon — the
+           Microsoft Office Online Viewer we used to embed here loaded
+           its own Save button inside the iframe, which fires a
+           oauth.officeapps.live.com OAuth popup when clicked (Microsoft
+           wants a OneDrive sign-in to save). Even pointer-events:none
+           didn't fully block it in Safari and DuckDuckGo. Preview and
+           Download still work via the card buttons; the icon just
+           tells the rep what kind of file it is. */
+        thumb = `<div class="mp-asset-icon">${icon}</div>`;
       } else {
         thumb = `<div class="mp-asset-icon">${icon}</div>`;
       }
