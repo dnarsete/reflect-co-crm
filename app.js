@@ -5119,11 +5119,18 @@ const reports = {
 /* ---------- MARKETING MATERIALS (Supabase Storage) ---------- */
 const materials = {
   BUCKET: 'materials',
-  /* Social Media and Videos are media-portal-only (handled on
-     media.thereflectco.com). Dropped from the CRM's category list so
-     files uploaded here stay rep-side; files uploaded on the portal
-     stay customer-facing. Zero overlap by design. */
-  CATEGORIES: ['Product Sheets', 'Sell Sheets', 'Brand Assets', 'Order Forms', 'Training', 'Other'],
+  /* Shared Supabase 'materials' bucket is read by both the CRM and the
+     customer-facing Media Portal (media.thereflectco.com). Each surface
+     lists the categories it cares about:
+       - CRM reps use selling tools (product/sell sheets, brand assets,
+         order forms) PLUS Social Media so they can show/send customer
+         content on the fly.
+       - Media portal exposes Training, Instructions, Social Media,
+         Videos — the files customers download themselves.
+     Social Media appears in BOTH lists (restored per Dan 2026-10-26
+     after being removed in 84d699e); files uploaded under that folder
+     from either surface show up in both. Videos remain portal-only. */
+  CATEGORIES: ['Product Sheets', 'Sell Sheets', 'Brand Assets', 'Order Forms', 'Social Media', 'Training', 'Other'],
   _files: [],
 
   /* Load all files across every category folder. Signed download URLs are
