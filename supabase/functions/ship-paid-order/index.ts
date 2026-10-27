@@ -59,19 +59,15 @@ const SERVICE_KEY  = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const FLOW_SHARED_SECRET = Deno.env.get("FLOW_SHARED_SECRET") ?? "";
 const DRY_RUN = (Deno.env.get("FLOW_DRY_RUN") ?? "true").toLowerCase() !== "false";
 
-/* Ship-from — reads from Supabase secrets so Dan can correct the
-   canonical business address without a code deploy. The hardcoded
-   defaults below need confirmation: two places in the codebase disagree
-   on the actual street name and ZIP (this file said "3642 South Jordan
-   Street / 80110"; the AI assistant prompt says "3642 S. Jason Street
-   Englewood CO 80210"). Set SHIP_FROM_STREET and SHIP_FROM_ZIP in
-   Supabase secrets to override. */
+/* Ship-from — reads from Supabase secrets so the canonical business
+   address can be corrected without a code deploy. Confirmed with Dan
+   2026-10-27: 3642 S Jason Street, Englewood CO 80110. */
 const SHIP_FROM = {
   name:    Deno.env.get("SHIP_FROM_NAME")   ?? "The Reflect Co",
-  street1: Deno.env.get("SHIP_FROM_STREET") ?? "3642 S. Jason Street",
+  street1: Deno.env.get("SHIP_FROM_STREET") ?? "3642 S Jason Street",
   city:    Deno.env.get("SHIP_FROM_CITY")   ?? "Englewood",
   state:   Deno.env.get("SHIP_FROM_STATE")  ?? "CO",
-  zip:     Deno.env.get("SHIP_FROM_ZIP")    ?? "80210",
+  zip:     Deno.env.get("SHIP_FROM_ZIP")    ?? "80110",
   country: "US",
   email:   Deno.env.get("SHIP_FROM_EMAIL")  ?? "dan@thereflectco.com",
 };

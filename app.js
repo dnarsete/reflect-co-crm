@@ -653,8 +653,13 @@ const dashboard = {
        Perf: fetch the most-recent placed_at for all 30 accounts in ONE query
        instead of 30 sequential lastForAccount() calls. */
     const myAccts = await accounts.list();
-    const window = myAccts.slice(0, 30);
-    const ids = window.map(a => a.id);
+    /* Scan every account the rep has, not just the newest 30. The old
+       slice(0,30) silently excluded exactly the long-tenured customers
+       most likely to be overdue — reps with >30 accounts never saw
+       reorder alerts for their older book. Renamed `window` → `scope`
+       to avoid shadowing the global `window` object. */
+    const scope = myAccts;
+    const ids = scope.map(a => a.id);
     const lastByAcct = {};
     if(ids.length){
       const or = await sb.from('orders')
@@ -668,7 +673,7 @@ const dashboard = {
         });
       }
     }
-    for(const a of window){
+    for(const a of scope){
       const last = lastByAcct[a.id];
       if(last){
         const days = Math.floor((Date.now()-new Date(last))/86400000);
@@ -2937,39 +2942,16 @@ const accounts = {
     const { keepId, otherId, fills, move } = plan;
     ui.busy(true);
     try {
-      /* 1. Apply field fills — only fields where keep was empty. */
-      if(fills.length){
-        const patch = {};
-        for(const f of fills){ patch[f.field] = f.value; }
-        const upd = await sb.from('accounts').update(patch).eq('id', keepId);
-        if(upd.error) throw upd.error;
-      }
-      /* 2. Move related data by re-pointing account_id. Each is idempotent
-         (no unique constraint on account_id in these tables), so a partial
-         failure at any step is safely re-runnable. */
-      if(move.orders){
-        const r = await sb.from('orders').update({ account_id: keepId }).eq('account_id', otherId);
-        if(r.error) throw r.error;
-      }
-      if(move.notes){
-        const r = await sb.from('account_notes').update({ account_id: keepId }).eq('account_id', otherId);
-        if(r.error) throw r.error;
-      }
-      if(move.reminders){
-        const r = await sb.from('reminders').update({ account_id: keepId }).eq('account_id', otherId);
-        if(r.error) throw r.error;
-      }
-      if(move.contacts){
-        const r = await sb.from('account_contacts').update({ account_id: keepId }).eq('account_id', otherId);
-        if(r.error) throw r.error;
-      }
-      if(move.forecasts){
-        const r = await sb.from('forecasts').update({ account_id: keepId }).eq('account_id', otherId);
-        if(r.error) throw r.error;
-      }
-      /* 3. Delete the folded-in row. At this point nothing points to it. */
-      const del = await sb.from('accounts').delete().eq('id', otherId).select();
-      if(del.error) throw del.error;
+      /* Single transactional RPC call. Previously this was 5+ separate
+         writes that could fail midway, leaving a half-merged state
+         (orders on the keeper, notes still on the fold-in, both
+         accounts alive). The merge_accounts Postgres function wraps the
+         whole sequence in one transaction — any step failure rolls
+         back automatically. */
+      const fillsObj = {};
+      for(const f of (fills || [])){ fillsObj[f.field] = f.value; }
+      const r = await sb.rpc('merge_accounts', { keep_id: keepId, other_id: otherId, fills: fillsObj });
+      if(r.error) throw r.error;
 
       /* 4. Push the surviving account to Shopify so the linked Shopify
          customer picks up any field that was filled from the fold-in
@@ -3546,16 +3528,23 @@ const orders = {
     const r = await sb.from('accounts').select('tax_exempt, sales_tax_license, sales_tax_state').eq('id', d.account_id).single();
     if(r.error) return;
     const cur = r.data;
-    const next = {
-      tax_exempt: !!d.tax_exempt,
-      sales_tax_license: d._stl || null,
-      sales_tax_state: d._sts || null
-    };
-    const changed = cur.tax_exempt !== next.tax_exempt
-      || (cur.sales_tax_license||'') !== (next.sales_tax_license||'')
-      || (cur.sales_tax_state||'') !== (next.sales_tax_state||'');
-    if(changed){
-      await sb.from('accounts').update(next).eq('id', d.account_id);
+    /* Fill-blanks-only semantics. The old sync silently copied every
+       value from the order back to the account — if a rep unchecked
+       "Tax exempt" on one order by accident, the entire account flipped
+       to taxable for every future order. Instead:
+         - tax_exempt is only promoted when the account is NOT currently
+           tax_exempt AND the order marks it exempt (adding info).
+         - sales_tax_license and sales_tax_state only fill the account's
+           field if that field is currently empty.
+       Confirmation-based overwrite of non-empty values is reserved for
+       an explicit "Also update account" checkbox (not implemented yet;
+       flag for later). */
+    const patch = {};
+    if(d.tax_exempt && !cur.tax_exempt) patch.tax_exempt = true;
+    if(!cur.sales_tax_license && d._stl) patch.sales_tax_license = d._stl;
+    if(!cur.sales_tax_state   && d._sts) patch.sales_tax_state   = d._sts;
+    if(Object.keys(patch).length){
+      await sb.from('accounts').update(patch).eq('id', d.account_id);
     }
   },
   /* Local shim - delegates to the global normSearch() defined at the top
@@ -4144,10 +4133,16 @@ const orders = {
         if(claim.error || !claim.data || !claim.data.length) break;
         for(const row of claim.data){
           try {
-            await shopify.call('create_draft_order', { order_id: row.order_id });
+            /* shopify_claim_retry_batch returns out_order_id /
+               out_order_number (see _processRetryQueue). Was reading
+               row.order_id / row.order_number which are always
+               undefined — the Edge Function then 400'd on undefined
+               order_id and the toast still said "N orders processed"
+               while zero were actually retried. */
+            await shopify.call('create_draft_order', { order_id: row.out_order_id });
             drained++;
           } catch(e){
-            console.warn(`[manual retry] push failed for ${row.order_number}:`, e?.message || e);
+            console.warn(`[manual retry] push failed for ${row.out_order_number}:`, e?.message || e);
           }
           await new Promise(r => setTimeout(r, 800));
         }

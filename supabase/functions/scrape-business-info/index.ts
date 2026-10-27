@@ -81,22 +81,71 @@ function normalizeUrl(raw: string): string | null {
   let s = String(raw || "").trim();
   if (!s) return null;
   if (!/^https?:\/\//i.test(s)) s = "https://" + s;
-  try { return new URL(s).toString(); } catch { return null; }
+  try {
+    const u = new URL(s);
+    /* SSRF guard — reject private, link-local, loopback hosts outright.
+       A logged-in rep could otherwise POST
+       {url: "http://169.254.169.254/latest/meta-data/..."} and read
+       cloud instance credentials, or hit internal LAN resources. */
+    if (isPrivateHost(u.hostname)) return null;
+    return u.toString();
+  } catch { return null; }
+}
+
+/* Private / link-local / loopback detection. IPv4 by dotted-quad, IPv6
+   by common prefixes, hostnames by name. Not DNS-rebind safe on its
+   own (a public hostname can resolve to a private IP), so the fetch
+   below also walks redirects manually and re-checks each hop. */
+function isPrivateHost(host: string): boolean {
+  if (!host) return true;
+  const h = host.toLowerCase().replace(/^\[|\]$/g, "");
+  if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".internal")) return true;
+  if (h === "::1" || h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe80")) return true;
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (m) {
+    const [a, b] = [parseInt(m[1], 10), parseInt(m[2], 10)];
+    if (a === 10) return true;
+    if (a === 127) return true;
+    if (a === 169 && b === 254) return true;         /* link-local, incl. 169.254.169.254 cloud metadata */
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 0) return true;
+    if (a >= 224) return true;                        /* multicast + reserved */
+  }
+  return false;
 }
 
 async function fetchWithTimeout(url: string, ms = FETCH_TIMEOUT_MS): Promise<string | null> {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), ms);
   try {
-    const res = await fetch(url, {
-      headers: { "User-Agent": UA, "Accept": "text/html,application/xhtml+xml" },
-      signal: ctl.signal,
-      redirect: "follow",
-    });
-    if (!res.ok) return null;
-    const ct = res.headers.get("content-type") || "";
-    if (!/text\/html|application\/xhtml/i.test(ct)) return null;
-    return await res.text();
+    /* Walk redirects manually, re-checking each hop against isPrivateHost
+       so a public URL that 302s to 169.254.169.254 (or any internal
+       address) can't exfil cloud metadata or LAN services. Cap at 5
+       hops to prevent infinite redirect loops. */
+    let cur = url;
+    for (let i = 0; i < 5; i++) {
+      try {
+        const u = new URL(cur);
+        if (isPrivateHost(u.hostname)) return null;
+      } catch { return null; }
+      const res = await fetch(cur, {
+        headers: { "User-Agent": UA, "Accept": "text/html,application/xhtml+xml" },
+        signal: ctl.signal,
+        redirect: "manual",
+      });
+      if (res.status >= 300 && res.status < 400) {
+        const loc = res.headers.get("location");
+        if (!loc) return null;
+        cur = new URL(loc, cur).toString();
+        continue;
+      }
+      if (!res.ok) return null;
+      const ct = res.headers.get("content-type") || "";
+      if (!/text\/html|application\/xhtml/i.test(ct)) return null;
+      return await res.text();
+    }
+    return null;
   } catch { return null; }
   finally { clearTimeout(t); }
 }

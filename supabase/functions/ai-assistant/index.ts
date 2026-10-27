@@ -12,7 +12,11 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 const ANTHROPIC_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
-const MODEL = Deno.env.get("ANTHROPIC_MODEL") ?? "claude-haiku-4-5-20251001"; // cheap default; swap to claude-sonnet-4-6 for higher quality
+/* Default to the undated model id. The dated slug
+   "claude-haiku-4-5-20251001" works today but will eventually be
+   deprecated; the undated alias "claude-haiku-4-5" always resolves to
+   the current GA snapshot. ANTHROPIC_MODEL env var overrides. */
+const MODEL = Deno.env.get("ANTHROPIC_MODEL") ?? "claude-haiku-4-5"; // cheap default; swap to claude-sonnet-4-6 for higher quality
 const MAX_TURNS = 10;
 
 const DEFAULT_ORIGINS = [
@@ -188,7 +192,7 @@ function buildSystemPrompt(profile: any, isAdmin: boolean) {
 # Today's date: ${today}
 
 # About The Reflect Co
-The Reflect Co (thereflectco.com) is a skincare / cosmetics wholesaler based at 3642 S. Jason Street, Englewood CO 80210. They sell wholesale to dermatologists, medical spas, boutiques, hotels, retail stores, salons, and similar businesses through independent sales reps. Each rep manages a book of accounts.
+The Reflect Co (thereflectco.com) is a skincare / cosmetics wholesaler based at 3642 S Jason Street, Englewood CO 80110. They sell wholesale to dermatologists, medical spas, boutiques, hotels, retail stores, salons, and similar businesses through independent sales reps. Each rep manages a book of accounts.
 
 # Business rules (enforced by the database and important context for answers)
 - **Reps cannot manually discount orders.** Discounts only apply via promo codes (managed by admin).

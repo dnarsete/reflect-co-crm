@@ -382,19 +382,26 @@ async function pullProducts(db: any) {
   /* Detect products that were deleted in Shopify: any DB row with a
      shopify_variant_id that we DIDN'T see this pull. Soft-delete them
      by setting active=false so reps stop being offered them, but keep
-     the row for order-history reference. */
+     the row for order-history reference.
+     IMPORTANT: if hit_cap is true, pulledSkus is only a partial list of
+     what's really in Shopify. Deactivating "stale" based on a partial
+     list would mark every linked product beyond the page cap as
+     inactive — silent data loss. Skip the deactivation sweep entirely
+     when we didn't see the whole catalog. */
   let deactivated = 0;
-  try {
-    const linked = await db.from("products").select("sku")
-      .not("shopify_variant_id", "is", null).eq("active", true);
-    const stalePulled = new Set(pulledSkus);
-    const stale = (linked.data || []).filter((r: any) => !stalePulled.has(r.sku));
-    if (stale.length) {
-      const staleSkus = stale.map((r: any) => r.sku);
-      await db.from("products").update({ active: false, synced_at: nowIso }).in("sku", staleSkus);
-      deactivated = stale.length;
-    }
-  } catch (_) { /* non-fatal */ }
+  if (!hit_cap) {
+    try {
+      const linked = await db.from("products").select("sku")
+        .not("shopify_variant_id", "is", null).eq("active", true);
+      const stalePulled = new Set(pulledSkus);
+      const stale = (linked.data || []).filter((r: any) => !stalePulled.has(r.sku));
+      if (stale.length) {
+        const staleSkus = stale.map((r: any) => r.sku);
+        await db.from("products").update({ active: false, synced_at: nowIso }).in("sku", staleSkus);
+        deactivated = stale.length;
+      }
+    } catch (_) { /* non-fatal */ }
+  }
 
   await db.from("settings").upsert({ key: "shopify_connected", value: true });
   await db.from("settings").upsert({ key: "shopify_store_url", value: storeHost() });
@@ -423,17 +430,31 @@ async function pushAccount(db: any, payload: any) {
   }
   /* Dedupe: if a Shopify customer already exists with this email (e.g. the
      account was deleted and re-created, or a Shopify customer existed
-     before the CRM), link to it instead of creating a duplicate. */
+     before the CRM), link to it instead of creating a duplicate.
+     Switched from REST customers/search.json (deprecated / scheduled
+     for removal — silently started returning empty results) to the
+     GraphQL customers(query:) endpoint which is the current supported
+     path. Logs the failure instead of swallowing it so a future break
+     is visible in sync_log. */
   if (acc.email) {
     try {
-      const search = await shopifyFetch(db, `customers/search.json?query=${encodeURIComponent("email:" + acc.email)}`);
-      const found = (search.body?.customers || [])[0];
-      if (found?.id) {
-        const shopifyId = String(found.id);
-        await db.from("accounts").update({ shopify_customer_id: shopifyId }).eq("id", accountId);
-        return { deduped: true, shopify_customer_id: shopifyId };
+      const dedup = await shopifyGraphQL(db, `
+        query($q: String!) {
+          customers(first: 1, query: $q) { edges { node { id email } } }
+        }
+      `, { q: `email:${acc.email}` });
+      const edge = dedup?.data?.customers?.edges?.[0];
+      const gid  = edge?.node?.id || "";
+      /* GID format: "gid://shopify/Customer/1234567890". Strip prefix. */
+      const numericId = gid.split("/").pop();
+      if (numericId) {
+        await db.from("accounts").update({ shopify_customer_id: numericId }).eq("id", accountId);
+        return { deduped: true, shopify_customer_id: numericId };
       }
-    } catch (_) { /* fall through and create fresh if search fails */ }
+    } catch (e: any) {
+      console.warn("[pushAccount] GraphQL dedup lookup failed:", e?.message || e);
+      /* fall through and create fresh — safer to make a possible dup than block the push */
+    }
   }
   const nameParts = (acc.billing_name || acc.business_name || "").trim().split(/\s+/);
   /* Build a STRUCTURED address so Shopify can use it for checkout,
