@@ -155,6 +155,12 @@ const ui = {
     const el = document.getElementById('modal-back');
     if(!el || !el.classList.contains('show')) return;
     el.classList.remove('show');
+    /* Tear down any modal-scoped auto-save listeners now that the
+       modal is gone. Without this, listeners accumulate on every
+       account open AND the stale listener fires on subsequent
+       Forecast/Order modals that happen to use "f-" field ids. */
+    try { if(typeof accounts !== 'undefined' && accounts._unbindAutoSave) accounts._unbindAutoSave(); } catch(_) {}
+    try { if(typeof accounts !== 'undefined') accounts._currentAccountId = null; } catch(_) {}
     /* If our pushed state is still on top of the history stack, pop it
        so a subsequent back-gesture doesn't try to close nothing. The
        popstate listener sees the modal is already hidden and no-ops. */
@@ -917,7 +923,13 @@ const accounts = {
      Save button is the only UI difference. */
   _autoSaveState: null,
   _bindAutoSave(){
-    accounts._autoSaveState = { timer: null, busy: false, bound: true };
+    /* Clean up any previous session's listeners before attaching new
+       ones — without this, each account open stacked another pair of
+       listeners on document.body, and the stale listeners also fired
+       on other modals (e.g. the Forecast form, which has fields
+       starting with "f-"), silently updating the LAST-opened account
+       with empty values from a completely different form. */
+    if(accounts._autoSaveState){ accounts._unbindAutoSave(); }
     const modal = document.getElementById('modal-root') || document.body;
     const onFieldChange = (e) => {
       const el = e.target;
@@ -926,10 +938,36 @@ const accounts = {
       /* Skip the Media Portal access input — it has its own save flow
          via the + Authorize button, not account-row persistence. */
       if(el.id === 'f-portal-new-email') return;
+      /* HARD GATE: only run auto-save when the account edit modal is
+         actually in the DOM. The anchor is #f-bn (account Business
+         name) which only exists inside the account modal. If it's
+         gone, we're on a different modal (Forecast, Order, Prospect,
+         Reminder) that happens to share the f- id prefix. Bail. */
+      if(!document.getElementById('f-bn')) return;
       accounts._queueAutoSave();
+    };
+    accounts._autoSaveState = {
+      timer: null,
+      busy: false,
+      bound: true,
+      /* Was this account created by auto-save in THIS modal session?
+         If yes, the explicit Save needs to still run the "new account"
+         Shopify push even though _currentAccountId is now set and
+         isNew looks false. Without this, every auto-saved new account
+         ended up in the CRM but never on Shopify. */
+      createdByAutoSave: false,
+      modal, handler: onFieldChange
     };
     modal.addEventListener('focusout', onFieldChange, true);
     modal.addEventListener('change',   onFieldChange, true);
+  },
+  _unbindAutoSave(){
+    const st = accounts._autoSaveState;
+    if(!st) return;
+    try { st.modal.removeEventListener('focusout', st.handler, true); } catch(_){}
+    try { st.modal.removeEventListener('change',   st.handler, true); } catch(_){}
+    clearTimeout(st.timer);
+    accounts._autoSaveState = null;
   },
   _queueAutoSave(){
     const st = accounts._autoSaveState;
@@ -980,9 +1018,14 @@ const accounts = {
       if(q.error) throw q.error;
       /* First save after INSERT — flip the modal into update mode so
          subsequent blurs become UPDATEs, and update the header text so
-         the rep sees the assigned account number. */
+         the rep sees the assigned account number. Also mark the row as
+         auto-save-created so the explicit Save still runs the Shopify
+         push_account branch (it's gated on isNew, which goes false
+         once _currentAccountId is set). Without this flag, every
+         new account auto-saved then Save-clicked stayed CRM-only. */
       if(!id && q.data?.id){
         accounts._currentAccountId = q.data.id;
+        st.createdByAutoSave = true;
         const header = document.querySelector('#modal-root h3');
         if(header && q.data.account_number){
           header.textContent = `Account · ${q.data.account_number}`;
@@ -1809,10 +1852,22 @@ const accounts = {
        accounts._currentAccountId so the dupe check correctly excludes
        the row that auto-save just created (otherwise the form matches
        itself and fires a spurious "possible duplicate" warning), and so
-       Save does an UPDATE rather than a second INSERT. */
+       Save does an UPDATE rather than a second INSERT.
+       pushNewAccountToShopify is a separate flag — even after isNew
+       goes false (because the auto-save row exists), the Shopify
+       push_account branch below is gated on isNew. Without this flag,
+       auto-saved new accounts never reached Shopify, failing the first
+       order push for that account with "customer not found". */
+    let pushNewAccountToShopify = isNew;
     if(!id && accounts._currentAccountId){
       id = accounts._currentAccountId;
       isNew = false;
+      /* If the current open-modal session's auto-save was the one that
+         created this row, treat the explicit Save as the moment to
+         push to Shopify (same semantics as a true new-account save). */
+      if(accounts._autoSaveState?.createdByAutoSave){
+        pushNewAccountToShopify = true;
+      }
     }
     /* Preflight: if a rep is creating a NEW account and they have no rep_id
        assigned on their profile, the RLS policy will reject the insert with
@@ -1932,18 +1987,19 @@ const accounts = {
        mirror the account as a Shopify customer. Test-mode reps must never
        create real Shopify customers (matches the order-push gate). */
     const inTestMode = !!(cache.me && cache.me.test_mode && cache.me.role !== 'admin');
-    if(isNew && shopify.mode() === 'live' && !inTestMode){
+    if(pushNewAccountToShopify && shopify.mode() === 'live' && !inTestMode){
       try { await shopify.call('push_account', { account_id: q.data.id }); }
       catch(e){ console.warn('shopify push_account failed:', e); }
     }
-    /* On UPDATE (not isNew), if the account has a shopify_customer_id, push the
-       updated fields so Shopify stays in sync. Fixes the class of bug where
-       adding an email to an existing account never reached Shopify. */
-    else if(!isNew && shopify.mode() === 'live' && !inTestMode && q.data.shopify_customer_id){
+    /* On UPDATE (not a new push), if the account has a shopify_customer_id,
+       push the updated fields so Shopify stays in sync. Fixes the class of
+       bug where adding an email to an existing account never reached
+       Shopify. */
+    else if(!pushNewAccountToShopify && shopify.mode() === 'live' && !inTestMode && q.data.shopify_customer_id){
       try { await shopify.call('update_account', { account_id: q.data.id }); }
       catch(e){ console.warn('shopify update_account failed:', e); }
     }
-    ui.closeModal(); ui.toast(isNew?'Account created':'Saved'); accounts.render(); dashboard.render();
+    ui.closeModal(); ui.toast(pushNewAccountToShopify?'Account created':'Saved'); accounts.render(); dashboard.render();
   },
   async remove(id){
     /* Look up whether this account is linked to a Shopify customer so we can
@@ -4027,7 +4083,14 @@ const orders = {
              is pre-v90 (no markSucceeded/markFailed). Safe when the new
              version is deployed too — the edge function already set state
              to succeeded, this is a no-op. */
-          if(res && (res.created || res.already_linked || res.adopted)){
+          /* Only mark succeeded if the Edge Function returned a concrete
+             draft id. ORD-1044-class bug: without this check, an edge
+             function response of {already_linked:true} with no draft id
+             would set succeeded locally and leave shopify_draft_order_id
+             null — the order then disappears from the retry queue AND
+             never shows up in Shopify. */
+          const hasDraft = res && (res.shopify_draft_order_id || res.shopify_order_id);
+          if(res && (res.created || res.already_linked || res.adopted) && hasDraft){
             try {
               await sb.from('orders').update({
                 shopify_push_state: 'succeeded',
