@@ -2083,7 +2083,7 @@ const accounts = {
       <p class="muted" style="font-size:13px;margin:0 0 12px">
         Upload an .xlsx, .xls, or .csv file with your accounts. You'll be able to
         map its columns to the CRM's fields before anything is imported.
-        Duplicates (same business name + city) are skipped automatically.
+        Duplicates (same name, same email, or same street address) are skipped automatically.
       </p>
       <div>
         <label>Spreadsheet file</label>
@@ -2324,6 +2324,41 @@ const accounts = {
     return accounts._parseUsAddress(raw);
   },
 
+  /* --- Duplicate-matching helpers (shared by the import preview) --- */
+  /* "Englewood, CO 80113" -> {city, state, zip}. Without a ZIP the state
+     must follow a comma and be upper-case ("Englewood, CO") so a plain
+     city like "Santa Fe" is left alone. Returns null if not combined. */
+  _splitCityStateZip(v){
+    const s = String(v || '').trim();
+    let m = s.match(/^(.+?)[,\s]+([A-Za-z]{2})[,\s]+(\d{5}(?:-\d{4})?)$/);
+    if(m) return { city: m[1].replace(/,\s*$/, '').trim(), state: m[2].toUpperCase(), zip: m[3] };
+    m = s.match(/^(.+?),\s*([A-Z]{2})$/);
+    if(m) return { city: m[1].trim(), state: m[2], zip: '' };
+    return null;
+  },
+  /* Same name normalization as _findDuplicateCandidates. */
+  _dupNormName(s){
+    return String(s || '')
+      .toLowerCase().trim()
+      .replace(/\s+/g, ' ')
+      .replace(/[,.]/g, '')
+      .replace(/opthalmology/g, 'ophthalmology')
+      .replace(/opthal/g, 'ophthal')
+      .replace(/\b(llc|inc|corp|co|ltd|pllc|pc)\b\.?$/g, '').trim();
+  },
+  _dupNormCity(s){
+    const csz = accounts._splitCityStateZip(s);
+    return String(csz ? csz.city : (s || '')).toLowerCase().replace(/\s+/g, ' ').trim();
+  },
+  _dupNormStreet(s){
+    return String(s || '').toLowerCase().replace(/[,.]/g, '').replace(/\s+/g, ' ').trim();
+  },
+  _dupNormSuite(s){
+    return String(s || '').toLowerCase()
+      .replace(/\b(suite|ste|apt|apartment|unit|floor|fl)\b/g, '')
+      .replace(/[^a-z0-9]/g, '');
+  },
+
   _importParseRow(row){
     const { mapping } = accounts._importState;
     const cell = (k) => (mapping[k] !== undefined ? String(row[mapping[k]] ?? '').trim() : '');
@@ -2345,6 +2380,17 @@ const accounts = {
       rep_id: cell('rep_id'),
       notes: cell('notes'),
     };
+    /* Combined "City, ST 12345" sitting in the city column (e.g. a sheet
+       with one "City, State, Zip" header) — split it so state and ZIP land
+       in their own fields and duplicate matching compares a clean city. */
+    if(out.business_city && !out.business_state && !out.business_zip){
+      const csz = accounts._splitCityStateZip(out.business_city);
+      if(csz){
+        out.business_city = csz.city;
+        out.business_state = csz.state;
+        out.business_zip = csz.zip;
+      }
+    }
     /* Auto-split full address string if street looks like one and city/state/zip are empty */
     if(out.business_street && !out.business_city && !out.business_state && !out.business_zip){
       const split = accounts._tryAutoSplitAddress(out.business_street);
@@ -2378,13 +2424,26 @@ const accounts = {
     const parsed = state.rows.map(r => accounts._importParseRow(r));
     /* Fetch existing accounts for duplicate check */
     ui.busy(true);
-    const existRes = await sb.from('accounts').select('id, business_name, business_city');
+    const existRes = await sb.from('accounts')
+      .select('id, business_name, business_city, business_street, business_suite, email')
+      .limit(5000);
     ui.busy(false);
-    const existing = new Set(
-      (existRes.data || []).map(a =>
-        `${String(a.business_name || '').toLowerCase().trim()}|${String(a.business_city || '').toLowerCase().trim()}`
-      )
-    );
+    /* If the lookup fails we can't tell what's a duplicate — stop rather
+       than letting every row through as "will import". */
+    if(existRes.error){ ui.err(existRes.error); return; }
+    const existingAccts = (existRes.data || []).map(a => {
+      /* Older rows may have the suite still inside the street field. */
+      const ss = a.business_suite
+        ? { street: a.business_street, suite: a.business_suite }
+        : accounts._splitStreetSuite(a.business_street);
+      return {
+        name: accounts._dupNormName(a.business_name),
+        city: accounts._dupNormCity(a.business_city),
+        street: accounts._dupNormStreet(ss.street),
+        suite: accounts._dupNormSuite(ss.suite),
+        email: String(a.email || '').toLowerCase().trim(),
+      };
+    });
     const validReps = new Set((cache.repsFull || cache.reps || []).map(r => (r.rep_id || '').toUpperCase()).filter(Boolean));
     const isAdmin = auth.isAdmin();
     const myRepId = auth.repId();
@@ -2393,8 +2452,21 @@ const accounts = {
     const results = parsed.map((p, i) => {
       const errors = [];
       if(!p.business_name) errors.push('Missing business name');
-      const dupKey = `${p.business_name.toLowerCase().trim()}|${(p.business_city || '').toLowerCase().trim()}`;
-      const isDup = p.business_name && existing.has(dupKey);
+      const nName = accounts._dupNormName(p.business_name);
+      const nCity = accounts._dupNormCity(p.business_city);
+      const nStreet = accounts._dupNormStreet(p.business_street);
+      const nSuite = accounts._dupNormSuite(p.business_suite);
+      const nEmail = String(p.email || '').toLowerCase().trim();
+      /* Same rule as the manual pre-save check: same name (+ city when both
+         have one), OR same email, OR same street + city. Street matches also
+         need the suite to agree when both sides have one, so two practices in
+         the same building aren't treated as one account. */
+      const isDup = existingAccts.some(a =>
+        (nName && a.name && nName === a.name && (!nCity || !a.city || nCity === a.city)) ||
+        (nEmail && a.email && nEmail === a.email) ||
+        (nStreet && a.street && nStreet === a.street && nCity && a.city && nCity === a.city &&
+          (!nSuite || !a.suite || nSuite === a.suite))
+      );
       /* Rep assignment: reps force self; admin uses sheet value if valid, else self */
       let assigned;
       if(!isAdmin){
