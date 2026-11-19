@@ -12,8 +12,9 @@ const sb = createClient(
 
 /* ---------- small utils ---------- */
 const fmt$ = n => '$' + (Number(n||0)).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
-const todayISO = () => new Date().toISOString().slice(0,10);
-const startOfMonth = () => { const d=new Date(); return new Date(d.getFullYear(),d.getMonth(),1).toISOString().slice(0,10) };
+/* Dates are in the business timezone (see tz below), not UTC. */
+const todayISO = () => tz.today();
+const startOfMonth = () => tz.today().slice(0,8) + '01';
 const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 /* Permissive RFC-lite email check used anywhere the CRM validates an
    address client-side (resend invoice, contact save, etc.). One source
@@ -113,6 +114,28 @@ const tz = {
     const zoneStr = d.toLocaleString('en-US', { timeZone: tz.ZONE });
     const utcStr  = d.toLocaleString('en-US', { timeZone: 'UTC' });
     return (new Date(zoneStr).getTime() - new Date(utcStr).getTime()) / 60000;
+  },
+  /* Today's date in ZONE as 'YYYY-MM-DD'. (toISOString() gives the UTC
+     date, which is already "tomorrow" from late afternoon in Denver.) */
+  today(at){
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz.ZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(at || new Date());
+    const get = t => parts.find(x => x.type === t).value;
+    return `${get('year')}-${get('month')}-${get('day')}`;
+  },
+  /* A Date at local noon on today's ZONE date — safe to do month/day math on. */
+  todayDate(){
+    const [y, m, d] = tz.today().split('-').map(Number);
+    return new Date(y, m - 1, d, 12, 0, 0);
+  },
+  /* 'YYYY-MM-DD' from a Date's own calendar parts (no UTC conversion). */
+  fmtLocal(d){
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  },
+  /* The ZONE calendar date of a stored timestamp. */
+  dateOf(ts){
+    if(!ts) return '';
+    const d = new Date(ts);
+    return isNaN(d) ? String(ts).slice(0, 10) : tz.today(d);
   },
   startOfDayUTC(dateStr){
     /* dateStr = 'YYYY-MM-DD'. Returns ISO UTC for 00:00:00 that day in ZONE. */
@@ -598,10 +621,17 @@ const dashboard = {
     }
 
     /* counts */
-    const [accCount, mtdOrders] = await Promise.all([
+    const [accCount, mtdAll] = await Promise.all([
       accounts.count(),
       orders.listMTD()
     ]);
+    /* Same rules as the Reports default view, so these tiles and the
+       Reports numbers agree: customer has paid, and the order has product
+       revenue (not shipping-only or a $0 sample). */
+    const mtdOrders = (mtdAll || []).filter(o => {
+      const productRev = Number(o.total || 0) - Number(o.shipping || 0) - Number(o.tax || 0);
+      return productRev > 0 && reports._paymentStatus(o) === 'paid';
+    });
     const rev = (mtdOrders||[]).reduce((s,o)=>s+Number(o.total||0),0);
     const comm = (mtdOrders||[]).reduce((s,o)=>{
       const repPct = profiles.commissionFor(o.rep_id)/100;
@@ -3154,7 +3184,7 @@ const accounts = {
    pre-date the column). */
 const orders = {
   async listMTD(){
-    const from = startOfMonth();
+    const from = tz.startOfDayUTC(startOfMonth()); /* month start in Denver time, same as Reports */
     const { data, error } = await sb.from('orders').select('*').eq('status','finalized').gte('placed_at', from).not('is_test','is',true);
     if(error){ ui.err(error); return []; }
     return data || [];
@@ -3237,6 +3267,9 @@ const orders = {
       const r = await sb.from('orders').select('*').eq('id', id).single();
       if(r.error){ ui.err(r.error); return; }
       o = r.data;
+      /* Drafts: hide the auto-added free promo lines while editing;
+         buildPayload re-adds them from the paid lines on save. */
+      if(o.status === 'draft' && Array.isArray(o.items)) o.items = o.items.filter(i => !orders._isBonusLine(i));
       if(o.account_id){
         const ar = await sb.from('accounts').select('sales_tax_license, sales_tax_state').eq('id', o.account_id).single();
         if(!ar.error){
@@ -3606,6 +3639,16 @@ const orders = {
     const d = orders._draft; if(!d) return;
     const items = d.items || [];
     const sub = items.reduce((s,i)=>s+i.qty*i.price,0);
+    /* Re-validate the applied promo (not on finalized orders, which are
+       read-only history). */
+    if(d.promo_code && d.status !== 'finalized'){
+      const why = orders._promoInvalidReason(d.promo_code, items);
+      if(why){
+        d.promo_code = ''; d.promo_effect = ''; d.discount = 0;
+        const msgEl = document.getElementById('o-promo-msg');
+        if(msgEl) msgEl.textContent = why;
+      }
+    }
     const p = cache.promotions.find(x=>x.code===d.promo_code);
     /* Shipping resolution: custom input wins if filled; otherwise use the
        dropdown preset. Blank/0 = no charge. Never falls back to shipDefault. */
@@ -3636,6 +3679,7 @@ const orders = {
     document.getElementById('o-tax').value = tax.toFixed(2);
   },
   collect(){
+    orders.recompute(); /* totals + promo validity must be current before saving */
     const d = orders._draft;
     d.account_id = document.getElementById('o-acc').value || null;
     d.rep_id = document.getElementById('o-rep').value || auth.repId();
@@ -3656,6 +3700,24 @@ const orders = {
     d._sts = (document.getElementById('o-sts').value||'').trim();
     return d;
   },
+  /* A free line generated by a bonus promo (see buildPayload): priced $0
+     and named "… (FREE — CODE)". */
+  _isBonusLine(i){
+    return !!i && Number(i.price) === 0 && /\(FREE — [^)]*\)\s*$/.test(String(i.name || ''));
+  },
+  /* Why the applied promo no longer qualifies ('' when it still does).
+     Checked on every recompute so a code can't outlive its minimum after
+     items are removed, or be used after it is deactivated or deleted. */
+  _promoInvalidReason(code, items){
+    const p = (cache.promotions || []).find(x => x.code === code);
+    if(!p) return `Code ${code} removed — it no longer exists.`;
+    if(!p.active) return `Code ${code} removed — it is no longer active.`;
+    const unitsPerPack = sku => { const m = String(sku || '').match(/-(\d+)$/); return m ? parseInt(m[1], 10) || 1 : 1; };
+    const units = (items || []).filter(i => !orders._isBonusLine(i))
+      .reduce((s, i) => s + (Number(i.qty) || 0) * unitsPerPack(i.sku), 0);
+    if(p.min_qty && units < p.min_qty) return `Code ${code} removed — requires ${p.min_qty}+ units (current ${units}). Add items and click Apply again.`;
+    return '';
+  },
   buildPayload(d){
     /* Bonus-kind promos (BOGO48 is the only one today) double the
        shipment: add a free line of the same SKU + same qty for every
@@ -3665,7 +3727,10 @@ const orders = {
        Filter on price>0 so re-saving an already-doubled order does
        not add free lines on top of free lines. */
     const promo = (typeof cache !== 'undefined' && cache.promotions || []).find(x => x.code === d.promo_code);
-    let items = Array.isArray(d.items) ? d.items : [];
+    /* Start from the cart WITHOUT any previously generated free lines, so
+       re-saving a draft (or removing the promo) never stacks or strands
+       them — they are rebuilt below from the paid lines every time. */
+    let items = (Array.isArray(d.items) ? d.items : []).filter(i => !orders._isBonusLine(i));
     if(promo && promo.kind === 'bonus'){
       const paid = items.filter(i => Number(i.qty) > 0 && Number(i.price) > 0);
       const freeLines = paid.map(i => ({
@@ -4705,8 +4770,11 @@ const reports = {
     });
   },
   setRange(preset){
-    const d = new Date();
-    const iso = x => x.toISOString().slice(0,10);
+    /* "Now" is today's date in the business timezone (Denver), and dates
+       are formatted from their own calendar parts — not via UTC, which
+       rolled every preset forward a day each evening. */
+    const d = tz.todayDate();
+    const iso = x => tz.fmtLocal(x);
     const monStart = (yr, mo) => new Date(yr, mo, 1);
     const monEnd   = (yr, mo) => new Date(yr, mo+1, 0);
     let from, to;
@@ -4939,7 +5007,7 @@ const reports = {
 
     const rows = list.map(o=>{
       return `<tr>
-        <td class="nowrap">${o.placed_at.slice(0,10)}</td>
+        <td class="nowrap">${esc(tz.dateOf(o.placed_at))}</td>
         <td>${esc(o.order_number||'')}</td>
         <td>${esc(o.account?.account_number||'')}</td>
         <td>${esc(o.account?.business_name||'')}</td>
@@ -5153,12 +5221,27 @@ const reports = {
 
     /* Fetch prior-year same-period orders */
     const repId = document.getElementById('rep-rep').value;
-    let q = sb.from('orders').select('rep_id, total, shipping, tax').eq('status','finalized').not('is_test','is',true)
-      .gte('placed_at', pfIso).lte('placed_at', new Date(ptIso + 'T23:59:59').toISOString());
+    /* Prior year uses the SAME rules as the current-period list (see
+       filter()): Denver day bounds, account # / type filters, product
+       revenue > 0, and the selected payment status — so the two columns
+       compare like with like. */
+    const yAcct = document.getElementById('rep-acct').value.trim().toUpperCase();
+    const yType = document.getElementById('rep-type').value;
+    const yPay = document.getElementById('rep-pay-status')?.value || 'paid';
+    let q = sb.from('orders').select('rep_id, total, shipping, tax, shopify_status, account:accounts(account_number,type)').eq('status','finalized').not('is_test','is',true)
+      .gte('placed_at', tz.startOfDayUTC(pfIso)).lte('placed_at', tz.endOfDayUTC(ptIso));
     if(repId) q = q.eq('rep_id', repId);
     const r = await q;
     if(r.error){ card.classList.add('hide'); return; }
-    const priorRows = r.data || [];
+    const priorRows = (r.data || []).filter(o => {
+      if(yAcct && !((o.account?.account_number || '').toUpperCase().includes(yAcct))) return false;
+      if(yType && o.account?.type !== yType) return false;
+      if(Number(o.total || 0) - Number(o.shipping || 0) - Number(o.tax || 0) <= 0) return false;
+      const s = reports._paymentStatus(o);
+      if(yPay === 'paid') return s === 'paid';
+      if(yPay === 'pending') return s === 'pending';
+      return s !== 'void';
+    });
     const priorRev = priorRows.reduce((s,o)=>s+Number(o.total||0),0);
     const priorOrders = priorRows.length;
     const priorComm = priorRows.reduce((s,o)=>{
@@ -5308,7 +5391,7 @@ const reports = {
         ? (Number(o.total)-Number(o.shipping)-Number(o.tax))*repPct
         : 0;
       rows.push([
-        o.placed_at.slice(0,10), o.order_number||'',
+        tz.dateOf(o.placed_at), o.order_number||'',
         o.account?.account_number||'', o.account?.business_name||'',
         o.account?.type||'', o.rep_id||'',
         payStatus,
@@ -5324,11 +5407,11 @@ const reports = {
     URL.revokeObjectURL(url);
   },
   monthly(){
-    const d = new Date();
+    const d = tz.todayDate();
     const first = new Date(d.getFullYear(), d.getMonth()-1, 1);
     const last  = new Date(d.getFullYear(), d.getMonth(), 0);
-    document.getElementById('rep-from').value = first.toISOString().slice(0,10);
-    document.getElementById('rep-to').value   = last.toISOString().slice(0,10);
+    document.getElementById('rep-from').value = tz.fmtLocal(first);
+    document.getElementById('rep-to').value = tz.fmtLocal(last);
     reports.run();
     ui.toast('Last month loaded — export CSV to send commissions.');
   }
