@@ -2084,6 +2084,7 @@ const accounts = {
         Upload an .xlsx, .xls, or .csv file with your accounts. You'll be able to
         map its columns to the CRM's fields before anything is imported.
         Duplicates (same name, same email, or same street address) are skipped automatically.
+        Blank fields on a matching account are filled in from the sheet; existing values are never overwritten.
       </p>
       <div>
         <label>Spreadsheet file</label>
@@ -2220,7 +2221,11 @@ const accounts = {
        alias. Only aliases 4+ chars qualify (avoids "st" matching "state"
        being too eager). Sort aliases longest-first so the most specific
        alias wins per field. */
-    for(const field of accounts.CRM_FIELDS){
+    /* Email goes first in this pass: a header like "Email / Contact Method"
+       must map to Account email rather than be claimed by the billing-
+       contact alias "contact". */
+    const pass2Fields = [...accounts.CRM_FIELDS].sort((a, b) => (b.key === 'email') - (a.key === 'email'));
+    for(const field of pass2Fields){
       if(mapping[field.key] !== undefined) continue;
       const sortedAliases = [...field.aliases].sort((a, b) => b.length - a.length);
       for(const alias of sortedAliases){
@@ -2306,7 +2311,11 @@ const accounts = {
 
   _extractEmail(v){
     const s = String(v || '').trim();
-    return accounts._EMAIL_RE.test(s) ? s.toLowerCase() : '';
+    if(accounts._EMAIL_RE.test(s)) return s.toLowerCase();
+    /* Cell with extra text ("a@x.com / b@x.com", "Email: a@x.com") — take
+       the first address. Text with no address ("Online Contact Form") gives ''. */
+    const m = s.match(/[^\s@,;\/()<>:]+@[^\s@,;\/()<>]+\.[A-Za-z]{2,}/);
+    return m ? m[0].toLowerCase() : '';
   },
   _extractPhone(v){
     const m = String(v || '').match(accounts._PHONE_RE);
@@ -2357,6 +2366,30 @@ const accounts = {
     return String(s || '').toLowerCase()
       .replace(/\b(suite|ste|apt|apartment|unit|floor|fl)\b/g, '')
       .replace(/[^a-z0-9]/g, '');
+  },
+
+  /* --- Fill-in helpers: which blank fields on an existing account can be
+     filled from a matching spreadsheet row --- */
+  _FILL_LABELS: { billing_name: 'contact person', email: 'email', cell: 'cell', business_phone: 'business phone', website: 'website', business_suite: 'suite', business_state: 'state', business_zip: 'ZIP' },
+  _importFillFields(p, ex){
+    const blank = v => v === null || v === undefined || String(v).trim() === '';
+    const out = {};
+    for(const k of ['billing_name', 'email', 'cell', 'business_phone', 'website']){
+      if(blank(ex[k]) && !blank(p[k])) out[k] = p[k];
+    }
+    /* Address parts only when the row is clearly the same location, so a
+       second office of the same business doesn't donate its suite or ZIP. */
+    const exSplit = accounts._splitStreetSuite(ex.business_street);
+    const pStreet = accounts._dupNormStreet(p.business_street);
+    const sameStreet = !!pStreet && pStreet === accounts._dupNormStreet(exSplit.street);
+    const pCity = accounts._dupNormCity(p.business_city);
+    const sameCity = !!pCity && pCity === accounts._dupNormCity(ex.business_city);
+    /* If the account's city field still holds "City, ST 12345", leave state/ZIP alone. */
+    const cityIsCombined = !!accounts._splitCityStateZip(ex.business_city);
+    if(sameStreet && sameCity && blank(ex.business_suite) && !exSplit.suite && !blank(p.business_suite)) out.business_suite = p.business_suite;
+    if(sameCity && !cityIsCombined && blank(ex.business_state) && !blank(p.business_state)) out.business_state = p.business_state;
+    if(sameStreet && sameCity && !cityIsCombined && blank(ex.business_zip) && !blank(p.business_zip)) out.business_zip = p.business_zip;
+    return out;
   },
 
   _importParseRow(row){
@@ -2425,7 +2458,7 @@ const accounts = {
     /* Fetch existing accounts for duplicate check */
     ui.busy(true);
     const existRes = await sb.from('accounts')
-      .select('id, business_name, business_city, business_street, business_suite, email')
+      .select('id, account_number, rep_id, business_name, business_city, business_state, business_zip, business_street, business_suite, email, billing_name, cell, business_phone, website')
       .limit(5000);
     ui.busy(false);
     /* If the lookup fails we can't tell what's a duplicate — stop rather
@@ -2442,6 +2475,7 @@ const accounts = {
         street: accounts._dupNormStreet(ss.street),
         suite: accounts._dupNormSuite(ss.suite),
         email: String(a.email || '').toLowerCase().trim(),
+        raw: a,
       };
     });
     const validReps = new Set((cache.repsFull || cache.reps || []).map(r => (r.rep_id || '').toUpperCase()).filter(Boolean));
@@ -2461,12 +2495,28 @@ const accounts = {
          have one), OR same email, OR same street + city. Street matches also
          need the suite to agree when both sides have one, so two practices in
          the same building aren't treated as one account. */
-      const isDup = existingAccts.some(a =>
+      const dupMatches = existingAccts.filter(a =>
         (nName && a.name && nName === a.name && (!nCity || !a.city || nCity === a.city)) ||
         (nEmail && a.email && nEmail === a.email) ||
         (nStreet && a.street && nStreet === a.street && nCity && a.city && nCity === a.city &&
           (!nSuite || !a.suite || nSuite === a.suite))
       );
+      const isDup = dupMatches.length > 0;
+      /* Fill-in rule: when the row matches exactly one existing account that
+         this user may edit (admin: any account; rep: only their own), copy
+         over values for fields that are blank on file. Never overwrites. A
+         row matching several accounts is left alone for a human to sort out. */
+      let fill = null, ambiguous = false;
+      if(dupMatches.length > 1){
+        ambiguous = true;
+      } else if(dupMatches.length === 1){
+        const ex = dupMatches[0].raw;
+        const canEdit = isAdmin || (!!myRepId && String(ex.rep_id || '').toUpperCase() === String(myRepId).toUpperCase());
+        if(canEdit){
+          const fields = accounts._importFillFields(p, ex);
+          if(Object.keys(fields).length) fill = { id: ex.id, account_number: ex.account_number, fields };
+        }
+      }
       /* Rep assignment: reps force self; admin uses sheet value if valid, else self */
       let assigned;
       if(!isAdmin){
@@ -2476,18 +2526,23 @@ const accounts = {
         assigned = (wantId && validReps.has(wantId)) ? wantId : (myRepId || null);
       }
       p.rep_id = assigned;
-      return { row: p, index: i, errors, isDup };
+      return { row: p, index: i, errors, isDup, fill, ambiguous };
     });
 
     const okCount = results.filter(r => !r.errors.length && !r.isDup).length;
     const dupCount = results.filter(r => r.isDup).length;
+    const updCount = results.filter(r => r.fill).length;
     const errCount = results.filter(r => r.errors.length && !r.isDup).length;
     accounts._importState.results = results;
 
     const previewRows = results.slice(0, 15).map(r => {
       const p = r.row;
       const badge = r.isDup
-        ? '<span class="badge" style="background:rgba(250,200,80,0.2);color:#c48a10">duplicate — skip</span>'
+        ? (r.fill
+            ? `<span class="badge ok" title="${esc(r.fill.account_number || '')}">duplicate — will add ${esc(Object.keys(r.fill.fields).map(k => accounts._FILL_LABELS[k] || k).join(', '))}</span>`
+            : r.ambiguous
+              ? '<span class="badge" style="background:rgba(250,200,80,0.2);color:#c48a10">duplicate — matches several accounts, skip</span>'
+              : '<span class="badge" style="background:rgba(250,200,80,0.2);color:#c48a10">duplicate — skip</span>')
         : r.errors.length
           ? `<span class="badge err">${esc(r.errors[0])}</span>`
           : '<span class="badge ok">will import</span>';
@@ -2506,13 +2561,15 @@ const accounts = {
       <h3>Step 3: preview</h3>
       <div class="row" style="gap:12px;margin:0 0 10px">
         <span class="badge ok">${okCount} will import</span>
-        <span class="badge" style="background:rgba(250,200,80,0.2);color:#c48a10">${dupCount} duplicate${dupCount===1?'':'s'} — skip</span>
+        <span class="badge" style="background:rgba(250,200,80,0.2);color:#c48a10">${dupCount - updCount} duplicate${(dupCount - updCount)===1?'':'s'} — skip</span>
+        ${updCount ? `<span class="badge ok">${updCount} existing will be updated</span>` : ''}
         ${errCount ? `<span class="badge err">${errCount} error${errCount===1?'':'s'} — skip</span>` : ''}
       </div>
       <p class="muted" style="font-size:12px;margin:0 0 12px">
         First 15 rows shown. All ${results.length} will be processed on confirm.
         Every imported account defaults to <b>tax-exempt</b> with the billing
         address matching the business address.
+        Duplicates with blank fields get those blanks filled in from your sheet; nothing already on file is overwritten.
         ${!isAdmin ? `<br/><b>All ${okCount} account${okCount===1?'':'s'} will be assigned to you (Rep ${myRepId}).</b>` : ''}
       </p>
       <div style="max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:6px">
@@ -2533,7 +2590,7 @@ const accounts = {
       <div class="row" style="gap:8px;margin-top:12px">
         <button class="icon-btn ghost" onclick="accounts._importShowMapping()">← Back</button>
         <div class="grow"></div>
-        <button class="icon-btn primary" ${okCount===0?'disabled':''} onclick="accounts._importCommit()">Confirm import (${okCount})</button>
+        <button class="icon-btn primary" ${(okCount + updCount)===0?'disabled':''} onclick="accounts._importCommit()">Confirm import (${okCount}${updCount ? ` new, ${updCount} update${updCount===1?'':'s'}` : ''})</button>
       </div>
     `);
   },
@@ -2561,7 +2618,8 @@ const accounts = {
         rep_id,
       };
     });
-    if(!inserts.length){ ui.toast('Nothing to import.'); return; }
+    const fills = results.filter(r => r.fill).map(r => r.fill);
+    if(!inserts.length && !fills.length){ ui.toast('Nothing to import.'); return; }
 
     const statusEl = document.getElementById('imp-status');
     ui.busy(true);
@@ -2624,12 +2682,43 @@ const accounts = {
       if(statusEl) statusEl.textContent = `Imported ${inserted} of ${inserts.length}…`;
     }
 
+    /* Fill blanks on matched existing accounts. Each row is re-read first so
+       a field someone filled in since the preview is never overwritten.
+       Admins can update any account; reps only their own (also enforced by
+       RLS — an update that touches no row is reported as failed). */
+    let updated = 0, updFailed = 0;
+    const FILL_COLS = 'id, billing_name, email, cell, business_phone, website, business_suite, business_state, business_zip';
+    for(const f of fills){
+      const cur = await sb.from('accounts').select(FILL_COLS).eq('id', f.id).single();
+      if(cur.error || !cur.data){
+        updFailed++;
+        failedMsgs.push(`${f.account_number || f.id}: ${cur.error ? cur.error.message : 'not found'}`);
+        continue;
+      }
+      const patch = {};
+      for(const [k, v] of Object.entries(f.fields)){
+        const have = cur.data[k];
+        if(have === null || have === undefined || String(have).trim() === '') patch[k] = v;
+      }
+      if(!Object.keys(patch).length) continue;
+      const u = await sb.from('accounts').update(patch).eq('id', f.id).select('id');
+      if(u.error || !u.data || !u.data.length){
+        updFailed++;
+        failedMsgs.push(`${f.account_number || f.id}: ${u.error ? u.error.message : 'update not permitted'}`);
+      } else {
+        updated++;
+      }
+      if(statusEl) statusEl.textContent = `Updated ${updated} of ${fills.length} existing…`;
+    }
+
     ui.busy(false);
-    const dupCount = results.filter(r => r.isDup).length;
+    const dupCount = results.filter(r => r.isDup && !r.fill).length;
     const errCount = results.filter(r => r.errors.length && !r.isDup).length;
     ui.closeModal();
     let summary = `Imported ${inserted} account${inserted===1?'':'s'}.`;
     if(notesInserted) summary += ` Attached ${notesInserted} note${notesInserted===1?'':'s'} to the Call / visit log.`;
+    if(updated) summary += ` Filled in missing details on ${updated} existing account${updated===1?'':'s'}.`;
+    if(updFailed) summary += ` ${updFailed} update${updFailed===1?'':'s'} to existing accounts failed.`;
     if(dupCount) summary += ` Skipped ${dupCount} duplicate${dupCount===1?'':'s'}.`;
     if(errCount) summary += ` Skipped ${errCount} with errors.`;
     if(failed) summary += ` ${failed} failed on insert.`;
